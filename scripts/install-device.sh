@@ -106,7 +106,7 @@ systemctl stop riddle-power-launcher.service riddle-takeover.service 2>/dev/null
 systemctl disable riddle-power-launcher.service 2>/dev/null || true
 "$APP_ROOT/libexec/remagic-recover"
 systemctl daemon-reload
-systemctl start remagicd.service
+systemctl restart remagicd.service
 systemctl start magicpaper-agent.service
 
 echo "Remagic Manager installed. The original interface remains the boot default."

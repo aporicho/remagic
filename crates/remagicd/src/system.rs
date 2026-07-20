@@ -21,8 +21,9 @@ impl SystemController {
 
     pub async fn enter_managed(&self) -> Result<(), String> {
         self.acquire_wakelock();
-        self.stop("xochitl.service").await?;
         self.mask_xochitl().await?;
+        let _ = self.stop("paperweight.service").await;
+        self.stop("xochitl.service").await?;
         let _ = fs::remove_file("/tmp/epframebuffer.lock");
         Ok(())
     }
@@ -34,6 +35,17 @@ impl SystemController {
         self.start("xochitl.service").await?;
         self.start_paperweight_if_installed().await?;
         self.release_wakelock();
+        Ok(())
+    }
+
+    /// Stop the temporary official display host used by hosted applications
+    /// before returning to the Quill manager. This prevents epframebuffer
+    /// ownership and stale lock files from crashing remagic-home.
+    pub async fn leave_hosted_display(&self) -> Result<(), String> {
+        self.mask_xochitl().await?;
+        let _ = self.stop("paperweight.service").await;
+        let _ = self.stop("xochitl.service").await;
+        let _ = fs::remove_file("/tmp/epframebuffer.lock");
         Ok(())
     }
 

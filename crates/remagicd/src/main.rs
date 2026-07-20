@@ -475,6 +475,7 @@ impl Daemon {
         };
         drop(state);
         if !returning_system && show_manager && manager_needs_start {
+            self.controller.leave_hosted_display().await?;
             self.controller.start(HOME_UNIT).await?;
         }
         Ok(())
