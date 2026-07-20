@@ -347,9 +347,30 @@ mod device {
         }
 
         fn flash(&mut self, button: &Button) {
-            self.round_rect(button.x, button.y, button.width, button.height, BLACK);
-            unsafe { quill_swap_ex(button.x, button.y, button.width, button.height, 4, 0, 1); }
-            std::thread::sleep(Duration::from_millis(120));
+            let mut saved = Vec::with_capacity((button.width * button.height) as usize);
+            for y in button.y..button.y + button.height {
+                for x in button.x..button.x + button.width {
+                    saved.push(self.read_pixel(x, y));
+                    let color = self.read_pixel(x, y);
+                    self.pixel(x, y, (color & 0xFF00_0000) | ((!color) & 0x00FF_FFFF));
+                }
+            }
+            unsafe {
+                quill_swap_ex(button.x, button.y, button.width, button.height, 4, 0, 1);
+                quill_process_events();
+            }
+            std::thread::sleep(Duration::from_millis(160));
+            let mut index = 0;
+            for y in button.y..button.y + button.height {
+                for x in button.x..button.x + button.width {
+                    self.pixel(x, y, saved[index]);
+                    index += 1;
+                }
+            }
+            unsafe {
+                quill_swap_ex(button.x, button.y, button.width, button.height, 4, 0, 1);
+                quill_process_events();
+            }
         }
 
         fn fill(&mut self, color: u32) {
@@ -434,6 +455,16 @@ mod device {
                 let pointer =
                     self.buffer.add(y as usize * self.stride + x as usize * 4) as *mut u32;
                 pointer.write_unaligned(color);
+            }
+        }
+
+        fn read_pixel(&self, x: i32, y: i32) -> u32 {
+            if x < 0 || y < 0 || x >= self.width || y >= self.height {
+                return WHITE;
+            }
+            unsafe {
+                let pointer = self.buffer.add(y as usize * self.stride + x as usize * 4) as *const u32;
+                pointer.read_unaligned()
             }
         }
     }
