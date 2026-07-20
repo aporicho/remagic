@@ -91,10 +91,10 @@ mod device {
         action: Action,
     }
 
-    pub async fn run(apps: Vec<AppView>) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn run(mut apps: Vec<AppView>) -> Result<(), Box<dyn std::error::Error>> {
         let mut display = Display::open()?;
         let font = load_font()?;
-        let buttons = display.render(&font, &apps);
+        let mut buttons = display.render(&font, &apps);
         let mut touch = Touch::open()?;
         loop {
             if let Some((x, y)) = touch.poll_tap() {
@@ -103,12 +103,14 @@ mod device {
                         && x < button.x + button.width
                         && y >= button.y
                         && y < button.y + button.height
-                }) {
-                    display.flash(button);
-                    match &button.action {
+                }).cloned() {
+                    let action = button.action.clone();
+                    let is_close = matches!(action, Action::Close(_));
+                    display.flash(&button);
+                    match action {
                         Action::Launch(id) => {
                             request(Request::Launch {
-                                app_id: id.clone(),
+                                app_id: id,
                                 open_path: None,
                             })
                             .await?;
@@ -119,10 +121,24 @@ mod device {
                                 complete: true,
                             })
                             .await?;
+                            // The daemon acknowledges queued events before the
+                            // state transition necessarily completes. Poll the
+                            // authoritative app list so a close is visible
+                            // immediately instead of leaving a stale card.
+                            for _ in 0..10 {
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                                let latest = list_apps().await?;
+                                let closed = match latest.iter().find(|app| app.id == id) {
+                                    None => true,
+                                    Some(app) => app.session.is_none() && !app.background_active,
+                                };
+                                apps = latest;
+                                if closed { break; }
+                            }
                         }
                         Action::Package(operation) => {
                             request(Request::Package {
-                                operation: operation.clone(),
+                                operation,
                             })
                             .await?;
                         }
@@ -130,10 +146,13 @@ mod device {
                         Action::System => request(Request::ReturnSystem).await?,
                         Action::Sleep => request(Request::Sleep).await?,
                     }
-                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    if !is_close {
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        apps = list_apps().await?;
+                    }
                     // Restore the normal card after the acknowledgement flash.
                     // The daemon will stop this UI when an app is launched.
-                    display.render(&font, &apps);
+                    buttons = display.render(&font, &apps);
                 }
             }
             unsafe { quill_process_events() };
@@ -313,7 +332,10 @@ mod device {
                 action: Action::Sleep,
             });
             unsafe {
-                quill_swap_ex(0, 0, self.width, self.height, 4, 1, 1);
+                // Normal page presentation: color-capable quality waveform,
+                // but no cleanup/full-refresh flash. Explicit refresh commands
+                // and sleep/recovery paths remain the only full cleanups.
+                quill_swap_ex(0, 0, self.width, self.height, 3, 0, 1);
                 quill_process_events();
             }
             buttons

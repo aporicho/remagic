@@ -46,6 +46,12 @@ impl SystemController {
         let _ = self.stop("paperweight.service").await;
         let _ = self.stop("xochitl.service").await;
         let _ = fs::remove_file("/tmp/epframebuffer.lock");
+        // xochitl can finish its teardown a moment after systemd reports the
+        // unit stopped and recreate the vendor lock during that window.
+        // Give the display host a brief grace period, then remove it again so
+        // Quill/manager owns a clean panel on the next launch.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let _ = fs::remove_file("/tmp/epframebuffer.lock");
         Ok(())
     }
 

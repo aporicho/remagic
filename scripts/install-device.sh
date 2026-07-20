@@ -54,6 +54,7 @@ install_file 0755 "$SOURCE_DIR/scripts/koreader-remagic" "$APP_ROOT/libexec/kore
 install_file 0755 "$SOURCE_DIR/scripts/magicpaper-remagic" "$APP_ROOT/libexec/magicpaper-remagic"
 install_file 0755 "$SOURCE_DIR/scripts/magicpaper-agent-remagic" "$APP_ROOT/libexec/magicpaper-agent-remagic"
 install_file 0755 "$SOURCE_DIR/scripts/uninstall-device.sh" "$APP_ROOT/libexec/uninstall-device.sh"
+install_file 0755 "$SOURCE_DIR/scripts/device-acceptance.sh" "$APP_ROOT/share/device-acceptance.sh"
 
 if [ -f "$SOURCE_DIR/opt/magicpaper/riddle" ]; then
     if [ -f /home/root/apps/riddle/riddle ] && [ ! -f /home/root/apps/riddle/riddle.pre-remagic ]; then

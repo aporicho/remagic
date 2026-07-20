@@ -9,5 +9,11 @@ ExecStart=/home/root/apps/remagic/bin/remagic-home
 Environment=LD_LIBRARY_PATH=/home/root/apps/remagic/lib:/usr/lib/plugins/scenegraph:/usr/lib
 Restart=no
 TimeoutStopSec=5
-KillMode=mixed
+# Quill/Qt may abort while tearing down its display thread after SIGTERM.
+# The daemon has already released the display ownership before stopping this
+# UI, so terminate the short-lived renderer directly and avoid a core dump.
+KillSignal=SIGKILL
+KillMode=control-group
+SendSIGKILL=yes
+SuccessExitStatus=SIGKILL
 UMask=0077
