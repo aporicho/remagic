@@ -1,0 +1,130 @@
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -23,49 +23,37 @@
+ #include <dirent.h>
+ #include <dlfcn.h>
+ #include <fcntl.h>
++#include <sys/signalfd.h>
+ #include <sys/stat.h>
+ #include <unistd.h>
+ 
+ namespace {
+-int terminationPipe[2] {-1, -1};
++int terminationSignalDescriptor = -1;
++sigset_t terminationSignalMask {};
+ 
+-void requestGracefulQuit(int)
++bool blockTerminationSignals()
+ {
+-    const char wakeup = 1;
+-    if (terminationPipe[1] >= 0) {
+-        const ssize_t ignored = ::write(terminationPipe[1], &wakeup, sizeof(wakeup));
+-        Q_UNUSED(ignored);
+-    }
++    sigemptyset(&terminationSignalMask);
++    sigaddset(&terminationSignalMask, SIGTERM);
++    sigaddset(&terminationSignalMask, SIGINT);
++    return ::sigprocmask(SIG_BLOCK, &terminationSignalMask, nullptr) == 0;
+ }
+ 
+ QSocketNotifier *installTerminationHandler(QGuiApplication &application,
+                                             RuntimeControl &runtimeControl)
+ {
+-    if (::pipe(terminationPipe) != 0) return nullptr;
+-    for (const int descriptor : terminationPipe) {
+-        const int descriptorFlags = ::fcntl(descriptor, F_GETFD);
+-        const int statusFlags = ::fcntl(descriptor, F_GETFL);
+-        if (descriptorFlags >= 0) ::fcntl(descriptor, F_SETFD, descriptorFlags | FD_CLOEXEC);
+-        if (statusFlags >= 0) ::fcntl(descriptor, F_SETFL, statusFlags | O_NONBLOCK);
+-    }
+-
+-    struct sigaction action {};
+-    action.sa_handler = requestGracefulQuit;
+-    sigemptyset(&action.sa_mask);
+-    if (::sigaction(SIGTERM, &action, nullptr) != 0
+-        || ::sigaction(SIGINT, &action, nullptr) != 0) {
+-        ::close(terminationPipe[0]);
+-        ::close(terminationPipe[1]);
+-        terminationPipe[0] = terminationPipe[1] = -1;
+-        return nullptr;
+-    }
++    terminationSignalDescriptor = ::signalfd(
++        -1, &terminationSignalMask, SFD_NONBLOCK | SFD_CLOEXEC);
++    if (terminationSignalDescriptor < 0) return nullptr;
+ 
+-    auto *notifier = new QSocketNotifier(terminationPipe[0], QSocketNotifier::Read, &application);
++    auto *notifier = new QSocketNotifier(
++        terminationSignalDescriptor, QSocketNotifier::Read, &application);
+     QObject::connect(notifier, &QSocketNotifier::activated, &application,
+                      [notifier, &runtimeControl](QSocketDescriptor, QSocketNotifier::Type) {
+         notifier->setEnabled(false);
+-        char buffer[32];
+-        while (::read(terminationPipe[0], buffer, sizeof(buffer)) > 0) {}
++        signalfd_siginfo signalInfo {};
++        while (::read(terminationSignalDescriptor, &signalInfo, sizeof(signalInfo))
++               == static_cast<ssize_t>(sizeof(signalInfo))) {}
+         runtimeControl.requestShutdown();
+     });
+     return notifier;
+@@ -94,6 +82,14 @@
+ 
+ int main(int argc, char *argv[])
+ {
++    // Block process-directed termination before loading plugins or creating
++    // Qt. Every subsequently-created thread inherits this mask, so vendor
++    // display handlers cannot tear down the panel before RuntimeControl has
++    // drained applications and QTFB on the GUI thread.
++    if (!blockTerminationSignals()) {
++        std::fprintf(stderr, "Cannot block termination signals: %s\n", std::strerror(errno));
++        return 74;
++    }
+     loadTestingModules();
+     QGuiApplication application(argc, argv);
+     RuntimeControl runtimeControl;
+@@ -147,8 +143,7 @@
+         qtfb::management::stop();
+     }
+     terminationNotifier->setEnabled(false);
+-    ::close(terminationPipe[0]);
+-    ::close(terminationPipe[1]);
+-    terminationPipe[0] = terminationPipe[1] = -1;
++    ::close(terminationSignalDescriptor);
++    terminationSignalDescriptor = -1;
+     return status;
+ }
+--- a/src/RuntimeControl.cpp
++++ b/src/RuntimeControl.cpp
+@@ -364,13 +364,13 @@
+ void RuntimeControl::pollShutdown()
+ {
+     if (!_shuttingDown || _qtfbStopped) return;
+-    if (!_forceShutdownIssued && _shutdownElapsed.elapsed() >= 2200) {
++    if (!_forceShutdownIssued && _shutdownElapsed.elapsed() >= 5500) {
+         _forceShutdownIssued = true;
+         appload::library::forceShutdownExternalApplications();
+     }
+     const bool processesDrained = appload::library::externalApplicationCount() == 0;
+     const bool qtfbDrained = qtfb::management::activeConnectionCount() == 0;
+-    if ((!processesDrained || !qtfbDrained) && _shutdownElapsed.elapsed() < 4500) return;
++    if ((!processesDrained || !qtfbDrained) && _shutdownElapsed.elapsed() < 6500) return;
+ 
+     if (_shutdownTimer) _shutdownTimer->stop();
+     // Let pidDied, QTFB disassociation and deleteLater callbacks run while the
+--- a/src/libraryexternals.cpp
++++ b/src/libraryexternals.cpp
+@@ -173,6 +173,15 @@
+     process->setProcessChannelMode(QProcess::ForwardedChannels);
+ #if defined(Q_OS_UNIX)
+     process->setChildProcessModifier([]() {
++        // The runtime blocks process-directed termination before Qt starts so
++        // the vendor platform plugin cannot tear the display down ahead of
++        // our lifecycle fence. Managed applications need normal TERM/INT
++        // semantics for their own graceful/fallback shutdown paths.
++        sigset_t terminationSignals {};
++        sigemptyset(&terminationSignals);
++        sigaddset(&terminationSignals, SIGTERM);
++        sigaddset(&terminationSignals, SIGINT);
++        ::sigprocmask(SIG_UNBLOCK, &terminationSignals, nullptr);
+         // Every managed application owns its descendants. This lets close
+         // reliably terminate wrappers and the processes they spawn.
+         ::setpgid(0, 0);

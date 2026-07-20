@@ -1,0 +1,25 @@
+--- a/src/RuntimeControl.cpp	2026-07-20 20:43:39.036574645 +0800
++++ b/src/RuntimeControl.cpp	2026-07-20 20:46:23.210874963 +0800
+@@ -418,10 +418,18 @@
+     }
+ 
+     for (;;) {
+-        const qsizetype newline = position.value().indexOf('\n');
+-        if (newline < 0) break;
+-        QByteArray line = position.value().left(newline).trimmed();
+-        position.value().remove(0, newline + 1);
++        QByteArray line;
++        {
++            // processLine() may synchronously flush a reply, emit disconnected
++            // and erase this client's QHash entry. Never retain an iterator
++            // across that re-entrant call.
++            auto current = _buffers.find(client);
++            if (current == _buffers.end()) return;
++            const qsizetype newline = current.value().indexOf('\n');
++            if (newline < 0) break;
++            line = current.value().left(newline).trimmed();
++            current.value().remove(0, newline + 1);
++        }
+         if (!line.isEmpty()) processLine(client, line);
+     }
+ }

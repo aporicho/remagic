@@ -2,6 +2,7 @@
 set -eu
 
 HERE=/home/root/apps/riddle
+RUNTIME=/home/root/apps/remagic/opt/magicpaper
 CONFIG=${RIDDLE_CONFIG:-/home/root/.config/riddle/oracle.env}
 umask 077
 . /home/root/apps/remagic/libexec/riddle-env
@@ -12,5 +13,8 @@ elif [ -r "$HERE/oracle.env" ]; then
     load_riddle_env "$HERE/oracle.env"
 fi
 
+export RIDDLE_FONT_DIR=${RIDDLE_FONT_DIR:-$RUNTIME/fonts}
+export REMAGIC_RUNTIME_MANAGED=1
+export REMAGIC_RUNTIME_SOCKET=${REMAGIC_RUNTIME_SOCKET:-/run/remagic/runtime-app.sock}
 cd "$HERE"
-exec "$HERE/riddle" "$@"
+exec "$RUNTIME/riddle-qtfb" "$@"

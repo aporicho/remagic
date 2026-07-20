@@ -1,0 +1,4 @@
+# These vendor patches preserve the upstream source's whitespace so they can
+# be applied byte-for-byte by the cross-build. Do not flag that payload as
+# repository formatting errors.
+native/appload-runtime/patches/*.patch whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab

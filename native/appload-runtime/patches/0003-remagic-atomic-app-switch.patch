@@ -1,0 +1,25 @@
+--- a/resources/qml/appload.qml
++++ b/resources/qml/appload.qml
+@@ -89,11 +89,22 @@
+         if (!shuttingDown && (wasForeground || currentForegroundApp.length === 0)) showManager()
+     }
+ 
++    function backgroundCurrentExcept(app) {
++        const previous = currentForegroundApp
++        if (typeof previous !== "string" || previous.length === 0 || previous === app) return
++        const previousWindow = runningWindows[externalId(previous)]
++        if (previousWindow && !previousWindow.closing) previousWindow.visible = false
++        if (RuntimeControl.appState(previous) !== "stopping")
++            RuntimeControl.setAppState(previous, "background")
++        currentForegroundApp = ""
++    }
++
+     function launchWindow(modelData, extraArgs, extraEnv, foregroundEpoch) {
+         if (!modelData || typeof modelData.id !== "string") return null
+         const id = modelData.id
+         const app = publicAppId(id)
+         if (app.length === 0 || foregroundEpoch <= 0) return null
++        backgroundCurrentExcept(app)
+         const existing = runningWindows[id]
+         if (existing && !existing.closing) {
+             existing.foregroundEpoch = foregroundEpoch

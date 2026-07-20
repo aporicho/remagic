@@ -1,0 +1,4301 @@
+diff -ruN '--exclude=.git' a/appload.pro b/appload.pro
+--- a/appload.pro	2026-05-21 23:48:07.000000000 +0800
++++ b/appload.pro	2026-07-20 18:11:40.944994797 +0800
+@@ -1,13 +1,13 @@
+-QT     += core gui qml quickcontrols2
++QT     += core gui network qml quickcontrols2
+ 
+ TARGET = appload
+ TEMPLATE = app
+ 
+-SOURCES +=  src/main.cpp src/management.cpp src/AppLoad.cpp src/AppLoadCoordinator.cpp src/library.cpp src/libraryexternals.cpp \
++SOURCES +=  src/main.cpp src/management.cpp src/AppLoad.cpp src/AppLoadCoordinator.cpp src/library.cpp src/libraryexternals.cpp src/RuntimeControl.cpp \
+             src/qtfb/fbmanagement.cpp src/qtfb/FBController.cpp \
+             src/keyboard/layout.cpp
+ 
+-HEADERS +=  src/AppLoad.h src/AppLoadCoordinator.h src/library.h src/AppLibrary.h \
++HEADERS +=  src/AppLoad.h src/AppLoadCoordinator.h src/library.h src/AppLibrary.h src/RuntimeControl.h \
+             src/qtfb/FBController.h src/qtfb/fbmanagement.h \
+             src/keyboard/layout.h src/Launcher.h src/EmuOnly.h
+ 
+diff -ruN '--exclude=.git' a/backends/qtfb-clients/cpp/qtfb-client.cpp b/backends/qtfb-clients/cpp/qtfb-client.cpp
+--- a/backends/qtfb-clients/cpp/qtfb-client.cpp	2026-05-21 23:48:07.000000000 +0800
++++ b/backends/qtfb-clients/cpp/qtfb-client.cpp	2026-07-20 18:15:58.917631844 +0800
+@@ -1,28 +1,36 @@
+ #include "qtfb-client.h"
++
++#include <cerrno>
++#include <cstring>
+ #include <iostream>
++
+ #include <fcntl.h>
++#include <poll.h>
+ 
+-qtfb::ClientConnection::ClientConnection(qtfb::FBKey framebufferID, uint8_t shmType, std::optional<std::tuple<uint16_t, uint16_t>> customResolution, bool nonBlocking) {
+-    int sock = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+-    if(sock == -1) {
+-        std::cout << "Failed to initialize the socket!" << std::endl;
++qtfb::ClientConnection::ClientConnection(
++    qtfb::FBKey framebufferID,
++    uint8_t shmType,
++    std::optional<std::tuple<uint16_t, uint16_t>> customResolution,
++    bool nonBlocking)
++{
++    fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
++    if (fd == -1) {
++        std::cerr << "Failed to initialize the QTFB socket" << std::endl;
+         exit(-1);
+     }
+-    struct sockaddr_un addr;
+-    addr.sun_family = AF_UNIX;
+-    strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
+-    if(connect(sock, (struct sockaddr *) &addr, sizeof(addr)) != 0) {
+-        std::cout << "Failed to connect. " << errno << std::endl;
++    sockaddr_un address {};
++    address.sun_family = AF_UNIX;
++    std::strncpy(address.sun_path, SOCKET_PATH, sizeof(address.sun_path) - 1);
++    if (connect(fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0) {
++        std::cerr << "Failed to connect to QTFB: " << std::strerror(errno) << std::endl;
+         exit(-2);
+     }
+ 
+-    // Ask to be connected to the main framebuffer.
+-    // Work in color (RMPP) mode
+-    qtfb::ClientMessage initMessage;
+-    if(auto resolution = customResolution) {
+-        _width = std::get<0>(*resolution);
+-        _height = std::get<1>(*resolution);
+-        initMessage = {
++    qtfb::ClientMessage initialize {};
++    if (customResolution) {
++        _width = std::get<0>(*customResolution);
++        _height = std::get<1>(*customResolution);
++        initialize = {
+             .type = MESSAGE_CUSTOM_INITIALIZE,
+             .customInit = {
+                 .framebufferKey = framebufferID,
+@@ -32,143 +40,143 @@
+             },
+         };
+     } else {
+-        initMessage = {
++        initialize = {
+             .type = MESSAGE_INITIALIZE,
+             .init = {
+                 .framebufferKey = framebufferID,
+                 .framebufferType = shmType,
+             },
+         };
+-        switch(shmType) {
+-            case FBFMT_RM2FB:
+-                _width = RM2_WIDTH;
+-                _height = RM2_HEIGHT;
+-                break;
+-            case FBFMT_RMPP_RGB565:
+-            case FBFMT_RMPP_RGB888:
+-            case FBFMT_RMPP_RGBA8888:
+-                _width = RMPP_WIDTH;
+-                _height = RMPP_HEIGHT;
+-                break;
+-            case FBFMT_RMPPM_RGB565:
+-            case FBFMT_RMPPM_RGB888:
+-            case FBFMT_RMPPM_RGBA8888:
+-                _width = RMPPM_WIDTH;
+-                _height = RMPPM_HEIGHT;
+-                break;
++        switch (shmType) {
++        case FBFMT_RM2FB:
++            _width = RM2_WIDTH; _height = RM2_HEIGHT; break;
++        case FBFMT_RMPP_RGB565:
++        case FBFMT_RMPP_RGB888:
++        case FBFMT_RMPP_RGBA8888:
++            _width = RMPP_WIDTH; _height = RMPP_HEIGHT; break;
++        case FBFMT_RMPPM_RGB565:
++        case FBFMT_RMPPM_RGB888:
++        case FBFMT_RMPPM_RGBA8888:
++            _width = RMPPM_WIDTH; _height = RMPPM_HEIGHT; break;
++        default:
++            std::cerr << "Unknown QTFB framebuffer type" << std::endl;
++            exit(-3);
+         }
+     }
+-    if(send(sock, &initMessage, sizeof(initMessage), 0) == -1) {
+-        std::cout << "Failed to send init message!" << std::endl;
++    if (send(fd, &initialize, sizeof(initialize), MSG_NOSIGNAL) != static_cast<ssize_t>(sizeof(initialize))) {
++        std::cerr << "Failed to send QTFB initialization" << std::endl;
+         exit(-3);
+     }
+ 
+-    qtfb::ServerMessage incomingInitConfirm;
+-    if(recv(sock, &incomingInitConfirm, sizeof(incomingInitConfirm), 0) < 1) {
+-        std::cout << "Failed to recv init message!" << std::endl;
++    qtfb::ServerMessage confirmation {};
++    if (recv(fd, &confirmation, sizeof(confirmation), 0) != static_cast<ssize_t>(sizeof(confirmation))
++        || confirmation.type != MESSAGE_INITIALIZE) {
++        std::cerr << "Failed to receive QTFB initialization" << std::endl;
+         exit(-4);
+     }
+ 
+-    if(nonBlocking){
+-        // Make the fd non-blocking for easier polling
+-        int status = fcntl(fd, F_GETFL, 0);
+-        if(status == -1) {
+-            std::cout << "Failed to get socket status!" << std::endl;
++    if (nonBlocking) {
++        const int flags = fcntl(fd, F_GETFL, 0);
++        if (flags == -1 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
++            std::cerr << "Failed to make QTFB socket nonblocking" << std::endl;
+             exit(-7);
+         }
+-        status = fcntl(fd, F_SETFL, status | O_NONBLOCK);
+-        if(status == -1) {
+-            std::cout << "Failed to set socket nonblock!" << std::endl;
+-            exit(-8);
+-        }
+     }
+ 
+-    FORMAT_SHM(shmName, incomingInitConfirm.init.shmKeyDefined);
+-
+-    int fd = shm_open(shmName, O_RDWR, 0);
+-    if(fd == -1) {
+-        std::cout << "Failed to get shm!" << std::endl;
++    FORMAT_SHM(shmName, confirmation.init.shmKeyDefined);
++    shmFD = shm_open(shmName, O_RDWR | O_CLOEXEC, 0);
++    if (shmFD == -1) {
++        std::cerr << "Failed to open QTFB shared memory" << std::endl;
+         exit(-5);
+     }
+-
+-    unsigned char *memory = (unsigned char *) mmap(NULL, incomingInitConfirm.init.shmSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+-    if(memory == MAP_FAILED) {
+-        std::cout << "Failed to mmap() shm!" << std::endl;
++    shmSize = confirmation.init.shmSize;
++    shm = static_cast<unsigned char *>(mmap(nullptr, shmSize, PROT_READ | PROT_WRITE, MAP_SHARED, shmFD, 0));
++    if (shm == MAP_FAILED) {
++        shm = nullptr;
++        std::cerr << "Failed to mmap QTFB shared memory" << std::endl;
+         exit(-6);
+     }
+-    this->shmFD = fd;
+-    this->fd = sock;
+-    shm = memory;
+-    shmSize = incomingInitConfirm.init.shmSize;
+ }
+ 
+-qtfb::ClientConnection::~ClientConnection() {
+-    munmap(shm, shmSize);
+-    qtfb::ClientMessage terminateMessage = {
+-        .type = MESSAGE_TERMINATE,
+-    };
+-    _send(terminateMessage);
+-
+-    close(fd);
++qtfb::ClientConnection::~ClientConnection()
++{
++    if (fd >= 0) {
++        sendMessage({.type = MESSAGE_TERMINATE});
++        shutdown(fd, SHUT_RDWR);
++    }
++    if (shm) {
++        munmap(shm, shmSize);
++        shm = nullptr;
++    }
++    if (shmFD >= 0) {
++        close(shmFD);
++        shmFD = -1;
++    }
++    if (fd >= 0) {
++        close(fd);
++        fd = -1;
++    }
+ }
+ 
+ unsigned short qtfb::ClientConnection::width() const { return _width; }
+ unsigned short qtfb::ClientConnection::height() const { return _height; }
+ 
+-void qtfb::ClientConnection::_send(const struct ClientMessage &msg) {
+-    send(fd, &msg, sizeof(msg), 0);
++void qtfb::ClientConnection::sendMessage(const ClientMessage &message)
++{
++    if (fd >= 0) send(fd, &message, sizeof(message), MSG_NOSIGNAL);
+ }
+ 
+-void qtfb::ClientConnection::sendCompleteUpdate(){
+-    _send({
+-            .type = MESSAGE_UPDATE,
+-            .update = {
+-                .type = UPDATE_ALL,
+-            },
+-        });
++void qtfb::ClientConnection::sendCompleteUpdate()
++{
++    sendMessage({.type = MESSAGE_UPDATE, .update = {.type = UPDATE_ALL}});
+ }
+ 
+-void qtfb::ClientConnection::sendPartialUpdate(int x, int y, int w, int h) {
+-    _send({
+-            .type = MESSAGE_UPDATE,
+-            .update = {
+-                .type = UPDATE_PARTIAL,
+-                .x = x, .y = y, .w = w, .h = h,
+-            },
+-        });
++void qtfb::ClientConnection::sendPartialUpdate(int x, int y, int w, int h)
++{
++    sendMessage({
++        .type = MESSAGE_UPDATE,
++        .update = {.type = UPDATE_PARTIAL, .x = x, .y = y, .w = w, .h = h},
++    });
+ }
+ 
+-bool qtfb::ClientConnection::pollServerPacket(struct ServerMessage &message) {
+-    if(recv(fd, &message, sizeof(message), 0) < 1) {
+-        return false;
+-    }
+-    return true;
++bool qtfb::ClientConnection::pollServerPacket(ServerMessage &message, int timeoutMilliseconds)
++{
++    pollfd descriptor {.fd = fd, .events = POLLIN, .revents = 0};
++    int result;
++    do {
++        result = poll(&descriptor, 1, timeoutMilliseconds);
++    } while (result < 0 && errno == EINTR);
++    if (result <= 0 || !(descriptor.revents & POLLIN)) return false;
++    return recv(fd, &message, sizeof(message), 0) == static_cast<ssize_t>(sizeof(message));
+ }
+ 
+-void qtfb::ClientConnection::setRefreshMode(int refreshMode) {
+-    _refreshMode = refreshMode;
+-    _send({
+-            .type = MESSAGE_SET_REFRESH_MODE,
+-            .refreshMode = refreshMode,
+-    });
++void qtfb::ClientConnection::interruptReceive()
++{
++    if (fd >= 0) shutdown(fd, SHUT_RD);
+ }
+ 
+-void qtfb::ClientConnection::requestFullRefresh() {
+-    _send({
+-            .type = MESSAGE_REQUEST_FULL_REFRESH,
+-    });
++void qtfb::ClientConnection::setRefreshMode(int refreshMode)
++{
++    _refreshMode.store(refreshMode);
++    sendMessage({.type = MESSAGE_SET_REFRESH_MODE, .refreshMode = refreshMode});
+ }
+ 
+-int qtfb::ClientConnection::getRefreshMode() const {
+-    return _refreshMode;
++void qtfb::ClientConnection::requestFullRefresh()
++{
++    sendMessage({.type = MESSAGE_REQUEST_FULL_REFRESH});
+ }
+ 
++int qtfb::ClientConnection::getRefreshMode() const
++{
++    return _refreshMode.load();
++}
+ 
+-qtfb::FBKey qtfb::getIDFromAppload() {
++qtfb::FBKey qtfb::getIDFromAppload()
++{
+     const char *key = getenv("QTFB_KEY");
+-    if(!key) {
+-        std::cerr << "getIDFromAppload(): Application not started via appload!" << std::endl;
++    if (!key) {
++        std::cerr << "Application was not started via AppLoad" << std::endl;
+         abort();
+     }
+-    return strtoul(key, NULL, 10);
++    return strtoul(key, nullptr, 10);
+ }
+diff -ruN '--exclude=.git' a/backends/qtfb-clients/cpp/qtfb-client.h b/backends/qtfb-clients/cpp/qtfb-client.h
+--- a/backends/qtfb-clients/cpp/qtfb-client.h	2026-05-21 23:48:07.000000000 +0800
++++ b/backends/qtfb-clients/cpp/qtfb-client.h	2026-07-20 18:15:58.836628190 +0800
+@@ -1,39 +1,48 @@
+ #pragma once
++
+ #include "common.h"
+ 
+-#include <sys/types.h>
+-#include <sys/socket.h>
++#include <atomic>
++#include <optional>
++#include <tuple>
++
+ #include <sys/mman.h>
++#include <sys/socket.h>
+ #include <sys/stat.h>
++#include <sys/types.h>
+ #include <sys/un.h>
+ #include <unistd.h>
+-#include <stdlib.h>
+ 
+-#include <optional>
+-#include <tuple>
++namespace qtfb {
++class ClientConnection {
++public:
++    ClientConnection(FBKey framebufferID, uint8_t shmType,
++                     std::optional<std::tuple<uint16_t, uint16_t>> customResolution = {},
++                     bool nonBlocking = true);
++    ~ClientConnection();
++
++    void sendCompleteUpdate();
++    void sendPartialUpdate(int x, int y, int w, int h);
++    bool pollServerPacket(ServerMessage &message, int timeoutMilliseconds = -1);
++    void interruptReceive();
++
++    unsigned short width() const;
++    unsigned short height() const;
++    void setRefreshMode(int refreshMode);
++    int getRefreshMode() const;
++    void requestFullRefresh();
++
++    unsigned char *shm = nullptr;
++    int shmFD = -1;
++    size_t shmSize = 0;
+ 
+-namespace qtfb{
+-    class ClientConnection {
+-    public:
+-        ClientConnection(FBKey framebufferID, uint8_t shmType, std::optional<std::tuple<uint16_t, uint16_t>> customResolution = {}, bool nonBlocking = true);
+-        ~ClientConnection();
+-        void sendCompleteUpdate();
+-        void sendPartialUpdate(int x, int y, int w, int h);
+-        unsigned char *shm;
+-        int shmFD;
+-        size_t shmSize;
+-        bool pollServerPacket(struct ServerMessage &message);
+-        unsigned short width() const; unsigned short height() const;
+-
+-        void setRefreshMode(int refreshMode);
+-        int getRefreshMode() const;
+-        void requestFullRefresh();
+-    private:
+-        int fd;
+-        unsigned short _width, _height;
+-        int _refreshMode;
+-        void _send(const struct ClientMessage &message);
+-    };
++private:
++    int fd = -1;
++    unsigned short _width = 0;
++    unsigned short _height = 0;
++    std::atomic_int _refreshMode {DEFAULT_WAVEFORM_MODE};
++    void sendMessage(const ClientMessage &message);
++};
+ 
+-    FBKey getIDFromAppload();
++FBKey getIDFromAppload();
+ }
+diff -ruN '--exclude=.git' a/resources/qml/appload.qml b/resources/qml/appload.qml
+--- a/resources/qml/appload.qml	2026-05-21 23:48:07.000000000 +0800
++++ b/resources/qml/appload.qml	2026-07-20 18:38:00.307263174 +0800
+@@ -1,259 +1,357 @@
+-import QtQuick 2.5
+-import QtQuick.Window 2.2
+-import QtQuick.Controls 2.5
++import QtQuick 2.15
++import QtQuick.Window 2.15
++import QtQuick.Controls 2.15
+ import net.asivery.AppLoad 1.0
+ import net.asivery.Framebuffer 1.0
+ 
+ Rectangle {
+-    id: _appLoadView
++    id: appLoadView
+     anchors.fill: parent
+     color: "#f0f0f0"
+ 
+     property var windowArchetype: Qt.createComponent("window.qml")
+-    property var absoluteRoot: _appLoadView
++    property var absoluteRoot: appLoadView
+     property var virtualKeyboardRef: null
++    property var runningWindows: ({})
++    property var launchPending: ({})
++    property var pidToApp: ({})
++    property string currentForegroundApp: ""
++    property int nextWindowZ: 200
+ 
+     signal requestClose
+ 
+     AppLoadLibrary {
+         id: library
++        onPidDied: function(pid) {
++            const app = appLoadView.pidToApp[String(pid)]
++            if (app !== undefined) {
++                delete appLoadView.pidToApp[String(pid)]
++                RuntimeControl.setAppState(app, "exited")
++                if (appLoadView.currentForegroundApp === app
++                        || appLoadView.currentForegroundApp.length === 0) {
++                    appLoadView.showManager()
++                }
++            }
++        }
+     }
++
++    function publicAppId(id) {
++        return id.indexOf("external::") === 0 ? id.substring(10) : id
++    }
++
++    function externalId(app) {
++        return app.indexOf("external::") === 0 ? app : "external::" + app
++    }
++
+     function getMinResolutionFor(device) {
+-        switch(device) {
+-            case "original": return [400, 533];
+-            case "move": return [400, 688];
++        switch (device) {
++        case "original": return [400, 533]
++        case "move": return [400, 688]
++        default: return [400, 688]
+         }
+     }
++
+     function getResolutionOf(device) {
+-        switch(device) {
+-            case "original": return [1620, 2160];
+-            case "move": return [954, 1696];
++        switch (device) {
++        case "original": return [1620, 2160]
++        case "move": return [954, 1696]
++        default: return [appLoadView.width, appLoadView.height]
+         }
+     }
+ 
+-    function launchWindow(modelData, extraArgs, extraEnv) {
+-        let qtfbKey = -1;
+-        let win;
++    function modelFor(id) {
++        for (const application of library.applications) {
++            if (application.id === id) return application
++        }
++        return null
++    }
++
++    function removeWindow(id, win) {
++        const app = publicAppId(id)
++        const wasForeground = currentForegroundApp === app
++        if (runningWindows[id] === win) delete runningWindows[id]
++        delete launchPending[id]
++        RuntimeControl.setAppState(app, "exited")
++        win.destroy()
++        if (wasForeground || currentForegroundApp.length === 0) showManager()
++    }
+ 
+-        if(modelData.externalType === 2 /* EXTERNAL_QTFB */) {
+-            qtfbKey = Math.floor(Math.random() * 10000000);
++    function launchWindow(modelData, extraArgs, extraEnv) {
++        const id = modelData.id
++        const existing = runningWindows[id]
++        if (existing && !existing.closing) {
++            existing.visible = true
++            existing.z = ++nextWindowZ
++            if (!existing.fullscreen) existing.maximize()
++            if (existing.frameReady) {
++                RuntimeControl.recordAppEvent(publicAppId(id), "qtfb-connected")
++                RuntimeControl.recordAppEvent(publicAppId(id), "first-frame")
++            }
++            RuntimeControl.setAppState(publicAppId(id), existing.frameReady ? "foreground" : "starting")
++            RuntimeControl.setManagerVisible(false)
++            currentForegroundApp = publicAppId(id)
++            return existing
+         }
+-        if(modelData.externalType != 1 /* EXTERNAL_NOGUI */) {
+-            /* Create a new window*/
+-            if(library.isFrontendRunningFor(modelData.id) && !modelData.canHaveMultipleFrontends) {
+-                console.log("Cannot load multiple frontends for app. It doesn't support it.");
+-                return;
++        if (launchPending[id]) return null
++        launchPending[id] = true
++
++        let qtfbKey = -1
++        let win = null
++        if (modelData.externalType === 2) qtfbKey = Math.floor(Math.random() * 10000000) + 1
++
++        if (modelData.externalType !== 1) {
++            if (library.isFrontendRunningFor(id) && !modelData.canHaveMultipleFrontends) {
++                delete launchPending[id]
++                return null
+             }
+-            if(windowArchetype.status !== Component.Ready) {
+-                console.log("Window object not ready: " + windowArchetype.status);
+-                console.log(windowArchetype.errorString());
+-                return;
++            if (windowArchetype.status !== Component.Ready) {
++                console.error(windowArchetype.errorString())
++                delete launchPending[id]
++                return null
+             }
+-            win = windowArchetype.createObject(absoluteRoot, { x: 100, y: 100 });
+-            if(win == null) {
+-                console.log("Failed to instantiate a window object!");
+-                return;
++            win = windowArchetype.createObject(absoluteRoot, { x: 0, y: 0 })
++            if (!win) {
++                delete launchPending[id]
++                return null
+             }
++            win.appName = modelData.name
++            win.appIdentifier = id
++            win.supportsScaling = modelData.supportsScaling
++            win.virtualKeyboardLayout = modelData.virtualKeyboardLayout
++            win.disablesWindowedMode = modelData.disablesWindowedMode
++            win.virtualKeyboardRef = appLoadView.virtualKeyboardRef
++            win.globalWidth = Qt.binding(function() { return appLoadView.width })
++            win.globalHeight = Qt.binding(function() { return appLoadView.height })
++
++            const ratioId = appLoadView.width < appLoadView.height
++                ? Math.round(100 * appLoadView.width / appLoadView.height)
++                : Math.round(100 * appLoadView.height / appLoadView.width)
++            const deviceRatio = ratioId === 75 ? "original" : "move"
++            const realRatio = modelData.aspectRatio === "auto" ? deviceRatio : modelData.aspectRatio
++            const minimum = getMinResolutionFor(realRatio)
++            const content = getResolutionOf(realRatio)
++            win.minWidth = win.implicitWidth = minimum[0]
++            win.minHeight = win.implicitHeight = minimum[1]
++            win.scaledContentWidth = content[0]
++            win.scaledContentHeight = content[1]
++            win.qtfbKey = qtfbKey
++            win.z = ++nextWindowZ
++            win.closed.connect(function() { removeWindow(id, win) })
++            win.ready.connect(function() {
++                win.frameReady = true
++                RuntimeControl.recordAppEvent(publicAppId(id), "first-frame")
++                RuntimeControl.setAppState(publicAppId(id), "foreground")
++            })
++            runningWindows[id] = win
++        }
+ 
+-            win.appName = modelData.name;
+-            win.supportsScaling = modelData.supportsScaling;
+-            win.virtualKeyboardLayout = modelData.virtualKeyboardLayout;
+-            win.disablesWindowedMode = modelData.disablesWindowedMode;
+-
+-            win.virtualKeyboardRef = _appLoadView.virtualKeyboardRef;
+-
+-            win.globalWidth = Qt.binding(function() { return _appLoadView.width; })
+-            win.globalHeight = Qt.binding(function() { return _appLoadView.height; })
+-            let deviceAspectRatio, applicationAspectRatio = modelData.aspectRatio;
+-            const aspectRatioId = _appLoadView.width < _appLoadView.height ? Math.round(100 * _appLoadView.width / _appLoadView.height) : Math.round(100 * _appLoadView.height / _appLoadView.width);
+-            switch(aspectRatioId) {
+-                case 75:
+-                    deviceAspectRatio = "original";
+-                    break;
+-                case 56:
+-                    deviceAspectRatio = "move";
+-                    break
++        if (modelData.externalType === 0) {
++            win.loadApplication(id)
++        } else {
++            const pid = library.launchExternal(id, qtfbKey, extraArgs || [], extraEnv || {})
++            if (pid < 0) {
++                if (win) win.requestClose()
++                delete launchPending[id]
++                RuntimeControl.setAppError(publicAppId(id), "launch_failed")
++                RuntimeControl.setAppState(publicAppId(id), "crashed")
++                RuntimeControl.requestClose(publicAppId(id))
++                showManager()
++                return null
+             }
+-            const realAspectRatio = applicationAspectRatio == "auto" ? deviceAspectRatio : applicationAspectRatio;
+-            console.log(`Application starting on device with ${deviceAspectRatio} aspect ratio (${aspectRatioId}). Real aspect ratio of the application is going to be ${realAspectRatio}`);
+-            [win.minWidth, win.minHeight] = [win.implicitWidth, win.implicitHeight] = getMinResolutionFor(realAspectRatio);
+-            [win.scaledContentWidth, win.scaledContentHeight] = getResolutionOf(realAspectRatio);
++            if (win) win.appPid = pid
++            pidToApp[String(pid)] = publicAppId(id)
++        }
+ 
+-            win.qtfbKey = qtfbKey;
++        delete launchPending[id]
++        RuntimeControl.setAppState(publicAppId(id), "starting")
++        RuntimeControl.setManagerVisible(false)
++        currentForegroundApp = publicAppId(id)
++        return win
++    }
+ 
+-            win.closed.connect(() => win.destroy());
++    function openManagedApp(app, openPath) {
++        const id = externalId(app)
++        const existing = runningWindows[id]
++        if (!existing || existing.closing) RuntimeControl.beginAppLaunch(app)
++        const model = modelFor(id)
++        if (!model) {
++            RuntimeControl.setAppError(publicAppId(id), "app_unavailable")
++            RuntimeControl.setAppState(publicAppId(id), "unavailable")
++            RuntimeControl.requestClose(publicAppId(id))
++            showManager()
++            return
++        }
++        const args = openPath && openPath.length > 0 ? [openPath] : []
++        const win = launchWindow(model, args, {})
++        if (win && !win.fullscreen) win.maximize()
++    }
+ 
++    function closeManagedApp(app) {
++        const id = externalId(app)
++        const win = runningWindows[id]
++        RuntimeControl.setAppState(publicAppId(id), "stopping")
++        if (win) {
++            win.stopUnderlying()
++            win.requestClose()
++            return
+         }
+-        if(modelData.externalType == 0 /* INTERNAL */) {
+-            win.loadApplication(modelData.id);
+-        } else if(modelData.externalType == 1 /* EXTERNAL_NOGUI */ || modelData.externalType == 2 /* EXTERNAL_QTFB */) {
+-            win.appPid = library.launchExternal(modelData.id, qtfbKey, extraArgs || [], extraEnv || {});
++        for (const pid in pidToApp) {
++            if (pidToApp[pid] === publicAppId(id)) library.terminateExternal(Number(pid))
+         }
+-
+-        return win;
+     }
+ 
++    function showManager() {
++        for (const id in runningWindows) {
++            const win = runningWindows[id]
++            if (win && !win.closing) {
++                win.visible = false
++                RuntimeControl.setAppState(publicAppId(id), "background")
++            }
++        }
++        RuntimeControl.setManagerVisible(true)
++        currentForegroundApp = ""
++    }
+ 
+     Connections {
+         target: AppLoadLauncher
+         function onRequestLaunch(id, args, env, windowed) {
+-            for(let i of library.applications) {
+-                if(i.id === id) {
+-                    console.log("Launching: " + id);
+-                    const window = launchWindow(i, args, env);
+-                    if(i.disablesWindowedMode || !windowed) window.maximize();
+-                    return;
+-                }
+-            }
+-            console.log(`No application installed with id: ${id}`);
++            const model = modelFor(id)
++            if (!model) return
++            const existing = runningWindows[id]
++            if (!existing || existing.closing) RuntimeControl.beginAppLaunch(publicAppId(id))
++            const win = launchWindow(model, args, env)
++            if (win && (model.disablesWindowedMode || !windowed) && !win.fullscreen) win.maximize()
+         }
+     }
+ 
+-    Rectangle {
++    Connections {
++        target: RuntimeControl
++        function onOpenAppRequested(app, openPath) { openManagedApp(app, openPath) }
++        function onCloseAppRequested(app) { closeManagedApp(app) }
++        function onShowManagerRequested() { showManager() }
++    }
++
++    MouseArea {
+         anchors.fill: parent
+-        MouseArea {
+-            // Eat the events.
+-            anchors.fill: parent
+-        }
++    }
++
++    Rectangle {
++        id: header
++        anchors.top: parent.top
++        width: parent.width
++        height: 100
++        color: "white"
+ 
+         Rectangle {
+-            id: header
+             anchors.top: parent.top
+-            width: parent.width
+-            height: 100
++            anchors.left: parent.left
++            anchors.topMargin: 20
++            anchors.leftMargin: 20
++            height: 64
++            width: 250
++            color: backMouse.pressed ? "black" : "white"
++            border.color: "black"
++            border.width: 2
++            MouseArea {
++                id: backMouse
++                anchors.fill: parent
++                onPressed: RuntimeControl.recordUiEvent("system-button", "", "pressed")
++                onClicked: RuntimeControl.requestSystem()
++            }
++            Text {
++                anchors.centerIn: parent
++                text: qsTr("Back")
++                color: backMouse.pressed ? "white" : "black"
++                font.pointSize: 24
++            }
++        }
+ 
+-            Rectangle {
+-                anchors.topMargin: 25
+-                anchors.leftMargin: 25
+-                anchors.top: parent.top
+-                anchors.left: parent.left
+-                height: 60
+-                width: 250
++        Rectangle {
++            anchors.top: parent.top
++            anchors.right: parent.right
++            anchors.topMargin: 20
++            anchors.rightMargin: 20
++            height: 64
++            width: 250
++            color: reloadMouse.pressed ? "black" : "white"
++            border.color: "black"
++            border.width: 2
++            MouseArea {
++                id: reloadMouse
++                anchors.fill: parent
++                onClicked: library.reloadList()
++            }
++            Text {
++                anchors.centerIn: parent
++                text: qsTr("Reload")
++                color: reloadMouse.pressed ? "white" : "black"
++                font.pointSize: 24
++            }
++        }
+ 
+-                MouseArea {
+-                    anchors.fill: parent
+-                    onClicked: () => {
+-                        _appLoadView.requestClose();
+-                    }
+-                }
++        Text {
++            anchors.fill: parent
++            text: "Remagic"
++            font.pointSize: 40
++            horizontalAlignment: Text.AlignHCenter
++            verticalAlignment: Text.AlignVCenter
++        }
++    }
+ 
+-                Image {
+-                    id: arrowBack
+-                    source: "qrc:/appload/icons/exit"
+-                    sourceSize.width: 60
+-                    sourceSize.height: 60
+-                    anchors.left: parent.left
+-                }
+-                Text {
+-                    anchors.left: arrowBack.right
+-                    anchors.leftMargin: 10
+-                    anchors.verticalCenter: parent.verticalCenter
+-                    font.pointSize: 24
+-                    text: qsTr("Back")
+-                }
++    GridView {
++        id: gridView
++        anchors.top: header.bottom
++        anchors.topMargin: 20
++        anchors.horizontalCenter: parent.horizontalCenter
++        width: Math.floor((parent.width - 20) / cellWidth) * cellWidth
++        height: parent.height - header.height - 20
++        model: library.applications
++        cellWidth: 220
++        cellHeight: 220
++        interactive: false
++
++        delegate: Rectangle {
++            required property var modelData
++            width: gridView.cellWidth - 20
++            height: gridView.cellHeight - 20
++            color: launchMouse.pressed ? "black" : "white"
++            border.color: "black"
++            border.width: 2
++
++            Timer {
++                id: launchDelay
++                interval: 50
++                repeat: false
++                onTriggered: RuntimeControl.requestLaunch(publicAppId(modelData.id), "")
+             }
+-
+-            Rectangle {
+-                id: refreshButton
+-                anchors.topMargin: 25
+-                anchors.rightMargin: 25
++            Image {
++                id: appIcon
+                 anchors.top: parent.top
+-                anchors.right: parent.right
+-                height: 60
+-                width: 250
+-                property string reloadIconSource: "qrc:/appload/icons/reload"
+-
+-                MouseArea {
+-                    anchors.fill: parent
+-                    onClicked: () => {
+-                        library.reloadList();
+-                        refreshButton.reloadIconSource = "qrc:/appload/icons/check";
+-                        reloadIconSwitchBackTimer.start();
+-                    }
+-                }
+-
+-                Timer {
+-                    id: reloadIconSwitchBackTimer
+-                    interval: 1000
+-                    onTriggered: () => refreshButton.reloadIconSource = "qrc:/appload/icons/reload"
+-                }
+-
+-                Image {
+-                    id: reloadIcon
+-                    source: refreshButton.reloadIconSource
+-                    sourceSize.width: 60
+-                    sourceSize.height: 60
+-                    anchors.right: parent.right
+-                }
+-                Text {
+-                    anchors.right: reloadIcon.left
+-                    anchors.rightMargin: 10
+-                    anchors.verticalCenter: parent.verticalCenter
+-                    font.pointSize: 24
+-                    text: qsTr("Reload")
+-                }
++                anchors.horizontalCenter: parent.horizontalCenter
++                anchors.topMargin: 10
++                source: modelData.icon
++                width: 145
++                height: 145
++                opacity: launchMouse.pressed ? 0.35 : 1.0
+             }
+-
+             Text {
+-                anchors.fill: parent
+-                text: "AppLoad"
+-                font.pointSize: 40
++                anchors.left: parent.left
++                anchors.right: parent.right
++                anchors.top: appIcon.bottom
++                anchors.topMargin: 5
++                text: modelData.name
++                color: launchMouse.pressed ? "white" : "black"
++                font.pointSize: 24
++                wrapMode: Text.WordWrap
+                 horizontalAlignment: Text.AlignHCenter
+-                verticalAlignment: Text.AlignVCenter
++                elide: Text.ElideRight
+             }
+-        }
+-        GridView {
+-            anchors.top: header.bottom
+-            anchors.topMargin: 20
+-            anchors.horizontalCenter: parent.horizontalCenter
+-            width: Math.floor((parent.width - 20) / cellWidth) * cellWidth
+-            height: parent.height - 100
+-            id: gridView
+-            model: library.applications
+-            cellWidth: 200 + 20
+-            cellHeight: 200 + 20
+-            interactive: false
+-
+-            delegate: Rectangle {
+-                required property var modelData
+-                anchors.margins: 10
+-                width: gridView.cellWidth - 20
+-                height: gridView.cellHeight - 20
+-
+-                Image {
+-                    anchors.top: parent.top
+-                    anchors.horizontalCenter: parent.horizontalCenter
+-                    anchors.margins: 10
+-                    id: appIcon
+-                    source: modelData.icon
+-                    width: 150
+-                    height: 150
+-                }
+-
+-                Text {
+-                    anchors.left: parent.left
+-                    anchors.right: parent.right
+-                    anchors.top: appIcon.bottom
+-                    wrapMode: Text.WordWrap
+-                    horizontalAlignment: Text.AlignHCenter
+-                    anchors.topMargin: 5
+-                    text: modelData.name
+-                    font.pointSize: 24
+-                    elide: Text.ElideRight
+-                }
+-
+-                MouseArea {
+-                    anchors.fill: parent
+-                    onClicked: () => {
+-                        launchWindow(modelData).maximize();
+-                    }
+-                    onPressAndHold: () => {
+-                        const window = launchWindow(modelData);
+-                        if(modelData.disablesWindowedMode) {
+-                            window.maximize();
+-                        }
+-                    }
+-                }
++            MouseArea {
++                id: launchMouse
++                anchors.fill: parent
++                onPressed: RuntimeControl.recordUiEvent("app-card", publicAppId(modelData.id), "pressed")
++                onClicked: launchDelay.restart()
++                onCanceled: launchDelay.stop()
+             }
+         }
+     }
+diff -ruN '--exclude=.git' a/resources/qml/window.qml b/resources/qml/window.qml
+--- a/resources/qml/window.qml	2026-05-21 23:48:07.000000000 +0800
++++ b/resources/qml/window.qml	2026-07-20 18:25:20.656979177 +0800
+@@ -29,6 +29,10 @@
+     property bool minimized: false
+     property bool fullscreen: false
+     property bool forceTopBarVisible: false
++    property string appIdentifier: ""
++    property bool closing: false
++    property bool frameReady: false
++    property bool everActive: false
+     // This is defined like that so as it doesn't interfere with minimization
+     property var _height: root.globalHeight / 3
+     property var beforeFullscreenData: null
+@@ -44,6 +48,12 @@
+ 
+     // External I/O from this component:
+     signal closed
++    signal ready
++    function requestClose() {
++        if(closing) return
++        closing = true
++        closed()
++    }
+     function loadApplication(appId) {
+         coord.loadApplication(appId);
+     }
+@@ -81,7 +91,7 @@
+         onPidDied: (pid) => {
+             if(pid == appPid) {
+                 coord.close();
+-                root.closed();
++                root.requestClose();
+             }
+         }
+     }
+@@ -92,6 +102,10 @@
+         }
+     }
+ 
++    function publicAppIdentifier() {
++        return appIdentifier.indexOf("external::") === 0 ? appIdentifier.substring(10) : appIdentifier
++    }
++
+     states: [
+         State {
+             name: "minimized"
+@@ -220,29 +234,21 @@
+             anchors.right: parent.right
+             border.width: 2
+             border.color: "black"
+-            color: parent.color
++            color: closeMouse.pressed ? "black" : "white"
+ 
+             Text {
+                 anchors.fill: parent
+                 horizontalAlignment: Text.AlignHCenter
+                 verticalAlignment: Text.AlignVCenter
+                 text: "X"
++                color: closeMouse.pressed ? "white" : "black"
+                 font.pointSize: 20
+             }
+ 
+             MouseArea {
++                id: closeMouse
+                 anchors.fill: parent
+-                onClicked: () => {
+-                    coord.close();
+-                    root.closed();
+-                    stopUnderlying();
+-                }
+-
+-                onPressAndHold: () => {
+-                    coord.terminate();
+-                    root.closed();
+-                    stopUnderlying();
+-                }
++                onClicked: RuntimeControl.requestClose(root.publicAppIdentifier())
+             }
+         }
+         Rectangle {
+@@ -252,7 +258,7 @@
+             anchors.right: closeButton.left
+             border.width: 2
+             border.color: "black"
+-            color: parent.color
++            color: maximizeMouse.pressed ? "black" : "white"
+             visible: !root.disablesWindowedMode
+ 
+             Text {
+@@ -260,10 +266,12 @@
+                 horizontalAlignment: Text.AlignHCenter
+                 verticalAlignment: Text.AlignVCenter
+                 text: fullscreen ? "▭" : "□"
++                color: maximizeMouse.pressed ? "white" : "black"
+                 font.pointSize: 20
+             }
+ 
+             MouseArea {
++                id: maximizeMouse
+                 anchors.fill: parent
+                 onClicked: () => {
+                     maximize()
+@@ -277,7 +285,7 @@
+             anchors.right: maximizeButton.left
+             border.width: 2
+             border.color: "black"
+-            color: parent.color
++            color: minimizeMouse.pressed ? "black" : "white"
+             visible: !root.disablesWindowedMode
+ 
+             Text {
+@@ -285,15 +293,14 @@
+                 horizontalAlignment: Text.AlignHCenter
+                 verticalAlignment: Text.AlignVCenter
+                 text: "_"
++                color: minimizeMouse.pressed ? "white" : "black"
+                 font.pointSize: 20
+             }
+ 
+             MouseArea {
++                id: minimizeMouse
+                 anchors.fill: parent
+-                onClicked: () => {
+-                    if(fullscreen) maximize(); // Cannot have a full screen minimized app.
+-                    minimized = !minimized;
+-                }
++                onClicked: RuntimeControl.requestPark()
+             }
+         }
+ 
+@@ -394,12 +401,19 @@
+             focus: qtfbKey != -1
+ 
+             onActiveChanged: () => {
+-                if(!windowCanvas.active) {
+-                    // Application closed.
+-                    root.closed();
++                if(windowCanvas.active) {
++                    root.everActive = true
++                    RuntimeControl.recordAppEvent(root.publicAppIdentifier(), "qtfb-connected")
++                }
++                else if(root.everActive) {
++                    RuntimeControl.recordAppEvent(root.publicAppIdentifier(), "qtfb-disconnected")
++                    root.requestClose()
+                 }
+             }
+ 
++            onFirstFrameReady: root.ready()
++            onRequestFullRefresh: windowCanvas.fullRefresh()
++
+             onDragDown: () => {
+                 swipeFromTheTop();
+             }
+@@ -417,7 +431,7 @@
+                 }
+                 if(unloadingFunction) unloadingFunction();
+                 root.virtualKeyboardRef.active = false;
+-                root.closed();
++                root.requestClose();
+             }
+         }
+ 
+diff -ruN '--exclude=.git' a/shim/src/connection.cpp b/shim/src/connection.cpp
+--- a/shim/src/connection.cpp	2026-05-21 23:48:07.000000000 +0800
++++ b/shim/src/connection.cpp	2026-07-20 18:16:27.792934584 +0800
+@@ -24,6 +24,13 @@
+         shmFD = clientConnection->shmFD;
+         shmMemory = clientConnection->shm;
+ 
+-        atexit([](){ if(initiatorPID == getpid()) delete clientConnection; });
+     }
+ }
++
++void disconnectShim(){
++    if(initiatorPID != getpid()) return;
++    delete clientConnection;
++    clientConnection = NULL;
++    shmFD = -1;
++    shmMemory = NULL;
++}
+diff -ruN '--exclude=.git' a/shim/src/connection.h b/shim/src/connection.h
+--- a/shim/src/connection.h	2026-05-21 23:48:07.000000000 +0800
++++ b/shim/src/connection.h	2026-07-20 18:16:27.755932915 +0800
+@@ -8,4 +8,6 @@
+ extern qtfb::ClientConnection *clientConnection;
+ extern void *shmMemory;
+ extern int shmFD;
++extern int initiatorPID;
+ void connectShim();
++void disconnectShim();
+diff -ruN '--exclude=.git' a/shim/src/input-shim.cpp b/shim/src/input-shim.cpp
+--- a/shim/src/input-shim.cpp	2026-05-21 23:48:07.000000000 +0800
++++ b/shim/src/input-shim.cpp	2026-07-20 18:18:44.522103610 +0800
+@@ -2,8 +2,11 @@
+ #include "input-shim.h"
+ #include "shim.h"
+ #include <algorithm>
++#include <atomic>
++#include <chrono>
+ #include <deque>
+ #include <map>
++#include <mutex>
+ #include <cstring>
+ #include <condition_variable>
+ #include <fcntl.h>
+@@ -57,7 +60,10 @@
+ extern std::set<fileident_t> *identDigitizer, *identTouchScreen, *identButtons, *identVirtualKeyboard, *identNull;
+ 
+ struct TouchSlotState {
+-    int x, y;
++    int slot;
++    int trackingId;
++    int x;
++    int y;
+ };
+ 
+ std::map<int, TouchSlotState> touchStates;
+@@ -69,6 +75,10 @@
+ #define QUEUE_NULL 5
+ 
+ struct PIDEventQueue *pidEventQueue;
++static std::mutex eventQueueMutex;
++static int nextTrackingId = 1;
++static std::thread *pollingThread = nullptr;
++static std::atomic_bool pollingThreadRunning {false};
+ 
+ static struct input_event evt(unsigned short type, unsigned short code, int value) {
+ #if (__BITS_PER_LONG != 32)
+@@ -136,6 +146,7 @@
+ }
+ 
+ static void pushToAll(int queueType, struct input_event evt) {
++    const std::lock_guard<std::mutex> lock(eventQueueMutex);
+     struct PIDEventQueue *current = pidEventQueue;
+     while(current != NULL) {
+         for(auto &ref : current->eventQueue) {
+@@ -149,11 +160,13 @@
+ 
+ static void pollInputUpdates() {
+     qtfb::ServerMessage message;
+-    if(clientConnection) {
+-        if(clientConnection->pollServerPacket(message) && message.type == MESSAGE_USERINPUT) {
++    if(!clientConnection) return;
++    if(!clientConnection->pollServerPacket(message, 250)) {
++        if(pollingThreadRunning.load()) std::this_thread::sleep_for(std::chrono::milliseconds(50));
++        return;
++    }
++    if(message.type == MESSAGE_USERINPUT) {
+             // Did we get a packet?
+-            char state_a;
+-
+             int xTranslate, yTranslate, dTranslate;
+             switch(shimInputType) {
+                 case SHIM_INPUT_RM1:
+@@ -210,45 +223,64 @@
+                     break;
+             }
+ 
+-            CERR << "[QTFB SHIM INPUT]: " << (int) message.userInput.inputType << ", " << message.userInput.x << ", " << message.userInput.y << " (Translated to " << xTranslate << ", " << yTranslate << ")" << std::endl;
+             switch(message.userInput.inputType) {
+-                case INPUT_TOUCH_PRESS:
+-                    state_a = 1;
+-                    pushToAll(QUEUE_TOUCH, evt(EV_ABS, ABS_MT_SLOT, 1));
+-                    pushToAll(QUEUE_TOUCH, evt(EV_ABS, ABS_MT_TRACKING_ID, 50));
+-                    pushToAll(QUEUE_TOUCH, evt(EV_ABS, ABS_MT_PRESSURE, 100));
+-                    goto sendpos;
+-                case INPUT_TOUCH_RELEASE:
+-                    state_a = 0;
+-                    pushToAll(QUEUE_TOUCH, evt(EV_ABS, ABS_MT_TRACKING_ID, -1));
+-                    sendpos:
+-                    if(state_a != 0) {
+-                        pushToAll(QUEUE_TOUCH, evt(EV_ABS, ABS_MT_POSITION_X, xTranslate));
+-                        pushToAll(QUEUE_TOUCH, evt(EV_ABS, ABS_MT_POSITION_Y, yTranslate));
+-                    }
+-                    if(state_a == 1 || state_a == 0) {
+-                        pushToAll(QUEUE_TOUCH, evt(EV_KEY, BTN_TOUCH, state_a));
++                case INPUT_TOUCH_PRESS: {
++                    if(touchStates.find(message.userInput.devId) != touchStates.end()) break;
++                    bool occupied[10] = {};
++                    for(const auto &[id, state] : touchStates) {
++                        (void) id;
++                        if(state.slot >= 0 && state.slot < 10) occupied[state.slot] = true;
+                     }
++                    int slot = 0;
++                    while(slot < 10 && occupied[slot]) ++slot;
++                    if(slot == 10) break;
++                    const int trackingId = nextTrackingId++;
++                    touchStates.emplace(message.userInput.devId,
++                                        TouchSlotState{slot, trackingId, xTranslate, yTranslate});
++                    pushToAll(QUEUE_TOUCH, evt(EV_ABS, ABS_MT_SLOT, slot));
++                    pushToAll(QUEUE_TOUCH, evt(EV_ABS, ABS_MT_TRACKING_ID, trackingId));
++                    pushToAll(QUEUE_TOUCH, evt(EV_ABS, ABS_MT_PRESSURE, 100));
++                    pushToAll(QUEUE_TOUCH, evt(EV_ABS, ABS_MT_POSITION_X, xTranslate));
++                    pushToAll(QUEUE_TOUCH, evt(EV_ABS, ABS_MT_POSITION_Y, yTranslate));
++                    pushToAll(QUEUE_TOUCH, evt(EV_KEY, BTN_TOUCH, 1));
+                     pushToAll(QUEUE_TOUCH, evt(EV_SYN, SYN_REPORT, 0));
+                     break;
+-                case INPUT_TOUCH_UPDATE:{
+-                    state_a = 2;
+-                    goto sendpos;
++                }
++                case INPUT_TOUCH_UPDATE: {
++                    auto touch = touchStates.find(message.userInput.devId);
++                    if(touch == touchStates.end()) break;
++                    touch->second.x = xTranslate;
++                    touch->second.y = yTranslate;
++                    pushToAll(QUEUE_TOUCH, evt(EV_ABS, ABS_MT_SLOT, touch->second.slot));
++                    pushToAll(QUEUE_TOUCH, evt(EV_ABS, ABS_MT_PRESSURE, 100));
++                    pushToAll(QUEUE_TOUCH, evt(EV_ABS, ABS_MT_POSITION_X, xTranslate));
++                    pushToAll(QUEUE_TOUCH, evt(EV_ABS, ABS_MT_POSITION_Y, yTranslate));
++                    pushToAll(QUEUE_TOUCH, evt(EV_SYN, SYN_REPORT, 0));
++                    break;
++                }
++                case INPUT_TOUCH_RELEASE: {
++                    auto touch = touchStates.find(message.userInput.devId);
++                    if(touch == touchStates.end()) break;
++                    pushToAll(QUEUE_TOUCH, evt(EV_ABS, ABS_MT_SLOT, touch->second.slot));
++                    pushToAll(QUEUE_TOUCH, evt(EV_ABS, ABS_MT_TRACKING_ID, -1));
++                    touchStates.erase(touch);
++                    pushToAll(QUEUE_TOUCH, evt(EV_KEY, BTN_TOUCH, touchStates.empty() ? 0 : 1));
++                    pushToAll(QUEUE_TOUCH, evt(EV_SYN, SYN_REPORT, 0));
+                     break;
+                 }
+ 
+ 
+ 
+                 case INPUT_PEN_PRESS:
+-                    pushToAll(QUEUE_PEN, evt(EV_KEY, BTN_TOOL_PEN, 1));
++                    pushToAll(QUEUE_PEN, evt(EV_KEY, message.userInput.devId == 1 ? BTN_TOOL_RUBBER : BTN_TOOL_PEN, 1));
+                     pushToAll(QUEUE_PEN, evt(EV_KEY, BTN_TOUCH, 1));
+                     goto pen_fall;
+                 case INPUT_PEN_RELEASE:
+-                    pushToAll(QUEUE_PEN, evt(EV_KEY, BTN_TOOL_PEN, 1));
++                    pushToAll(QUEUE_PEN, evt(EV_KEY, message.userInput.devId == 1 ? BTN_TOOL_RUBBER : BTN_TOOL_PEN, 1));
+                     pushToAll(QUEUE_PEN, evt(EV_KEY, BTN_TOUCH, 0));
+                     goto pen_fall;
+                 case INPUT_PEN_UPDATE:
+-                    pushToAll(QUEUE_PEN, evt(EV_KEY, BTN_TOOL_PEN, 1));
++                    pushToAll(QUEUE_PEN, evt(EV_KEY, message.userInput.devId == 1 ? BTN_TOOL_RUBBER : BTN_TOOL_PEN, 1));
+                 pen_fall:
+                     pushToAll(QUEUE_PEN, evt(EV_ABS, ABS_X, xTranslate));
+                     pushToAll(QUEUE_PEN, evt(EV_ABS, ABS_Y, yTranslate));
+@@ -279,36 +311,36 @@
+ 
+                 default: break;
+             }
+-        }
+     }
+ }
+ 
+-static std::thread pollingThread;
+-static bool pollingThreadRunning;
+-
+-static void killPollingThread() {
+-    pollingThreadRunning = false;
+-    // pollingThreadRunning.join();
+-}
+-
+ void startPollingThread() {
+-    pollingThreadRunning = true;
+-    pollingThread = std::thread([&]() {
+-        while(pollingThreadRunning) {
++    if(pollingThreadRunning.exchange(true)) return;
++    pollingThread = new std::thread([]() {
++        while(pollingThreadRunning.load()) {
+             pollInputUpdates();
+         }
+     });
++}
+ 
+-    atexit(killPollingThread);
++void stopPollingThread() {
++    pollingThreadRunning.store(false);
++    if(clientConnection) clientConnection->interruptReceive();
++    if(pollingThread && pollingThread->joinable()) pollingThread->join();
++    delete pollingThread;
++    pollingThread = nullptr;
+ }
+ 
+ static int createInEventMap(int type, int flags) {
+     int _pipe[2];
+-    if(pipe2(_pipe, flags & O_NONBLOCK) == -1){
++    if(pipe2(_pipe, O_CLOEXEC | (flags & O_NONBLOCK)) == -1){
+         CERR << "Failed to create pipe: " << errno << std::endl;
+         abort();
+     }
++    const int writeFlags = fcntl(_pipe[1], F_GETFL, 0);
++    if(writeFlags >= 0) fcntl(_pipe[1], F_SETFL, writeFlags | O_NONBLOCK);
+     CERR << "Create evqueue pipe r:" << _pipe[0] << ", w:" << _pipe[1] << std::endl;
++    const std::lock_guard<std::mutex> lock(eventQueueMutex);
+     pidEventQueue->eventQueue.try_emplace(_pipe[0], type, _pipe[0], _pipe[1]);
+     return _pipe[0];
+ }
+@@ -356,6 +388,7 @@
+     CERR << "Shim close " << fd << std::endl;
+     // Only close in own event queue.
+     // TODO: Should it then be migrated downwards to children??
++    const std::lock_guard<std::mutex> lock(eventQueueMutex);
+     auto position = pidEventQueue->eventQueue.find(fd);
+     if(position != pidEventQueue->eventQueue.end()) {
+         realClose(position->second.queueRead);
+@@ -417,6 +450,7 @@
+ MAXFUNC(TOUCH_Y)
+ 
+ int inputShimIoctl(int fd, unsigned long request, char *ptr, int (*realIoctl)(int fd, unsigned long request, char *ptr)) {
++    const std::lock_guard<std::mutex> lock(eventQueueMutex);
+     PerFDEventQueue *ref = NULL;
+     PIDEventQueue *current = pidEventQueue;
+     while(current) {
+@@ -460,7 +494,15 @@
+             struct input_absinfo *absinfo = reinterpret_cast<struct input_absinfo*>(ptr);
+             std::memset(absinfo, 0, sizeof(absinfo));
+             // int status = realIoctl(fd, request, ptr);
+-            absinfo->maximum = 3;
++            absinfo->maximum = 9;
++            return 0;
++        }
++        if (IS_MATCHING_IOCTL_S(_IOC_READ, 'E', 0x40 + ABS_MT_TRACKING_ID, sizeof(input_absinfo))) {
++            struct input_absinfo *absinfo = reinterpret_cast<struct input_absinfo*>(ptr);
++            std::memset(absinfo, 0, sizeof(input_absinfo));
++            absinfo->minimum = 0;
++            absinfo->maximum = 65535;
++            return 0;
+         }
+ 
+         if(IS_MATCHING_IOCTL(_IOC_READ, 'E', 0x6)) {
+@@ -496,6 +538,10 @@
+             SETBIT(ABS_MT_TOOL_TYPE, bits);
+             SETBIT(ABS_MT_TRACKING_ID, bits);
+         }
++        if (cmdDir == _IOC_READ && cmdType == 'E' && cmdNr == (0x20 + EV_KEY)) {
++            unsigned long *bits = (unsigned long*) ptr;
++            SETBIT(BTN_TOUCH, bits);
++        }
+     }
+ 
+     if(ref->queueType == QUEUE_PEN) {
+diff -ruN '--exclude=.git' a/shim/src/input-shim.h b/shim/src/input-shim.h
+--- a/shim/src/input-shim.h	2026-05-21 23:48:07.000000000 +0800
++++ b/shim/src/input-shim.h	2026-07-20 18:16:27.828936208 +0800
+@@ -13,6 +13,7 @@
+ int inputShimClose(int fd, int (*realClose)(int fd));
+ int inputShimIoctl(int fd, unsigned long request, char *ptr, int (*realFopen)(int fd, unsigned long request, char *ptr));
+ void startPollingThread();
++void stopPollingThread();
+ 
+ 
+ struct PerFDEventQueue {
+@@ -26,4 +27,4 @@
+ extern struct PIDEventQueue {
+     std::map<int, PerFDEventQueue> eventQueue;
+     struct PIDEventQueue *next;
+-} *pidEventQueue;
+\ No newline at end of file
++} *pidEventQueue;
+diff -ruN '--exclude=.git' a/shim/src/shim.cpp b/shim/src/shim.cpp
+--- a/shim/src/shim.cpp	2026-05-21 23:48:07.000000000 +0800
++++ b/shim/src/shim.cpp	2026-07-20 18:18:24.015178332 +0800
+@@ -184,6 +184,7 @@
+         } else if(strcmp(fbMode, "N_RGB565") == 0) {
+             switch(realDeviceType) {
+                 case DEV_TYPE_RM1:
++                case DEV_TYPE_RM2:
+                     shimType = FBFMT_RM2FB;
+                     break;
+                 case DEV_TYPE_RMPP:
+@@ -309,6 +310,12 @@
+     startPollingThread();
+ }
+ 
++void __attribute__((destructor)) __destruct () {
++    if(initiatorPID != getpid()) return;
++    stopPollingThread();
++    disconnectShim();
++}
++
+ int spoofModelFD() {
+     CERR << "Connected!" << std::endl;
+     int modelSpoofFD = memfd_create("Spoof Model Number", 0);
+diff -ruN '--exclude=.git' a/src/AppLibrary.h b/src/AppLibrary.h
+--- a/src/AppLibrary.h	2026-05-21 23:48:07.000000000 +0800
++++ b/src/AppLibrary.h	2026-07-20 18:10:35.428039950 +0800
+@@ -121,7 +121,7 @@
+             QMap<QString, QString> extraEnv;
+             for(const auto &ref : _extraArgs) extraArgs.append(ref.toString());
+             for(const auto [key, value] : _extraEnv.asKeyValueRange()) extraEnv.insert(key, value.toString());
+-            return ref->second->launch(qtfbKey, extraArgs, extraEnv);
++            return ref->second->launch(appID, qtfbKey, extraArgs, extraEnv);
+         }
+ 
+         return -1;
+@@ -131,6 +131,10 @@
+         appload::library::terminateExternal(pid);
+     }
+ 
++    Q_INVOKABLE bool isExternalRunning(const QString &appID) {
++        return appload::library::isExternalRunning(appID);
++    }
++
+     const appload::vk::Layout *defaultLayout() const { return appload::library::defaultLayout; }
+ 
+     void loadList() {
+diff -ruN '--exclude=.git' a/src/RuntimeControl.cpp b/src/RuntimeControl.cpp
+--- a/src/RuntimeControl.cpp	1970-01-01 08:00:00.000000000 +0800
++++ b/src/RuntimeControl.cpp	2026-07-20 18:38:15.149933077 +0800
+@@ -0,0 +1,392 @@
++#include "RuntimeControl.h"
++
++#include <QDir>
++#include <QFile>
++#include <QFileInfo>
++#include <QJSEngine>
++#include <QJsonDocument>
++#include <QJsonParseError>
++#include <QLocalServer>
++#include <QLocalSocket>
++#include <QProcess>
++#include <QQmlEngine>
++
++#include <iostream>
++
++#include "log.h"
++
++namespace {
++constexpr qsizetype MaximumRequestBytes = 64 * 1024;
++constexpr qsizetype MaximumRememberedResponses = 128;
++}
++
++RuntimeControl *RuntimeControl::instance = nullptr;
++
++RuntimeControl::RuntimeControl(QObject *parent)
++    : QObject(parent), _server(new QLocalServer(this))
++{
++    Q_ASSERT(!instance);
++    instance = this;
++    _socketPath = qEnvironmentVariable(
++        "REMAGIC_RUNTIME_SOCKET",
++        qEnvironmentVariable("REMAGIC_RUNTIME_APP_SOCKET", "/run/remagic/runtime-app.sock"));
++    connect(_server, &QLocalServer::newConnection, this, &RuntimeControl::acceptConnections);
++}
++
++RuntimeControl::~RuntimeControl()
++{
++    stop();
++    if (instance == this) instance = nullptr;
++}
++
++QObject *RuntimeControl::qmlSingleton(QQmlEngine *engine, QJSEngine *scriptEngine)
++{
++    Q_UNUSED(scriptEngine);
++    Q_ASSERT(instance);
++    QQmlEngine::setObjectOwnership(instance, QQmlEngine::CppOwnership);
++    Q_UNUSED(engine);
++    return instance;
++}
++
++bool RuntimeControl::reportUnexpectedExit(const QString &app)
++{
++    if (!instance || app.isEmpty()) return false;
++    QString publicApp = app;
++    if (publicApp.startsWith("external::")) publicApp.remove(0, 10);
++    const bool dispatched = instance->dispatchRemagicctl({"close", publicApp});
++    if (dispatched) {
++        CERR << "remagic-runtime: app=" << publicApp.toStdString()
++             << " event=daemon-notified action=close" << std::endl;
++    }
++    return dispatched;
++}
++
++bool RuntimeControl::start()
++{
++    if (_server->isListening()) return true;
++    const QFileInfo socketInfo(_socketPath);
++    if (!QDir().mkpath(socketInfo.absolutePath())) {
++        CERR << "Cannot create runtime control directory "
++             << socketInfo.absolutePath().toStdString() << std::endl;
++        return false;
++    }
++    QLocalServer::removeServer(_socketPath);
++    if (!_server->listen(_socketPath)) {
++        CERR << "Cannot listen on runtime control socket " << _socketPath.toStdString()
++             << ": " << _server->errorString().toStdString() << std::endl;
++        return false;
++    }
++    QFile::setPermissions(_socketPath, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
++    emit listeningChanged();
++    CERR << "Runtime control ready at " << _socketPath.toStdString() << std::endl;
++    return true;
++}
++
++void RuntimeControl::stop()
++{
++    if (!_server) return;
++    const bool wasListening = _server->isListening();
++    for (QLocalSocket *client : _buffers.keys()) {
++        client->disconnect(this);
++        client->abort();
++        client->deleteLater();
++    }
++    _buffers.clear();
++    _server->close();
++    QLocalServer::removeServer(_socketPath);
++    QFile::remove(_socketPath);
++    if (wasListening) emit listeningChanged();
++}
++
++bool RuntimeControl::listening() const
++{
++    return _server && _server->isListening();
++}
++
++void RuntimeControl::setAppState(const QString &app, const QString &state)
++{
++    if (app.isEmpty()) return;
++    AppRuntimeStatus &status = _appStatuses[app];
++    if (state == "starting" && (status.generation == 0 || _activeApp != app)) {
++        status.generation = ++_generation;
++        status.error.clear();
++        status.qtfbConnected = false;
++        status.firstFrame = false;
++        _activeApp = app;
++    }
++    if (state == "foreground") {
++        _activeApp = app;
++        _managerVisible = false;
++    }
++    if (state == "exited" || state == "crashed" || state == "unavailable" || state == "error") {
++        status.qtfbConnected = false;
++        status.firstFrame = false;
++    }
++    if (status.state == state) return;
++    status.state = state;
++    CERR << "remagic-runtime: app=" << app.toStdString()
++         << " event=" << state.toStdString() << std::endl;
++}
++
++void RuntimeControl::beginAppLaunch(const QString &app)
++{
++    if (app.isEmpty()) return;
++    AppRuntimeStatus &status = _appStatuses[app];
++    status.generation = ++_generation;
++    status.state = "starting";
++    status.error.clear();
++    status.qtfbConnected = false;
++    status.firstFrame = false;
++    _activeApp = app;
++    _managerVisible = false;
++    CERR << "remagic-runtime: app=" << app.toStdString()
++         << " event=starting generation=" << status.generation << std::endl;
++}
++
++void RuntimeControl::setAppError(const QString &app, const QString &error)
++{
++    if (app.isEmpty()) return;
++    _appStatuses[app].error = error;
++}
++
++void RuntimeControl::recordAppEvent(const QString &app, const QString &event)
++{
++    if (app.isEmpty() || event.isEmpty()) return;
++    AppRuntimeStatus &status = _appStatuses[app];
++    if (event == "qtfb-connected") status.qtfbConnected = true;
++    else if (event == "qtfb-disconnected") {
++        status.qtfbConnected = false;
++        status.firstFrame = false;
++    } else if (event == "first-frame") status.firstFrame = true;
++    CERR << "remagic-runtime: app=" << app.toStdString()
++         << " event=" << event.toStdString() << std::endl;
++}
++
++void RuntimeControl::recordUiEvent(const QString &ui, const QString &app, const QString &event)
++{
++    if (ui.isEmpty() || event.isEmpty()) return;
++    CERR << "remagic-runtime: ui=" << ui.toStdString();
++    if (!app.isEmpty()) std::cerr << " app=" << app.toStdString();
++    std::cerr << " event=" << event.toStdString() << std::endl;
++}
++
++void RuntimeControl::setManagerVisible(bool visible)
++{
++    _managerVisible = visible;
++}
++
++bool RuntimeControl::dispatchRemagicctl(const QStringList &arguments)
++{
++    const QString executable = qEnvironmentVariable(
++        "REMAGICCTL_PATH", "/home/root/apps/remagic/bin/remagicctl");
++    qint64 pid = 0;
++    const bool started = QProcess::startDetached(executable, arguments, QString(), &pid);
++    if (!started) CERR << "Failed to dispatch " << executable.toStdString() << std::endl;
++    return started;
++}
++
++bool RuntimeControl::requestLaunch(const QString &app, const QString &openPath)
++{
++    if (app.isEmpty()) return false;
++    QStringList arguments {"launch", app};
++    if (!openPath.isEmpty()) arguments << "--open-path" << openPath;
++    const bool accepted = dispatchRemagicctl(arguments);
++    if (accepted) setAppState(app, "requested");
++    return accepted;
++}
++
++bool RuntimeControl::requestClose(const QString &app)
++{
++    return !app.isEmpty() && dispatchRemagicctl({"close", app, "--complete"});
++}
++
++bool RuntimeControl::requestPark()
++{
++    return dispatchRemagicctl({"park"});
++}
++
++bool RuntimeControl::requestSystem()
++{
++    return dispatchRemagicctl({"system"});
++}
++
++void RuntimeControl::acceptConnections()
++{
++    while (_server->hasPendingConnections()) {
++        QLocalSocket *client = _server->nextPendingConnection();
++        if (!client) continue;
++        _buffers.insert(client, {});
++        connect(client, &QLocalSocket::readyRead, this, [this, client]() { readClient(client); });
++        connect(client, &QLocalSocket::disconnected, this, [this, client]() {
++            _buffers.remove(client);
++            client->deleteLater();
++        });
++        readClient(client);
++    }
++}
++
++void RuntimeControl::readClient(QLocalSocket *client)
++{
++    auto position = _buffers.find(client);
++    if (position == _buffers.end()) return;
++    position.value().append(client->readAll());
++    if (position.value().size() > MaximumRequestBytes && !position.value().contains('\n')) {
++        QJsonObject response;
++        response.insert("version", 1);
++        response.insert("ok", false);
++        response.insert("status", "error");
++        response.insert("error", "request_too_large");
++        writeResponse(client, response, false);
++        client->disconnectFromServer();
++        return;
++    }
++
++    for (;;) {
++        const qsizetype newline = position.value().indexOf('\n');
++        if (newline < 0) break;
++        QByteArray line = position.value().left(newline).trimmed();
++        position.value().remove(0, newline + 1);
++        if (!line.isEmpty()) processLine(client, line);
++    }
++}
++
++QJsonObject RuntimeControl::baseResponse(const QString &requestId) const
++{
++    QJsonObject response;
++    response.insert("version", 1);
++    response.insert("request_id", requestId);
++    return response;
++}
++
++QJsonObject RuntimeControl::statusResponse(const QString &requestId) const
++{
++    QJsonObject response = baseResponse(requestId);
++    response.insert("ok", true);
++    response.insert("status", "ok");
++    response.insert("manager_visible", _managerVisible);
++    response.insert("active_app", _activeApp);
++    const AppRuntimeStatus activeStatus = _appStatuses.value(_activeApp);
++    response.insert("state", _activeApp.isEmpty() ? "manager" : activeStatus.state);
++    response.insert("qtfb_connected", activeStatus.qtfbConnected);
++    response.insert("first_frame", activeStatus.firstFrame);
++    response.insert("generation", static_cast<double>(activeStatus.generation));
++    if (!activeStatus.error.isEmpty()) response.insert("error", activeStatus.error);
++    QJsonObject apps;
++    QJsonObject appStatuses;
++    for (auto position = _appStatuses.cbegin(); position != _appStatuses.cend(); ++position) {
++        apps.insert(position.key(), position.value().state);
++        QJsonObject details;
++        details.insert("state", position.value().state);
++        details.insert("qtfb_connected", position.value().qtfbConnected);
++        details.insert("first_frame", position.value().firstFrame);
++        details.insert("generation", static_cast<double>(position.value().generation));
++        if (!position.value().error.isEmpty()) details.insert("error", position.value().error);
++        appStatuses.insert(position.key(), details);
++    }
++    response.insert("apps", apps);
++    response.insert("app_statuses", appStatuses);
++    return response;
++}
++
++void RuntimeControl::processLine(QLocalSocket *client, const QByteArray &line)
++{
++    QJsonParseError parseError;
++    const QJsonDocument document = QJsonDocument::fromJson(line, &parseError);
++    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
++        QJsonObject response;
++        response.insert("version", 1);
++        response.insert("ok", false);
++        response.insert("status", "error");
++        response.insert("error", "invalid_json");
++        writeResponse(client, response, false);
++        return;
++    }
++
++    const QJsonObject request = document.object();
++    const QString requestId = request.value("request_id").toString();
++    if (!requestId.isEmpty()) {
++        const auto previous = _recentResponses.constFind(requestId);
++        if (previous != _recentResponses.cend()) {
++            client->write(previous.value());
++            client->flush();
++            return;
++        }
++    }
++
++    QJsonObject response = baseResponse(requestId);
++    if (request.value("version").toInt(-1) != 1 || requestId.isEmpty()) {
++        response.insert("ok", false);
++        response.insert("status", "error");
++        response.insert("error", "invalid_envelope");
++        writeResponse(client, response, false);
++        return;
++    }
++
++    const QString command = request.value("command").toString();
++    if (command == "status") {
++        writeResponse(client, statusResponse(requestId), true);
++        return;
++    }
++    const bool fromDaemon = request.value("source").toString() == "daemon";
++    bool dispatched = true;
++    if (command == "show_manager") {
++        if (fromDaemon) emit showManagerRequested();
++        else dispatched = requestPark();
++    } else if (command == "open_app") {
++        const QString app = request.value("app").toString();
++        if (app.isEmpty()) {
++            response.insert("ok", false);
++            response.insert("status", "error");
++            response.insert("error", "missing_app");
++            writeResponse(client, response, true);
++            return;
++        }
++        const QString openPath = request.value("open_path").toString();
++        if (fromDaemon) emit openAppRequested(app, openPath);
++        else dispatched = requestLaunch(app, openPath);
++    } else if (command == "close_app") {
++        const QString app = request.value("app").toString();
++        if (app.isEmpty()) {
++            response.insert("ok", false);
++            response.insert("status", "error");
++            response.insert("error", "missing_app");
++            writeResponse(client, response, true);
++            return;
++        }
++        if (fromDaemon) emit closeAppRequested(app);
++        else dispatched = requestClose(app);
++    } else {
++        response.insert("ok", false);
++        response.insert("status", "error");
++        response.insert("error", "unknown_command");
++        writeResponse(client, response, true);
++        return;
++    }
++
++    response.insert("ok", dispatched);
++    response.insert("accepted", dispatched);
++    response.insert("status", dispatched ? "accepted" : "error");
++    if (!dispatched) response.insert("error", "daemon_dispatch_failed");
++    writeResponse(client, response, true);
++}
++
++void RuntimeControl::writeResponse(QLocalSocket *client, const QJsonObject &response, bool remember)
++{
++    QByteArray bytes = QJsonDocument(response).toJson(QJsonDocument::Compact);
++    bytes.append('\n');
++    if (remember) {
++        rememberResponse(response.value("request_id").toString(), bytes);
++    }
++    client->write(bytes);
++    client->flush();
++}
++
++void RuntimeControl::rememberResponse(const QString &requestId, const QByteArray &response)
++{
++    if (requestId.isEmpty()) return;
++    if (!_recentResponses.contains(requestId)) _responseOrder.enqueue(requestId);
++    _recentResponses.insert(requestId, response);
++    while (_responseOrder.size() > MaximumRememberedResponses) {
++        _recentResponses.remove(_responseOrder.dequeue());
++    }
++}
+diff -ruN '--exclude=.git' a/src/RuntimeControl.h b/src/RuntimeControl.h
+--- a/src/RuntimeControl.h	1970-01-01 08:00:00.000000000 +0800
++++ b/src/RuntimeControl.h	2026-07-20 18:38:00.235259924 +0800
+@@ -0,0 +1,77 @@
++#pragma once
++
++#include <QByteArray>
++#include <QHash>
++#include <QJsonObject>
++#include <QObject>
++#include <QPointer>
++#include <QQueue>
++
++class QJSEngine;
++class QLocalServer;
++class QLocalSocket;
++class QQmlEngine;
++
++class RuntimeControl : public QObject
++{
++    Q_OBJECT
++    Q_PROPERTY(bool listening READ listening NOTIFY listeningChanged)
++public:
++    explicit RuntimeControl(QObject *parent = nullptr);
++    ~RuntimeControl() override;
++
++    static QObject *qmlSingleton(QQmlEngine *engine, QJSEngine *scriptEngine);
++    // Notify the daemon when a managed child disappears without a preceding
++    // daemon close request. This is intentionally fire-and-forget so the
++    // QProcess finished handler can never block the GUI event loop.
++    static bool reportUnexpectedExit(const QString &app);
++
++    Q_INVOKABLE bool start();
++    Q_INVOKABLE void stop();
++    Q_INVOKABLE void beginAppLaunch(const QString &app);
++    Q_INVOKABLE void setAppState(const QString &app, const QString &state);
++    Q_INVOKABLE void setAppError(const QString &app, const QString &error);
++    Q_INVOKABLE void recordAppEvent(const QString &app, const QString &event);
++    Q_INVOKABLE void recordUiEvent(const QString &ui, const QString &app, const QString &event);
++    Q_INVOKABLE void setManagerVisible(bool visible);
++    Q_INVOKABLE bool requestLaunch(const QString &app, const QString &openPath = QString());
++    Q_INVOKABLE bool requestClose(const QString &app);
++    Q_INVOKABLE bool requestPark();
++    Q_INVOKABLE bool requestSystem();
++    bool listening() const;
++
++signals:
++    void listeningChanged();
++    void openAppRequested(QString app, QString openPath);
++    void closeAppRequested(QString app);
++    void showManagerRequested();
++
++private:
++    struct AppRuntimeStatus {
++        QString state;
++        QString error;
++        quint64 generation = 0;
++        bool qtfbConnected = false;
++        bool firstFrame = false;
++    };
++
++    void acceptConnections();
++    void readClient(QLocalSocket *client);
++    void processLine(QLocalSocket *client, const QByteArray &line);
++    void writeResponse(QLocalSocket *client, const QJsonObject &response, bool remember);
++    QJsonObject baseResponse(const QString &requestId) const;
++    QJsonObject statusResponse(const QString &requestId) const;
++    void rememberResponse(const QString &requestId, const QByteArray &response);
++    bool dispatchRemagicctl(const QStringList &arguments);
++
++    static RuntimeControl *instance;
++    QLocalServer *_server = nullptr;
++    QString _socketPath;
++    QHash<QLocalSocket *, QByteArray> _buffers;
++    QHash<QString, QByteArray> _recentResponses;
++    QQueue<QString> _responseOrder;
++    QHash<QString, AppRuntimeStatus> _appStatuses;
++    QString _activeApp;
++    quint64 _generation = 0;
++    bool _managerVisible = true;
++};
+diff -ruN '--exclude=.git' a/src/library.h b/src/library.h
+--- a/src/library.h	2026-05-21 23:48:07.000000000 +0800
++++ b/src/library.h	2026-07-20 18:10:35.389038191 +0800
+@@ -46,7 +46,7 @@
+         ExternalApplication(QString root);
+         QString getIconPath() const;
+         QString getAppName() const;
+-        qint64 launch(int qtfbKey, QStringList extraArgs, QMap<QString, QString> extraEnv) const;
++        qint64 launch(const QString &applicationID, int qtfbKey, QStringList extraArgs, QMap<QString, QString> extraEnv) const;
+         bool isQTFB() const;
+         AspectRatio getAspectRatio() const;
+         bool disablesWindowedMode() const;
+@@ -107,7 +107,9 @@
+     };
+ 
+     int loadApplications();
++    bool isExternalRunning(const QString &applicationID);
+     void terminateExternal(qint64 pid);
++    void shutdownExternalApplications();
+     void addGlobalLibraryHandle(AppLoadLibrary *ptr);
+     void removeGlobalLibraryHandle(AppLoadLibrary *ptr);
+     appload::library::LoadedApplication *get(const QString &id);
+diff -ruN '--exclude=.git' a/src/libraryexternals.cpp b/src/libraryexternals.cpp
+--- a/src/libraryexternals.cpp	2026-05-21 23:48:07.000000000 +0800
++++ b/src/libraryexternals.cpp	2026-07-20 18:34:24.621528687 +0800
+@@ -1,158 +1,245 @@
+ #include "library.h"
+-#include "log.h"
+-#include <QProcess>
++
++#include <algorithm>
++#include <csignal>
++#include <cstring>
++#include <map>
++#include <vector>
++
++#include <QCoreApplication>
+ #include <QFileInfo>
+-#include <signal.h>
++#include <QPointer>
++#include <QProcess>
++#include <QTimer>
++
++#include <sys/types.h>
++#include <unistd.h>
+ 
+ #include "AppLibrary.h"
++#include "RuntimeControl.h"
++#include "log.h"
+ 
+-appload::library::ExternalApplication::ExternalApplication(QString root): root(root) {
+-    parseManifest();
+-}
++namespace {
++std::vector<QPointer<AppLoadLibrary>> globalLibraryHandles;
++std::map<QString, QPointer<QProcess>> externalProcesses;
++std::map<qint64, QString> applicationForPid;
+ 
+-static std::vector<AppLoadLibrary*> globalLibraryHandles;
++QString publicApplicationID(QString applicationID)
++{
++    if (applicationID.startsWith("external::")) applicationID.remove(0, 10);
++    return applicationID;
++}
+ 
+-static void sendPidDiedMessage(qint64 pid){
+-    for(AppLoadLibrary *ptr : globalLibraryHandles){
+-        emit ptr->pidDied(pid);
++void sendPidDiedMessage(qint64 pid)
++{
++    globalLibraryHandles.erase(
++        std::remove_if(globalLibraryHandles.begin(), globalLibraryHandles.end(),
++                       [](const QPointer<AppLoadLibrary> &handle) { return handle.isNull(); }),
++        globalLibraryHandles.end());
++    for (const QPointer<AppLoadLibrary> &handle : globalLibraryHandles) {
++        if (handle) emit handle->pidDied(pid);
+     }
+ }
+ 
+-void appload::library::addGlobalLibraryHandle(AppLoadLibrary *ptr) {
+-    globalLibraryHandles.push_back(ptr);
+-}
+-void appload::library::removeGlobalLibraryHandle(AppLoadLibrary *ptr) {
+-    auto pos = std::find(globalLibraryHandles.begin(), globalLibraryHandles.end(), ptr);
+-    if(pos != globalLibraryHandles.end()) {
+-        globalLibraryHandles.erase(pos);
++void signalProcessGroup(qint64 pid, int signal)
++{
++    if (pid > 1 && ::kill(-static_cast<pid_t>(pid), signal) == -1 && errno != ESRCH) {
++        CERR << "Failed to signal process group " << pid << ": " << std::strerror(errno) << std::endl;
+     }
+ }
++}
+ 
+-void appload::library::ExternalApplication::parseManifest() {
+-    QString filePath = root + "/external.manifest.json";
++appload::library::ExternalApplication::ExternalApplication(QString root)
++    : root(std::move(root))
++{
++    parseManifest();
++}
++
++void appload::library::addGlobalLibraryHandle(AppLoadLibrary *pointer)
++{
++    globalLibraryHandles.emplace_back(pointer);
++}
++
++void appload::library::removeGlobalLibraryHandle(AppLoadLibrary *pointer)
++{
++    globalLibraryHandles.erase(
++        std::remove_if(globalLibraryHandles.begin(), globalLibraryHandles.end(),
++                       [pointer](const QPointer<AppLoadLibrary> &entry) {
++                           return entry.isNull() || entry.data() == pointer;
++                       }),
++        globalLibraryHandles.end());
++}
++
++void appload::library::ExternalApplication::parseManifest()
++{
++    const QString filePath = root + "/external.manifest.json";
+     QFile file(filePath);
+     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+         CERR << "Unable to open file: " << filePath.toStdString() << std::endl;
+         return;
+     }
+-    QByteArray jsonData = file.readAll();
+-    file.close();
+-
+-    QJsonDocument doc = QJsonDocument::fromJson(jsonData);
+-    if (doc.isNull() || !doc.isObject()) {
+-        CERR << "Invalid JSON data" << std::endl;
++    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
++    if (!document.isObject()) {
++        CERR << "Invalid external application manifest " << filePath.toStdString() << std::endl;
+         return;
+     }
+ 
+-    QJsonObject jsonObject = doc.object();
+-
+-    // Required:
+-    appName = jsonObject.value("name").toString();
+-    execPath = jsonObject.value("application").toString();
+-
+-    // Optional:
+-    _isQTFB = jsonObject.value("qtfb").toBool(false);
+-    _disablesWindowedMode = jsonObject.value("disablesWindowedMode").toBool(false);
+-    bool supportsVirtualKeyboard = jsonObject.value("supportsVirtualKeyboard").toBool(false);
+-    if(supportsVirtualKeyboard) {
+-        this->_virtualKeyboardLayout = appload::library::defaultLayout;
+-    } else {
+-        this->_virtualKeyboardLayout = nullptr;
+-    }
+-    workingDirectory = jsonObject.value("workingDirectory").toString(root);
+-    args = jsonObject.value("args").toVariant().toStringList();
+-    QJsonObject env = jsonObject.value("environment").toObject();
+-    for(auto entry = env.begin(); entry != env.end(); entry++) {
++    const QJsonObject object = document.object();
++    appName = object.value("name").toString();
++    execPath = object.value("application").toString();
++    _isQTFB = object.value("qtfb").toBool(false);
++    _disablesWindowedMode = object.value("disablesWindowedMode").toBool(false);
++    _virtualKeyboardLayout = object.value("supportsVirtualKeyboard").toBool(false)
++        ? appload::library::defaultLayout : nullptr;
++    workingDirectory = object.value("workingDirectory").toString(root);
++    args = object.value("args").toVariant().toStringList();
++    const QJsonObject environmentObject = object.value("environment").toObject();
++    for (auto entry = environmentObject.begin(); entry != environmentObject.end(); ++entry) {
+         environment[entry.key()] = entry.value().toString();
+     }
+-    QString aspectRatio = jsonObject.value("aspectRatio").toString("auto").toLower();
+-    if(aspectRatio == "original") {
+-        this->aspectRatio = AspectRatio::ORIGINAL;
+-    } else if(aspectRatio == "move") {
+-        this->aspectRatio = AspectRatio::MOVE;
+-    } else if(aspectRatio == "auto") {
+-        this->aspectRatio = AspectRatio::AUTO;
+-    }
++    const QString ratio = object.value("aspectRatio").toString("auto").toLower();
++    if (ratio == "original") aspectRatio = AspectRatio::ORIGINAL;
++    else if (ratio == "move") aspectRatio = AspectRatio::MOVE;
++    else aspectRatio = AspectRatio::AUTO;
+ 
+     valid = !appName.isEmpty() && !execPath.isEmpty();
+-    if(valid) {
+-        if(!execPath.startsWith("/")) {
+-            execPath = "./" + execPath;
+-        }
+-    }
++    if (valid && !execPath.startsWith('/')) execPath = "./" + execPath;
+ }
+ 
+-qint64 appload::library::ExternalApplication::launch(int qtfbKey, QStringList extraArgs, QMap<QString, QString> extraEnv) const {
++bool appload::library::isExternalRunning(const QString &applicationID)
++{
++    const auto position = externalProcesses.find(applicationID);
++    return position != externalProcesses.end() && position->second
++        && position->second->state() != QProcess::NotRunning;
++}
++
++qint64 appload::library::ExternalApplication::launch(
++    const QString &applicationID,
++    int qtfbKey,
++    QStringList extraArgs,
++    QMap<QString, QString> extraEnv) const
++{
++    const auto existing = externalProcesses.find(applicationID);
++    if (existing != externalProcesses.end() && existing->second
++        && existing->second->state() != QProcess::NotRunning) {
++        CERR << "Reusing running external application " << applicationID.toStdString() << std::endl;
++        return existing->second->processId();
++    }
++    if (existing != externalProcesses.end()) externalProcesses.erase(existing);
++
+     QDEBUG << "Starting external binary" << execPath;
++    auto *process = new QProcess(QCoreApplication::instance());
++    QProcessEnvironment processEnvironment = QProcessEnvironment::systemEnvironment();
++    processEnvironment.remove("LD_PRELOAD");
++    for (const auto &entry : environment) processEnvironment.insert(entry.first, entry.second);
++    for (const auto [key, value] : extraEnv.asKeyValueRange()) processEnvironment.insert(key, value);
++    if (qtfbKey != -1) processEnvironment.insert("QTFB_KEY", QString::number(qtfbKey));
+ 
+-    QProcess *process = new QProcess();
+-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+-    env.remove("LD_PRELOAD");
+-    for(const auto &entry : environment) {
+-        env.insert(entry.first, entry.second);
+-    }
+-    for (const auto [key, value] : extraEnv.asKeyValueRange()) {
+-        env.insert(key, value);
+-    }
+-    if(qtfbKey != -1) {
+-        env.insert("QTFB_KEY", QString::number(qtfbKey));
+-    }
+-    process->setProcessEnvironment(env);
++    process->setProcessEnvironment(processEnvironment);
+     process->setWorkingDirectory(workingDirectory);
+     process->setProcessChannelMode(QProcess::ForwardedChannels);
+-    QStringList finalArgs = args + extraArgs;
+-    process->start(execPath, finalArgs);
+-
+-    if (!process->waitForStarted()) {
+-        qWarning() << "Failed to start process:" << process->errorString();
+-        delete process;
+-        return -1;
+-    }
+-
+-    QString appPath = execPath;
+-    QObject::connect(process, &QProcess::errorOccurred, [appPath, process](QProcess::ProcessError error) {
+-        qWarning() << "Process error for" << appPath << ":" << error;
+-        process->deleteLater();
++#if defined(Q_OS_UNIX)
++    process->setChildProcessModifier([]() {
++        // Every managed application owns its descendants. This lets close
++        // reliably terminate wrappers and the processes they spawn.
++        ::setpgid(0, 0);
+     });
++#endif
+ 
+-    qint64 pid = process->processId();
+-    QObject::connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), [pid, appPath, process](int exitCode, QProcess::ExitStatus status) {
++    const QString appPath = execPath;
++    QObject::connect(process, &QProcess::errorOccurred, process,
++            [applicationID, appPath](QProcess::ProcessError error) {
++        qWarning() << "Process error for" << applicationID << appPath << error;
++    });
++    QObject::connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), process,
++            [applicationID, appPath, process](int exitCode, QProcess::ExitStatus status) {
++        const qint64 pid = process->property("remagicPid").toLongLong();
++        const bool expectedExit = process->property("remagicExpectedExit").toBool();
++        const QString publicID = publicApplicationID(applicationID);
+         QDEBUG << "Process for" << appPath << "finished with exit code" << exitCode << "and status" << status;
++        CERR << "remagic-runtime: app=" << publicID.toStdString()
++             << " event=exited exit_code=" << exitCode
++             << " exit_status=" << (status == QProcess::NormalExit ? "normal" : "crash")
++             << " expected=" << (expectedExit ? "true" : "false") << std::endl;
++        const auto current = externalProcesses.find(applicationID);
++        if (current != externalProcesses.end() && current->second == process) {
++            externalProcesses.erase(current);
++        }
++        applicationForPid.erase(pid);
+         sendPidDiedMessage(pid);
++        if (!expectedExit) RuntimeControl::reportUnexpectedExit(publicID);
+         process->deleteLater();
+     });
+ 
+-    return pid;
+-}
+-
+-QString appload::library::ExternalApplication::getIconPath() const {
+-    auto path = QFileInfo(root + "/icon.png");
+-    if(path.exists()) {
+-        return "file://" + path.canonicalFilePath();
++    process->start(execPath, args + extraArgs);
++    if (!process->waitForStarted(3000)) {
++        qWarning() << "Failed to start process:" << process->errorString();
++        process->deleteLater();
++        return -1;
+     }
+-    return "qrc:/appload/icons/appload";
+-}
+ 
+-QString appload::library::ExternalApplication::getAppName() const {
+-    return appName;
++    const qint64 pid = process->processId();
++    process->setProperty("remagicPid", pid);
++    externalProcesses[applicationID] = process;
++    applicationForPid[pid] = applicationID;
++    CERR << "remagic-runtime: app=" << publicApplicationID(applicationID).toStdString()
++         << " event=process-started pid=" << pid << std::endl;
++    return pid;
+ }
+ 
+-bool appload::library::ExternalApplication::isQTFB() const {
+-    return _isQTFB;
++QString appload::library::ExternalApplication::getIconPath() const
++{
++    const QFileInfo path(root + "/icon.png");
++    return path.exists() ? "file://" + path.canonicalFilePath() : "qrc:/appload/icons/appload";
+ }
+ 
+-bool appload::library::ExternalApplication::disablesWindowedMode() const {
+-    return _disablesWindowedMode;
+-}
++QString appload::library::ExternalApplication::getAppName() const { return appName; }
++bool appload::library::ExternalApplication::isQTFB() const { return _isQTFB; }
++bool appload::library::ExternalApplication::disablesWindowedMode() const { return _disablesWindowedMode; }
++const appload::vk::Layout *appload::library::ExternalApplication::getVirtualKeyboardLayout() const { return _virtualKeyboardLayout; }
++appload::library::AspectRatio appload::library::ExternalApplication::getAspectRatio() const { return aspectRatio; }
+ 
+-const appload::vk::Layout *appload::library::ExternalApplication::getVirtualKeyboardLayout() const {
+-    return _virtualKeyboardLayout;
++void appload::library::terminateExternal(qint64 pid)
++{
++    const auto id = applicationForPid.find(pid);
++    if (id == applicationForPid.end()) return;
++    const auto processPosition = externalProcesses.find(id->second);
++    if (processPosition == externalProcesses.end() || !processPosition->second) return;
++
++    QPointer<QProcess> process = processPosition->second;
++    if (process->state() == QProcess::NotRunning) return;
++    if (process->property("remagicTerminating").toBool()) return;
++    process->setProperty("remagicTerminating", true);
++    process->setProperty("remagicExpectedExit", true);
++    signalProcessGroup(pid, SIGTERM);
++    QTimer::singleShot(2000, QCoreApplication::instance(), [pid, process]() {
++        if (process && process->state() != QProcess::NotRunning) {
++            signalProcessGroup(pid, SIGKILL);
++        }
++    });
+ }
+ 
+-void appload::library::terminateExternal(qint64 pid) {
+-    kill(pid, SIGTERM);
+-    sendPidDiedMessage(pid);
++void appload::library::shutdownExternalApplications()
++{
++    std::vector<std::pair<qint64, QPointer<QProcess>>> processes;
++    processes.reserve(externalProcesses.size());
++    for (const auto &[applicationID, process] : externalProcesses) {
++        Q_UNUSED(applicationID);
++        if (!process || process->state() == QProcess::NotRunning) continue;
++        const qint64 pid = process->processId();
++        process->setProperty("remagicExpectedExit", true);
++        processes.emplace_back(pid, process);
++        signalProcessGroup(pid, SIGTERM);
++    }
++
++    for (const auto &[pid, process] : processes) {
++        Q_UNUSED(pid);
++        if (process && process->state() != QProcess::NotRunning) process->waitForFinished(2000);
++    }
++    for (const auto &[pid, process] : processes) {
++        if (process && process->state() != QProcess::NotRunning) {
++            signalProcessGroup(pid, SIGKILL);
++            process->waitForFinished(1000);
++        }
++    }
+ }
+-
+-
+-appload::library::AspectRatio appload::library::ExternalApplication::getAspectRatio() const { return aspectRatio; }
+diff -ruN '--exclude=.git' a/src/main.cpp b/src/main.cpp
+--- a/src/main.cpp	2026-05-21 23:48:07.000000000 +0800
++++ b/src/main.cpp	2026-07-20 18:24:08.799736419 +0800
+@@ -1,62 +1,125 @@
++#include <QDir>
+ #include <QGuiApplication>
++#include <QLockFile>
+ #include <QQmlApplicationEngine>
++#include <QSocketNotifier>
+ 
++#include "AppLibrary.h"
++#include "AppLoad.h"
+ #include "AppLoadCoordinator.h"
+ #include "EmuOnly.h"
+ #include "Launcher.h"
+-#include "AppLibrary.h"
+-#include "AppLoad.h"
+-#include "management.h"
++#include "RuntimeControl.h"
+ #include "library.h"
+ #include "log.h"
+-
++#include "management.h"
+ #include "qtfb/FBController.h"
+ #include "qtfb/fbmanagement.h"
+ 
++#include <cstdio>
++#include <cerrno>
++#include <csignal>
++#include <cstring>
++#include <dirent.h>
+ #include <dlfcn.h>
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <unistd.h>
+ 
+-void loadTestingModules(){
+-    const char *directoryPath = "testing_extensions";
+-    DIR *dir;
+-    struct dirent *entry;
+-    struct stat entryStat;
+-
+-    dir = opendir(directoryPath);
+-    if (dir == nullptr) {
+-        CERR << "Unable to open directory" << std::endl;
+-        return;
++namespace {
++int terminationPipe[2] {-1, -1};
++
++void requestGracefulQuit(int)
++{
++    const char wakeup = 1;
++    if (terminationPipe[1] >= 0) {
++        const ssize_t ignored = ::write(terminationPipe[1], &wakeup, sizeof(wakeup));
++        Q_UNUSED(ignored);
+     }
++}
+ 
+-    while ((entry = readdir(dir)) != nullptr) {
+-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+-            continue;
+-        }
++QSocketNotifier *installTerminationHandler(QGuiApplication &application)
++{
++    if (::pipe(terminationPipe) != 0) return nullptr;
++    for (const int descriptor : terminationPipe) {
++        const int descriptorFlags = ::fcntl(descriptor, F_GETFD);
++        const int statusFlags = ::fcntl(descriptor, F_GETFL);
++        if (descriptorFlags >= 0) ::fcntl(descriptor, F_SETFD, descriptorFlags | FD_CLOEXEC);
++        if (statusFlags >= 0) ::fcntl(descriptor, F_SETFL, statusFlags | O_NONBLOCK);
++    }
+ 
+-        char entryPath[300];
+-        snprintf(entryPath, sizeof(entryPath), "%s/%s", directoryPath, entry->d_name);
+-        stat(entryPath, &entryStat);
+-        if (S_ISREG(entryStat.st_mode)) {
+-            void *dl = dlopen((const char *) entryPath, RTLD_NOW);
+-            if(!dl) continue;
+-            void (*extLoad)() = (void (*)()) dlsym(dl, "_ext_load");
+-            if(extLoad) extLoad();
+-            CERR << "Loaded test extension " << entryPath << std::endl;
+-        }
++    struct sigaction action {};
++    action.sa_handler = requestGracefulQuit;
++    sigemptyset(&action.sa_mask);
++    if (::sigaction(SIGTERM, &action, nullptr) != 0
++        || ::sigaction(SIGINT, &action, nullptr) != 0) {
++        ::close(terminationPipe[0]);
++        ::close(terminationPipe[1]);
++        terminationPipe[0] = terminationPipe[1] = -1;
++        return nullptr;
+     }
+ 
+-    // Close the directory
+-    closedir(dir);
++    auto *notifier = new QSocketNotifier(terminationPipe[0], QSocketNotifier::Read, &application);
++    QObject::connect(notifier, &QSocketNotifier::activated, &application,
++                     [notifier, &application](QSocketDescriptor, QSocketNotifier::Type) {
++        notifier->setEnabled(false);
++        char buffer[32];
++        while (::read(terminationPipe[0], buffer, sizeof(buffer)) > 0) {}
++        application.quit();
++    });
++    return notifier;
++}
++
++void loadTestingModules()
++{
++    const char *directoryPath = "testing_extensions";
++    DIR *directory = opendir(directoryPath);
++    if (!directory) return;
+ 
++    while (dirent *entry = readdir(directory)) {
++        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
++        char entryPath[300];
++        std::snprintf(entryPath, sizeof(entryPath), "%s/%s", directoryPath, entry->d_name);
++        struct stat entryStat {};
++        if (stat(entryPath, &entryStat) != 0 || !S_ISREG(entryStat.st_mode)) continue;
++        void *library = dlopen(entryPath, RTLD_NOW);
++        if (!library) continue;
++        auto extensionLoad = reinterpret_cast<void (*)()>(dlsym(library, "_ext_load"));
++        if (extensionLoad) extensionLoad();
++    }
++    closedir(directory);
++}
+ }
+ 
+ int main(int argc, char *argv[])
+ {
+     loadTestingModules();
++    QGuiApplication application(argc, argv);
++    QSocketNotifier *terminationNotifier = installTerminationHandler(application);
++    if (!terminationNotifier) {
++        qCritical() << "Cannot install graceful termination handler:" << std::strerror(errno);
++        return 74;
++    }
++
++    const QString runtimeDirectory = qEnvironmentVariable("REMAGIC_RUNTIME_DIR", "/run/remagic");
++    if (!QDir().mkpath(runtimeDirectory)) {
++        qCritical() << "Cannot create runtime directory" << runtimeDirectory;
++        return 70;
++    }
++    QLockFile instanceLock(runtimeDirectory + "/appload-runtime.lock");
++    instanceLock.setStaleLockTime(30000);
++    if (!instanceLock.tryLock(0)) {
++        qCritical() << "Another remagic AppLoad runtime is already running";
++        return 73;
++    }
+ 
+-    QGuiApplication a(argc, argv);
++    RuntimeControl runtimeControl;
+     QQmlApplicationEngine engine;
+     appload::library::loadApplications();
+-    qtfb::management::start();
++    if (!qtfb::management::start()) {
++        qCritical() << "Failed to start the QTFB server";
++        return 71;
++    }
+ 
+     qmlRegisterType<AppLoad>("net.asivery.AppLoad", 1, 0, "AppLoad");
+     qmlRegisterType<AppLoadCoordinator>("net.asivery.AppLoad", 1, 0, "AppLoadCoordinator");
+@@ -65,7 +128,22 @@
+     qmlRegisterType<FBController>("net.asivery.Framebuffer", 1, 0, "FBController");
+     qmlRegisterSingletonType<AppLoadLauncher>("net.asivery.AppLoad", 1, 0, "AppLoadLauncher", &AppLoadLauncher::qmlSingleton);
+     qmlRegisterSingletonType<AppLoadEmuOnly>("net.asivery.AppLoad", 1, 0, "AppLoadEmuOnly", &AppLoadEmuOnly::qmlSingleton);
++    qmlRegisterSingletonType<RuntimeControl>("net.asivery.AppLoad", 1, 0, "RuntimeControl", &RuntimeControl::qmlSingleton);
++
+     engine.load(QUrl(QStringLiteral("./_start.qml")));
++    if (engine.rootObjects().isEmpty()) {
++        runtimeControl.stop();
++        qtfb::management::stop();
++        return 72;
++    }
+ 
+-    return a.exec();
++    const int status = application.exec();
++    runtimeControl.stop();
++    appload::library::shutdownExternalApplications();
++    qtfb::management::stop();
++    terminationNotifier->setEnabled(false);
++    ::close(terminationPipe[0]);
++    ::close(terminationPipe[1]);
++    terminationPipe[0] = terminationPipe[1] = -1;
++    return status;
+ }
+diff -ruN '--exclude=.git' a/src/qtfb/FBController.cpp b/src/qtfb/FBController.cpp
+--- a/src/qtfb/FBController.cpp	2026-05-21 23:48:07.000000000 +0800
++++ b/src/qtfb/FBController.cpp	2026-07-20 18:41:00.146379926 +0800
+@@ -1,255 +1,477 @@
+ #include "FBController.h"
++
++#include <algorithm>
++#include <cmath>
++#include <utility>
++
++#include <QMetaObject>
++#include <QPointer>
++#include <QThread>
++
+ #include "fbmanagement.h"
+ #include "log.h"
+ 
+-void FBController::setFramebufferID(int fbId){
+-    if(_framebufferID != fbId){
+-        QDEBUG << "Re-register framebuffer " << _framebufferID << "as" << fbId;
+-        qtfb::management::unregisterController(_framebufferID);
++namespace {
++int scaleFloor(int value, int destination, int source)
++{
++    return static_cast<int>((static_cast<qint64>(value) * destination) / source);
++}
++
++int scaleCeil(int value, int destination, int source)
++{
++    return static_cast<int>((static_cast<qint64>(value) * destination + source - 1) / source);
++}
++}
++
++FBController::FBController(QQuickItem *parent)
++    : QQuickPaintedItem(parent)
++{
++    setAcceptTouchEvents(true);
++    setAcceptedMouseButtons(static_cast<Qt::MouseButtons>(0xFFFFFFFF));
++    setFocusPolicy(Qt::StrongFocus);
++}
++
++void FBController::setFramebufferID(int fbId)
++{
++    if (_framebufferID == fbId) {
++        return;
+     }
++    QDEBUG << "Re-register framebuffer" << _framebufferID << "as" << fbId;
++    qtfb::management::unregisterController(_framebufferID);
+     _framebufferID = fbId;
+-    qtfb::management::registerController(fbId, QPointer(this));
++    qtfb::management::registerController(fbId, QPointer<FBController>(this));
+ }
+ 
+-int FBController::framebufferID() const {
++int FBController::framebufferID() const
++{
+     return _framebufferID;
+ }
+ 
+-bool FBController::active() const {
++bool FBController::active() const
++{
+     return _active;
+ }
+ 
+-void FBController::setActive(bool active){
++void FBController::setActive(bool active)
++{
++    if (_active == active) {
++        return;
++    }
+     _active = active;
+     emit activeChanged();
+-    markedUpdate();
++    scheduleItemUpdate(QRect(0, 0, qCeil(width()), qCeil(height())));
+ }
+ 
+-FBController::~FBController(){
++FBController::~FBController()
++{
+     qtfb::management::unregisterController(_framebufferID);
++    std::lock_guard<std::mutex> lock(_framebufferMutex);
++    _framebuffer.reset();
++}
++
++FBController::FramebufferPtr FBController::currentFramebuffer() const
++{
++    std::lock_guard<std::mutex> lock(_framebufferMutex);
++    return _framebuffer;
++}
++
++bool FBController::scalingActive(const FramebufferPtr &framebuffer) const
++{
++    if (!_allowScaling || !framebuffer || framebuffer->image.isNull()) {
++        return false;
++    }
++    // Avoid the scaling path entirely on Move's native 954x1696 canvas (and
++    // any other exact-size canvas). Apart from being cheaper, this preserves
++    // one source pixel per panel pixel for small dirty regions.
++    return qRound(width()) != framebuffer->image.width()
++        || qRound(height()) != framebuffer->image.height();
++}
++
++QRect FBController::sourceRectToItem(const QRect &requested, const FramebufferPtr &framebuffer) const
++{
++    const QRect itemBounds(0, 0, qMax(0, qCeil(width())), qMax(0, qCeil(height())));
++    if (!framebuffer || framebuffer->image.isNull()) {
++        return requested.isValid() ? requested.intersected(itemBounds) : itemBounds;
++    }
++
++    const QRect source = requested.isValid()
++        ? requested.normalized().intersected(framebuffer->image.rect())
++        : framebuffer->image.rect();
++    if (source.isEmpty()) {
++        return {};
++    }
++    if (!scalingActive(framebuffer)) {
++        return source.intersected(itemBounds);
++    }
++
++    const int sourceWidth = framebuffer->image.width();
++    const int sourceHeight = framebuffer->image.height();
++    const int itemWidth = itemBounds.width();
++    const int itemHeight = itemBounds.height();
++    const int left = scaleFloor(source.x(), itemWidth, sourceWidth);
++    const int top = scaleFloor(source.y(), itemHeight, sourceHeight);
++    const int right = scaleCeil(source.x() + source.width(), itemWidth, sourceWidth);
++    const int bottom = scaleCeil(source.y() + source.height(), itemHeight, sourceHeight);
++    return QRect(left, top, right - left, bottom - top).intersected(itemBounds);
++}
++
++QRect FBController::itemRectToSource(const QRect &requested, const FramebufferPtr &framebuffer) const
++{
++    if (!framebuffer || framebuffer->image.isNull()) {
++        return {};
++    }
++    const QRect itemBounds(0, 0, qMax(0, qCeil(width())), qMax(0, qCeil(height())));
++    const QRect itemRect = requested.normalized().intersected(itemBounds);
++    if (itemRect.isEmpty()) {
++        return {};
++    }
++    if (!scalingActive(framebuffer)) {
++        return itemRect.intersected(framebuffer->image.rect());
++    }
++
++    const int left = scaleFloor(itemRect.x(), framebuffer->image.width(), itemBounds.width());
++    const int top = scaleFloor(itemRect.y(), framebuffer->image.height(), itemBounds.height());
++    const int right = scaleCeil(itemRect.x() + itemRect.width(), framebuffer->image.width(), itemBounds.width());
++    const int bottom = scaleCeil(itemRect.y() + itemRect.height(), framebuffer->image.height(), itemBounds.height());
++    return QRect(left, top, right - left, bottom - top).intersected(framebuffer->image.rect());
+ }
+ 
+-void FBController::paint(QPainter *painter) {
+-    isMidPaint = true;
+-    QDEBUG << "FB Repaint triggered for " << _framebufferID << ". Status: " << _active;
+-    // Do we have an SHM associated?
+-    if(this->image && this->_active) {
+-        // Cool. Paint it.
+-        if(_allowScaling) {
+-            painter->drawImage(QRect(0, 0, width(), height()), *image, image->rect());
++void FBController::paint(QPainter *painter)
++{
++    const FramebufferPtr framebuffer = currentFramebuffer();
++    if (!framebuffer || framebuffer->image.isNull() || !_active) {
++        return;
++    }
++
++    const QRect itemBounds(0, 0, qMax(0, qCeil(width())), qMax(0, qCeil(height())));
++    QRegion dirty = painter->clipRegion().intersected(itemBounds);
++    if (dirty.isEmpty()) {
++        dirty = QRegion(itemBounds);
++    }
++
++    const bool scaled = scalingActive(framebuffer);
++    bool drewImage = false;
++    for (const QRect &targetClip : dirty) {
++        const QRect source = itemRectToSource(targetClip, framebuffer);
++        if (source.isEmpty()) {
++            continue;
++        }
++        painter->save();
++        painter->setClipRect(targetClip, Qt::IntersectClip);
++        if (!scaled) {
++            painter->drawImage(source.topLeft(), framebuffer->image, source);
+         } else {
+-            painter->drawImage(0, 0, *image);
++            // Project the outward-rounded source rectangle back into the
++            // global item coordinate system. The clip keeps adjacent pixels
++            // untouched while preserving exactly the same transform as a
++            // full-frame scale.
++            const QRectF projected(
++                static_cast<qreal>(source.x()) * itemBounds.width() / framebuffer->image.width(),
++                static_cast<qreal>(source.y()) * itemBounds.height() / framebuffer->image.height(),
++                static_cast<qreal>(source.width()) * itemBounds.width() / framebuffer->image.width(),
++                static_cast<qreal>(source.height()) * itemBounds.height() / framebuffer->image.height());
++            painter->drawImage(projected, framebuffer->image, source);
+         }
+-    } else {
+-        /*
+-        QDEBUG << "Placeholder";
+-        QFont font = painter->font();
+-        font.setPointSize(50);
+-        font.setBold(true);
+-        painter->setFont(font);
+-        QRect rect(0, 0, width(), height());
+-        painter->fillRect(rect, QColor(255, 255, 0));
+-        painter->drawText(rect, "Unbound Framebuffer " + QString::number(_framebufferID), Qt::AlignCenter | Qt::AlignTop);
+-        */
+-    }
+-    isMidPaint = false;
+-}
+-
+-void FBController::associateSHM(QImage *image) {
+-    this->image = image;
+-    int key = _framebufferID;
+-    QMetaObject::invokeMethod(this, [this, key]() {
+-        if(!qtfb::management::isControllerAssociated(key)) {
+-            // The framebuffer connection was terminated as we were
+-            // waiting for the event loop to process this request.
+-            this->image = nullptr;
+-            this->setActive(false);
++        drewImage = true;
++        painter->restore();
++    }
++    if (drewImage && _firstFrameUpdatePending && !_firstFrameSeen) {
++        _firstFrameSeen = true;
++        _firstFrameUpdatePending = false;
++        emit firstFrameReady();
++    }
++}
++
++void FBController::associateSHM(const FramebufferPtr &framebuffer)
++{
++    QPointer<FBController> guard(this);
++    auto apply = [guard, framebuffer]() {
++        if (!guard) {
+             return;
+         }
+-        this->setActive(this->image != nullptr);
+-    }, Qt::QueuedConnection);
++        {
++            std::lock_guard<std::mutex> lock(guard->_framebufferMutex);
++            guard->_framebuffer = framebuffer;
++        }
++        guard->_firstFrameSeen = false;
++        guard->_firstFrameUpdatePending = false;
++        guard->setActive(static_cast<bool>(framebuffer));
++    };
++    if (QThread::currentThread() == thread()) {
++        apply();
++    } else {
++        QMetaObject::invokeMethod(this, std::move(apply), Qt::QueuedConnection);
++    }
+ }
+ 
+-void FBController::markedUpdate(const QRect &rect) {
+-    isMidPaint = true;
+-    if(_allowScaling && image) {
+-        update(QRect(
+-           (rect.x() / image->width()) * this->width(),
+-           (rect.y() / image->height()) * this->height(),
+-           (rect.width() / image->width()) * this->width(),
+-           (rect.height() / image->height()) * this->height()
+-        ));
++void FBController::disassociateSHM(const FramebufferPtr &framebuffer)
++{
++    QPointer<FBController> guard(this);
++    auto apply = [guard, framebuffer]() {
++        if (!guard) {
++            return;
++        }
++        bool cleared = false;
++        {
++            std::lock_guard<std::mutex> lock(guard->_framebufferMutex);
++            if (guard->_framebuffer == framebuffer) {
++                guard->_framebuffer.reset();
++                cleared = true;
++            }
++        }
++        if (cleared) {
++            guard->_firstFrameUpdatePending = false;
++            guard->setActive(false);
++        }
++    };
++    if (QThread::currentThread() == thread()) {
++        apply();
+     } else {
+-        update(rect);
++        QMetaObject::invokeMethod(this, std::move(apply), Qt::QueuedConnection);
+     }
+ }
+ 
+-void FBController::setAllowScaling(bool a){
+-    _allowScaling = a;
++void FBController::scheduleItemUpdate(const QRect &rect)
++{
++    if (rect.isEmpty()) {
++        return;
++    }
++    _pendingUpdates += rect;
++    if (_updateScheduled) {
++        return;
++    }
++    _updateScheduled = true;
++    QMetaObject::invokeMethod(this, &FBController::flushMarkedUpdates, Qt::QueuedConnection);
+ }
+ 
+-bool FBController::allowScaling() const {
+-    return _allowScaling;
++void FBController::flushMarkedUpdates()
++{
++    const QRegion updates = std::exchange(_pendingUpdates, QRegion());
++    _updateScheduled = false;
++    for (const QRect &rect : updates) {
++        update(rect);
++    }
+ }
+ 
+-
+-QPoint FBController::convertPointToQTFBPixels(const QPointF &input) {
+-    if(_allowScaling && image) {
+-        return QPoint(
+-            (input.x() * image->width()) / this->width(),
+-            (input.y() * image->height()) / this->height() 
+-        );
+-    } else {
+-        return QPoint(input.x(), input.y());
++void FBController::markedUpdate(const QRect &rect)
++{
++    const FramebufferPtr framebuffer = currentFramebuffer();
++    const QRect itemRect = sourceRectToItem(rect, framebuffer);
++    if (!_firstFrameSeen && framebuffer && _active && !itemRect.isEmpty()) {
++        _firstFrameUpdatePending = true;
++    }
++    scheduleItemUpdate(itemRect);
++}
++
++void FBController::setAllowScaling(bool allow)
++{
++    if (_allowScaling == allow) {
++        return;
+     }
++    _allowScaling = allow;
++    markedUpdate();
+ }
+ 
++bool FBController::allowScaling() const
++{
++    return _allowScaling;
++}
+ 
+-void FBController::mousePressEvent(QMouseEvent *me) {
+-    if(_framebufferID != -1 && !me->points().isEmpty()) {
+-        const QEventPoint &point = me->points()[0];
+-        QPoint conv = convertPointToQTFBPixels(point.position());
+-        qtfb::UserInputContents packet {
+-            .inputType = INPUT_PEN_PRESS,
+-            .devId = 0, // TODO - differentiate between pen / eraser.
+-            .x = conv.x(),
+-            .y = conv.y(),
+-            .d = (int) (point.pressure() * 100.0),
+-        };
+-        qtfb::management::forwardUserInput(_framebufferID, &packet);
++QPoint FBController::convertPointToQTFBPixels(const QPointF &input) const
++{
++    const FramebufferPtr framebuffer = currentFramebuffer();
++    if (scalingActive(framebuffer) && width() > 0 && height() > 0) {
++        return QPoint(
++            std::clamp(qFloor(input.x() * framebuffer->image.width() / width()), 0, framebuffer->image.width() - 1),
++            std::clamp(qFloor(input.y() * framebuffer->image.height() / height()), 0, framebuffer->image.height() - 1));
+     }
+-    me->accept();
++    return QPoint(qFloor(input.x()), qFloor(input.y()));
+ }
+ 
+-void FBController::mouseMoveEvent(QMouseEvent *me) {
+-    if(_framebufferID != -1 && !me->points().isEmpty()) {
+-        const QEventPoint &point = me->points()[0];
+-        QPoint conv = convertPointToQTFBPixels(point.position());
++void FBController::mousePressEvent(QMouseEvent *event)
++{
++    if (_framebufferID != -1 && !event->points().isEmpty()) {
++        const QEventPoint &point = event->points()[0];
++        const QPoint converted = convertPointToQTFBPixels(point.position());
+         qtfb::UserInputContents packet {
+-            .inputType = INPUT_PEN_UPDATE,
++            .inputType = INPUT_PEN_PRESS,
+             .devId = 0,
+-            .x = conv.x(),
+-            .y = conv.y(),
+-            .d = (int) (point.pressure() * 100.0),
++            .x = converted.x(),
++            .y = converted.y(),
++            .d = static_cast<int>(point.pressure() * 100.0),
+         };
+         qtfb::management::forwardUserInput(_framebufferID, &packet);
+     }
+-    me->accept();
++    event->accept();
+ }
+ 
+-static inline void sendKeyEvent(int key, int pkt, qtfb::FBKey _framebufferID) {
+-    if(_framebufferID != -1) {
++void FBController::mouseMoveEvent(QMouseEvent *event)
++{
++    if (_framebufferID != -1 && !event->points().isEmpty()) {
++        const QEventPoint &point = event->points()[0];
++        const QPoint converted = convertPointToQTFBPixels(point.position());
+         qtfb::UserInputContents packet {
+-            .inputType = pkt,
++            .inputType = INPUT_PEN_UPDATE,
+             .devId = 0,
+-            .x = key,
+-            .y = 0,
+-            .d = 0,
++            .x = converted.x(),
++            .y = converted.y(),
++            .d = static_cast<int>(point.pressure() * 100.0),
+         };
+         qtfb::management::forwardUserInput(_framebufferID, &packet);
+     }
++    event->accept();
+ }
+ 
+-void FBController::virtualKeyboardKeyDown(int key) {
+-    sendKeyEvent(key, INPUT_VKB_PRESS, _framebufferID);
+-}
+-
+-void FBController::virtualKeyboardKeyUp(int key) {
+-    sendKeyEvent(key, INPUT_VKB_RELEASE, _framebufferID);
+-}
+-
+-void FBController::specialKeyDown(int key) {
+-    sendKeyEvent(key, INPUT_BTN_PRESS, _framebufferID);
+-}
+-
+-void FBController::specialKeyUp(int key) {
+-    sendKeyEvent(key, INPUT_BTN_RELEASE, _framebufferID);
+-}
+-
+-void FBController::mouseReleaseEvent(QMouseEvent *me) {
+-    if(_framebufferID != -1) {
+-        QPoint conv = convertPointToQTFBPixels(me->position());
++static void sendKeyEvent(int key, int packetType, qtfb::FBKey framebufferID)
++{
++    if (framebufferID == -1) {
++        return;
++    }
++    qtfb::UserInputContents packet {
++        .inputType = packetType,
++        .devId = 0,
++        .x = key,
++        .y = 0,
++        .d = 0,
++    };
++    qtfb::management::forwardUserInput(framebufferID, &packet);
++}
++
++void FBController::virtualKeyboardKeyDown(int key) { sendKeyEvent(key, INPUT_VKB_PRESS, _framebufferID); }
++void FBController::virtualKeyboardKeyUp(int key) { sendKeyEvent(key, INPUT_VKB_RELEASE, _framebufferID); }
++void FBController::specialKeyDown(int key) { sendKeyEvent(key, INPUT_BTN_PRESS, _framebufferID); }
++void FBController::specialKeyUp(int key) { sendKeyEvent(key, INPUT_BTN_RELEASE, _framebufferID); }
++
++void FBController::mouseReleaseEvent(QMouseEvent *event)
++{
++    if (_framebufferID != -1) {
++        const QPoint converted = convertPointToQTFBPixels(event->position());
+         qtfb::UserInputContents packet {
+             .inputType = INPUT_PEN_RELEASE,
+             .devId = 0,
+-            .x = conv.x(),
+-            .y = conv.y(),
++            .x = converted.x(),
++            .y = converted.y(),
+             .d = 0,
+         };
+         qtfb::management::forwardUserInput(_framebufferID, &packet);
+     }
+-    me->accept();
++    event->accept();
+ }
+ 
+-void FBController::touchEvent(QTouchEvent *me) {
+-    if(_framebufferID != -1) {
+-        int lenPoints = me->points().length();
+-        if(lenPoints == 5 && !refreshedScreenAlready) {
++bool FBController::event(QEvent *event)
++{
++    if (event->type() == QEvent::TabletPress
++        || event->type() == QEvent::TabletMove
++        || event->type() == QEvent::TabletRelease) {
++        tabletEvent(static_cast<QTabletEvent *>(event));
++        return event->isAccepted();
++    }
++    return QQuickPaintedItem::event(event);
++}
++
++void FBController::tabletEvent(QTabletEvent *event)
++{
++    if (_framebufferID == -1) {
++        event->ignore();
++        return;
++    }
++
++    int inputType;
++    switch (event->type()) {
++    case QEvent::TabletPress: inputType = INPUT_PEN_PRESS; break;
++    case QEvent::TabletMove: inputType = INPUT_PEN_UPDATE; break;
++    case QEvent::TabletRelease: inputType = INPUT_PEN_RELEASE; break;
++    default:
++        event->ignore();
++        return;
++    }
++    const QPoint converted = convertPointToQTFBPixels(event->position());
++    const bool eraser = event->pointerType() == QPointingDevice::PointerType::Eraser;
++    qtfb::UserInputContents packet {
++        .inputType = inputType,
++        .devId = eraser ? 1 : 0,
++        .x = converted.x(),
++        .y = converted.y(),
++        .d = inputType == INPUT_PEN_RELEASE ? 0 : static_cast<int>(event->pressure() * 100.0),
++    };
++    qtfb::management::forwardUserInput(_framebufferID, &packet);
++    event->accept();
++}
++
++void FBController::touchEvent(QTouchEvent *event)
++{
++    if (_framebufferID != -1) {
++        const int pointCount = event->points().size();
++        if (pointCount == 5 && !refreshedScreenAlready) {
+             emit requestFullRefresh();
+             refreshedScreenAlready = true;
+             QDEBUG << "QTFB Force Refresh";
+         }
+-        for(const QEventPoint& point : me->points()) {
+-            QPoint conv = convertPointToQTFBPixels(point.position());
++        for (const QEventPoint &point : event->points()) {
++            const QPoint converted = convertPointToQTFBPixels(point.position());
+             qtfb::UserInputContents packet {
+                 .inputType = INPUT_TOUCH_PRESS,
+                 .devId = point.id(),
+-                .x = conv.x(),
+-                .y = conv.y(),
++                .x = converted.x(),
++                .y = converted.y(),
+                 .d = 0,
+             };
+-            switch(point.state()) {
+-                case QEventPoint::State::Pressed:
+-                    packet.inputType = INPUT_TOUCH_PRESS;
+-                    if(conv.y() < 100) checkingGestureDragDown = true;
+-                    break;
+-                case QEventPoint::State::Released:
+-                    packet.inputType = INPUT_TOUCH_RELEASE;
+-                    if(conv.y() > 100 && conv.y() < 400 && checkingGestureDragDown) {
+-                        emit dragDown();
+-                    }
+-                    if(lenPoints == 1) {
+-                        // Last point was released. Free the force-refresh flag.
+-                        refreshedScreenAlready = false;
+-                    }
+-                    checkingGestureDragDown = false;
+-                    break;
+-                case QEventPoint::State::Updated:
+-                    packet.inputType = INPUT_TOUCH_UPDATE;
+-                    break;
+-                default: break;
++            switch (point.state()) {
++            case QEventPoint::State::Pressed:
++                packet.inputType = INPUT_TOUCH_PRESS;
++                if (converted.y() < 100) checkingGestureDragDown = true;
++                break;
++            case QEventPoint::State::Released:
++                packet.inputType = INPUT_TOUCH_RELEASE;
++                if (converted.y() > 100 && converted.y() < 400 && checkingGestureDragDown) emit dragDown();
++                if (pointCount == 1) refreshedScreenAlready = false;
++                checkingGestureDragDown = false;
++                break;
++            case QEventPoint::State::Updated:
++                packet.inputType = INPUT_TOUCH_UPDATE;
++                break;
++            default:
++                continue;
+             }
+             qtfb::management::forwardUserInput(_framebufferID, &packet);
+         }
+     }
+-    me->accept();
++    event->accept();
+ }
+ 
+-static inline int translateKey(int qtKey) {
+-    switch(qtKey) {
+-        case Qt::Key_Right: return INPUT_BTN_X_RIGHT;
+-        case Qt::Key_Left: return INPUT_BTN_X_LEFT;
+-        case Qt::Key_Home: return INPUT_BTN_X_HOME;
++static int translateKey(int qtKey)
++{
++    switch (qtKey) {
++    case Qt::Key_Right: return INPUT_BTN_X_RIGHT;
++    case Qt::Key_Left: return INPUT_BTN_X_LEFT;
++    case Qt::Key_Home: return INPUT_BTN_X_HOME;
++    default: return -1;
+     }
+-    return -1;
+ }
+ 
+-void FBController::keyPressEvent(QKeyEvent *ke) {
+-    int k = translateKey(ke->key());
+-    if(k != -1)
+-        specialKeyDown(k);
++void FBController::keyPressEvent(QKeyEvent *event)
++{
++    const int key = translateKey(event->key());
++    if (key != -1) specialKeyDown(key);
+ }
+ 
+-void FBController::keyReleaseEvent(QKeyEvent *ke) {
+-    int k = translateKey(ke->key());
+-    if(k != -1)
+-        specialKeyUp(k);
++void FBController::keyReleaseEvent(QKeyEvent *event)
++{
++    const int key = translateKey(event->key());
++    if (key != -1) specialKeyUp(key);
+ }
+ 
+ int FBController::refreshMode() const { return _refreshMode; }
+-void FBController::setRefreshMode(int rm) {
+-    if(rm != _refreshMode) {
+-        _refreshMode = rm;
+-        emit refreshModeChanged();
+-    }
++
++void FBController::setRefreshMode(int mode)
++{
++    if (mode == _refreshMode) {
++        return;
++    }
++    _refreshMode = mode;
++    emit refreshModeChanged();
++    // The standalone epaper QPA consumes the dirty region generated by the
++    // painted item. Updating after the mode transition makes the new policy
++    // effective on the next submitted frame without blocking the socket.
++    markedUpdate();
+ }
+diff -ruN '--exclude=.git' a/src/qtfb/FBController.h b/src/qtfb/FBController.h
+--- a/src/qtfb/FBController.h	2026-05-21 23:48:07.000000000 +0800
++++ b/src/qtfb/FBController.h	2026-07-20 18:41:00.183381596 +0800
+@@ -1,20 +1,25 @@
+ #pragma once
+ 
++#include <memory>
++#include <mutex>
++
++#include <QImage>
++#include <QKeyEvent>
+ #include <QObject>
++#include <QPainter>
+ #include <QPoint>
+ #include <QPointF>
+-#include <QProcess>
+-#include <QProcessEnvironment>
+-#include <QString>
+-#include <QImage>
+-#include <QJsonDocument>
+-#include <QPainter>
+-#include <QJsonObject>
+-#include <QJsonValue>
+ #include <QQuickPaintedItem>
++#include <QRegion>
++#include <QTabletEvent>
++#include <QTouchEvent>
+ 
+ #include "common.h"
+ 
++namespace qtfb::management {
++class SharedFramebuffer;
++}
++
+ class FBController : public QQuickPaintedItem
+ {
+     Q_PROPERTY(bool active READ active NOTIFY activeChanged)
+@@ -23,13 +28,13 @@
+     Q_PROPERTY(int refreshMode READ refreshMode NOTIFY refreshModeChanged)
+     Q_OBJECT
+ public:
+-    explicit FBController(QQuickItem *parent = nullptr) : QQuickPaintedItem(parent) { setAcceptTouchEvents(true); setAcceptedMouseButtons((Qt::MouseButtons) 0xFFFFFFFF); setFocusPolicy(Qt::StrongFocus); }
+-    virtual ~FBController();
++    explicit FBController(QQuickItem *parent = nullptr);
++    ~FBController() override;
+ 
+     void setFramebufferID(int fbID);
+     int framebufferID() const;
+ 
+-    void setAllowScaling(bool a);
++    void setAllowScaling(bool allow);
+     bool allowScaling() const;
+     int refreshMode() const;
+     void setRefreshMode(int refreshMode);
+@@ -37,41 +42,58 @@
+     bool active() const;
+ 
+     void markedUpdate(const QRect &rect = QRect());
+-    void setActive(bool active); // NOT QML ACCESSIBLE!
+-    bool isMidPaint;
+-    virtual void paint(QPainter *painter);
+-    void associateSHM(QImage *image);
+-
+-    QPoint convertPointToQTFBPixels(const QPointF &input);
+-
+-    virtual void mousePressEvent(QMouseEvent *me) override;
+-    virtual void mouseMoveEvent(QMouseEvent *me) override;
+-    virtual void mouseReleaseEvent(QMouseEvent *me) override;
+-    virtual void touchEvent(QTouchEvent *me) override;
++    void setActive(bool active); // NOT QML ACCESSIBLE
++    void paint(QPainter *painter) override;
++    void associateSHM(const std::shared_ptr<qtfb::management::SharedFramebuffer> &framebuffer);
++    void disassociateSHM(const std::shared_ptr<qtfb::management::SharedFramebuffer> &framebuffer);
++
++    QPoint convertPointToQTFBPixels(const QPointF &input) const;
++
++    void mousePressEvent(QMouseEvent *event) override;
++    void mouseMoveEvent(QMouseEvent *event) override;
++    void mouseReleaseEvent(QMouseEvent *event) override;
++    void touchEvent(QTouchEvent *event) override;
++    bool event(QEvent *event) override;
++    void tabletEvent(QTabletEvent *event);
+ 
+-    virtual void keyPressEvent(QKeyEvent *ke) override;
+-    virtual void keyReleaseEvent(QKeyEvent *ke) override;
++    void keyPressEvent(QKeyEvent *event) override;
++    void keyReleaseEvent(QKeyEvent *event) override;
+ 
+     Q_INVOKABLE void virtualKeyboardKeyDown(int key);
+     Q_INVOKABLE void virtualKeyboardKeyUp(int key);
+-
+     Q_INVOKABLE void specialKeyDown(int key);
+     Q_INVOKABLE void specialKeyUp(int key);
++    Q_INVOKABLE void fullRefresh() { markedUpdate(); }
+ 
+ signals:
+     void activeChanged();
+     void dragDown();
+     void requestFullRefresh();
+     void refreshModeChanged();
++    void firstFrameReady();
+ 
+ private:
++    using FramebufferPtr = std::shared_ptr<qtfb::management::SharedFramebuffer>;
++
++    FramebufferPtr currentFramebuffer() const;
++    bool scalingActive(const FramebufferPtr &framebuffer) const;
++    QRect sourceRectToItem(const QRect &rect, const FramebufferPtr &framebuffer) const;
++    QRect itemRectToSource(const QRect &rect, const FramebufferPtr &framebuffer) const;
++    void scheduleItemUpdate(const QRect &rect);
++    void flushMarkedUpdates();
++
+     int _framebufferID = -1;
+     int _refreshMode = DEFAULT_WAVEFORM_MODE;
+     bool _active = false;
+     bool _allowScaling = false;
++    bool _updateScheduled = false;
++    bool _firstFrameSeen = false;
++    bool _firstFrameUpdatePending = false;
+ 
+     bool checkingGestureDragDown = false;
+     bool refreshedScreenAlready = false;
+ 
+-    QImage *image = nullptr;
++    mutable std::mutex _framebufferMutex;
++    FramebufferPtr _framebuffer;
++    QRegion _pendingUpdates;
+ };
+diff -ruN '--exclude=.git' a/src/qtfb/fbmanagement.cpp b/src/qtfb/fbmanagement.cpp
+--- a/src/qtfb/fbmanagement.cpp	2026-05-21 23:48:07.000000000 +0800
++++ b/src/qtfb/fbmanagement.cpp	2026-07-20 18:20:30.251874359 +0800
+@@ -1,438 +1,540 @@
+ #include "fbmanagement.h"
+-#include "log.h"
+-#include "common.h"
++
++#include <algorithm>
++#include <atomic>
++#include <cerrno>
++#include <cstring>
++#include <functional>
+ #include <iostream>
+ #include <mutex>
+-/*
+-My implementation of the shared QT-framebuffer idea works by:
+-- Having all the clients communicate with the server via a UNIX socket, which governs
+-  shared memory usage.
+-- After connecting via the master socket, the client will need to:
+-  * Define what framebuffer it wants to connect to by ID
+-  * Define what format it will use for the shared memory.
+-  After it defines all that, it will receive a global shared-memory key, which will get
+-  it access to the shared memory region.
+-- In order to paint data on the screen, the client will write the data into the SHM, then
+-  send an update request via the unix socket. That will cause the server to read the SHM
+-  and force a repaint.
+-- Upon framebuffer detaching, the server will send the client a packet telling it to stop
+-  writing data to the SHM, and disconnect. The server will delete the shared memory and
+-  detach everything.
+-*/
+-
+-static std::mutex globalBackendsListMutex;
+-#define SYNCHRONIZE const std::lock_guard<std::mutex> __lock(globalBackendsListMutex)
+-
+-void tryToMatchUp(qtfb::FBKey key){
+-    // Try to find the client in the clients' list
+-    if(qtfb::management::connections.find(key) == qtfb::management::connections.end()) {
+-        return; // Client not found
+-    }
+-    if(qtfb::management::framebuffers.find(key) == qtfb::management::framebuffers.end()) {
+-        return; // Framebuffer not found
+-    }
+-    // Both of them found! Assign one to another.
+-    qtfb::management::ClientBackend *connection = qtfb::management::connections[key];
+-    QPointer<FBController> controller = qtfb::management::framebuffers[key];
+-    if(connection->shm == NULL || controller.isNull()){
+-        CERR << "Invalid state: Cannot have an partially-associated connection in the connections map!" << std::endl;
+-        return;
+-    }
+-    controller->associateSHM(connection->image);
+-    CERR << "Associated connection <==> framebuffer " << key << std::endl;
+-}
+-
+-// Never wait for messages to come through. Not all clients have to be actively waiting for new input.
+-// If the socket's buffer was to overflow, simply drop the message.
+-#define SEND(message) send(connection->clientFD, &message, sizeof(message), MSG_DONTWAIT)
+-
+-void qtfb::management::registerController(FBKey key, QPointer<FBController> controller) {
+-    if(key == -1) return;
+-    if(qtfb::management::framebuffers.find(key) != qtfb::management::framebuffers.end()) {
+-        CERR << "Violation: Tried to attach to an already defined framebuffer (" << key << "). Please change the framebufferID!" << std::endl;
+-        return;
+-    }
+-
+-    CERR << "Registered framebuffer controller ID: " << key << std::endl;
+-    framebuffers.emplace(key, controller);
+-    tryToMatchUp(key);
+-}
+-
+-bool qtfb::management::isControllerAssociated(FBKey key) {
+-    auto position = qtfb::management::connections.find(key);
+-    return position != qtfb::management::connections.end();
+-}
+-
+-void qtfb::management::unregisterController(FBKey key) {
+-    auto position = qtfb::management::framebuffers.find(key);
+-    if(position != qtfb::management::framebuffers.end()) {
+-        qtfb::management::framebuffers.erase(position);
+-    }
+-    CERR << "Unregistered framebuffer controller ID: " << key << std::endl;
+-}
+-
+-static bool createSHM(qtfb::management::ClientBackend *connection, int shmType, int width, int height) {
+-    size_t shmSize;
+-    QImage::Format format;
+-    int bpl;
+-
+-    switch(shmType) {
+-        case FBFMT_RM2FB:
+-            shmSize = height * width * 2;
+-            format = QImage::Format::Format_RGB16;
+-            bpl = 2 * width;
+-            break;
+-        case FBFMT_RMPP_RGB888:
+-        case FBFMT_RMPPM_RGB888:
+-            shmSize = height * width * 3;
+-            bpl = 3 * width;
+-            format = QImage::Format::Format_RGB888;
+-            break;
+-        case FBFMT_RMPP_RGBA8888:
+-        case FBFMT_RMPPM_RGBA8888:
+-            shmSize = height * width * 4;
+-            bpl = 4 * width;
+-            format = QImage::Format::Format_RGBA8888;
+-            break;
+-        case FBFMT_RMPP_RGB565:
+-        case FBFMT_RMPPM_RGB565:
+-            shmSize = height * width * 2;
+-            bpl = 2 * width;
+-            format = QImage::Format::Format_RGB16;
+-            break;
+-        default:
+-            CERR << "Unknown SHM type" << shmType << std::endl;
+-            return false;
+-    }
+-    CERR << "Client is connecting in " << shmType << " mode. Resolution is set to " << width << "x" << height << std::endl;
++#include <set>
++#include <thread>
++#include <utility>
++
++#include <QMetaObject>
++#include <QRect>
++
++#include <fcntl.h>
++#include <poll.h>
++#include <sys/mman.h>
++#include <sys/socket.h>
++#include <sys/stat.h>
++#include <sys/un.h>
++#include <unistd.h>
+ 
+-    connection->shmSize = shmSize;
+-    connection->shmType = shmType;
+-    connection->shmKey = rand() & ~0x80000000;
+-    FORMAT_SHM(shmText, connection->shmKey);
+-    shm_unlink(shmText);
+-    connection->shmFD = shm_open(shmText, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+-    if(connection->shmFD == -1) {
+-        CERR << "Failed to shm_open()!" << std::endl;
+-        return false;
+-    }
+-    if (ftruncate(connection->shmFD, shmSize) == -1) {
+-        CERR << "Failed to truncate the file!" << std::endl;
+-        shm_unlink(shmText);
+-        return false;
++#include "FBController.h"
++#include "common.h"
++#include "log.h"
++
++namespace {
++constexpr int SocketBacklog = 10;
++constexpr int ResponseError = 1;
++constexpr int ResponseOk = 0;
++
++std::mutex backendsMutex;
++std::map<qtfb::FBKey, QPointer<FBController>> framebuffers;
++std::map<qtfb::FBKey, std::unique_ptr<qtfb::management::ClientBackend>> connections;
++
++std::mutex serverMutex;
++std::atomic_bool serverRunning {false};
++int serverSocket = -1;
++std::set<int> activeClientSockets;
++std::thread serverThread;
++std::atomic_uint nextShmKey {1};
++
++bool sendMessage(qtfb::management::ClientConnection *connection, const qtfb::ServerMessage &message)
++{
++    return connection && connection->clientFD >= 0
++        && send(connection->clientFD, &message, sizeof(message), MSG_DONTWAIT | MSG_NOSIGNAL)
++            == static_cast<ssize_t>(sizeof(message));
++}
++
++void associateController(qtfb::FBKey key,
++                         const std::shared_ptr<qtfb::management::SharedFramebuffer> &framebuffer)
++{
++    QPointer<FBController> controller;
++    {
++        std::lock_guard<std::mutex> lock(backendsMutex);
++        const auto position = framebuffers.find(key);
++        if (position != framebuffers.end()) {
++            controller = position->second;
++        }
+     }
+-    connection->shm = (unsigned char *) mmap(NULL, shmSize, PROT_READ | PROT_WRITE, MAP_SHARED, connection->shmFD, 0);
+-    if(connection->shm == MAP_FAILED) {
+-        CERR << "Failed to mmap() the SHM for framebuffer!" << std::endl;
+-        shm_unlink(shmText);
+-        connection->shmFD = -1;
+-        connection->shm = NULL;
+-        connection->shmSize = 0;
+-        connection->shmType = -1;
+-        connection->shmKey = -1;
+-        return false;
++    if (controller) {
++        controller->associateSHM(framebuffer);
++        CERR << "Associated connection <==> framebuffer " << key << std::endl;
+     }
+-    // Clear the framebuffer with white pixels:
+-    memset(connection->shm, 0xFF, shmSize);
+-    CERR << "Defined SHM (" << shmSize << " bytes) at " << (void *) connection->shm << std::endl;
+-    // We have the SHM defined.
+-    connection->image = new QImage(connection->shm, width, height, bpl, format, nullptr, nullptr);
+-
+-    return true;
+ }
+ 
+-static bool createDefaultSHM(qtfb::management::ClientBackend *connection, int shmType) {
+-    switch(shmType) {
+-        case FBFMT_RM2FB:
+-            return createSHM(connection, shmType, RM2_WIDTH, RM2_HEIGHT);
+-        case FBFMT_RMPP_RGB888:
+-        case FBFMT_RMPP_RGBA8888:
+-        case FBFMT_RMPP_RGB565:
+-            return createSHM(connection, shmType, RMPP_WIDTH, RMPP_HEIGHT);
+-        case FBFMT_RMPPM_RGB888:
+-        case FBFMT_RMPPM_RGBA8888:
+-        case FBFMT_RMPPM_RGB565:
+-            return createSHM(connection, shmType, RMPPM_WIDTH, RMPPM_HEIGHT);
+-        default:
+-            return createSHM(connection, shmType, -1, -1);
++std::shared_ptr<qtfb::management::SharedFramebuffer> createSHM(int shmType, int width, int height)
++{
++    if (width <= 0 || height <= 0) {
++        CERR << "Invalid framebuffer dimensions " << width << "x" << height << std::endl;
++        return {};
++    }
++
++    size_t shmSize = 0;
++    QImage::Format format = QImage::Format_Invalid;
++    int bytesPerLine = 0;
++    switch (shmType) {
++    case FBFMT_RM2FB:
++    case FBFMT_RMPP_RGB565:
++    case FBFMT_RMPPM_RGB565:
++        shmSize = static_cast<size_t>(height) * width * 2;
++        bytesPerLine = 2 * width;
++        format = QImage::Format_RGB16;
++        break;
++    case FBFMT_RMPP_RGB888:
++    case FBFMT_RMPPM_RGB888:
++        shmSize = static_cast<size_t>(height) * width * 3;
++        bytesPerLine = 3 * width;
++        format = QImage::Format_RGB888;
++        break;
++    case FBFMT_RMPP_RGBA8888:
++    case FBFMT_RMPPM_RGBA8888:
++        shmSize = static_cast<size_t>(height) * width * 4;
++        bytesPerLine = 4 * width;
++        format = QImage::Format_RGBA8888;
++        break;
++    default:
++        CERR << "Unknown SHM type " << shmType << std::endl;
++        return {};
++    }
++
++    auto framebuffer = std::make_shared<qtfb::management::SharedFramebuffer>();
++    framebuffer->shmSize = shmSize;
++    framebuffer->shmType = shmType;
++
++    char shmName[32] = {};
++    for (int attempt = 0; attempt < 128; ++attempt) {
++        framebuffer->shmKey = static_cast<int>(nextShmKey.fetch_add(1) & 0x7fffffffU);
++        if (framebuffer->shmKey == 0) {
++            continue;
++        }
++        std::snprintf(shmName, sizeof(shmName), "/qtfb_%d", framebuffer->shmKey);
++        framebuffer->shmFD = shm_open(shmName, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
++        if (framebuffer->shmFD >= 0) {
++            break;
++        }
++        if (errno != EEXIST) {
++            CERR << "Failed to shm_open(): " << std::strerror(errno) << std::endl;
++            return {};
++        }
++    }
++    if (framebuffer->shmFD < 0) {
++        CERR << "Could not allocate a unique QTFB shared-memory key" << std::endl;
++        return {};
++    }
++
++    if (ftruncate(framebuffer->shmFD, static_cast<off_t>(shmSize)) == -1) {
++        CERR << "Failed to resize QTFB shared memory: " << std::strerror(errno) << std::endl;
++        return {};
++    }
++    framebuffer->shm = static_cast<unsigned char *>(
++        mmap(nullptr, shmSize, PROT_READ | PROT_WRITE, MAP_SHARED, framebuffer->shmFD, 0));
++    if (framebuffer->shm == MAP_FAILED) {
++        framebuffer->shm = nullptr;
++        CERR << "Failed to mmap QTFB shared memory: " << std::strerror(errno) << std::endl;
++        return {};
++    }
++
++    std::memset(framebuffer->shm, 0xFF, shmSize);
++    framebuffer->image = QImage(framebuffer->shm, width, height, bytesPerLine, format);
++    CERR << "Defined SHM (" << shmSize << " bytes) for " << width << "x" << height << std::endl;
++    return framebuffer;
++}
++
++std::shared_ptr<qtfb::management::SharedFramebuffer> createDefaultSHM(int shmType)
++{
++    switch (shmType) {
++    case FBFMT_RM2FB:
++        return createSHM(shmType, RM2_WIDTH, RM2_HEIGHT);
++    case FBFMT_RMPP_RGB888:
++    case FBFMT_RMPP_RGBA8888:
++    case FBFMT_RMPP_RGB565:
++        return createSHM(shmType, RMPP_WIDTH, RMPP_HEIGHT);
++    case FBFMT_RMPPM_RGB888:
++    case FBFMT_RMPPM_RGBA8888:
++    case FBFMT_RMPPM_RGB565:
++        return createSHM(shmType, RMPPM_WIDTH, RMPPM_HEIGHT);
++    default:
++        return {};
+     }
+ }
+ 
+-static int handleInitialize(qtfb::management::ClientConnection *connection, qtfb::ClientMessage *inbound, int messageType) {
+-    SYNCHRONIZE;
+-    connection->fbKey = inbound->init.framebufferKey;
+-    if(qtfb::management::connections.find(inbound->init.framebufferKey) != qtfb::management::connections.end()) {
+-        // If there already exists a backend like that, check if the parameters are the same
+-        // If they are, this is safe.
+-        qtfb::management::ClientBackend *backend = qtfb::management::connections[inbound->init.framebufferKey];
+-        switch(messageType) {
+-            case MESSAGE_CUSTOM_INITIALIZE:
+-                if(backend->shmType != inbound->customInit.framebufferType || backend->image->width() != inbound->customInit.width || backend->image->height() != inbound->customInit.height) {
+-                    return RESP_ERR;
+-                }
+-                break;
+-            case MESSAGE_INITIALIZE:
+-                if(backend->shmType != inbound->init.framebufferType) {
+-                    return RESP_ERR;
+-                }
+-                break;
+-            default: return RESP_ERR;
++int handleInitialize(qtfb::management::ClientConnection *connection,
++                     const qtfb::ClientMessage &inbound,
++                     int messageType)
++{
++    const qtfb::FBKey key = messageType == MESSAGE_CUSTOM_INITIALIZE
++        ? inbound.customInit.framebufferKey : inbound.init.framebufferKey;
++    const int type = messageType == MESSAGE_CUSTOM_INITIALIZE
++        ? inbound.customInit.framebufferType : inbound.init.framebufferType;
++
++    std::shared_ptr<qtfb::management::SharedFramebuffer> framebuffer;
++    {
++        std::lock_guard<std::mutex> lock(backendsMutex);
++        if (connection->fbKey != -1) {
++            CERR << "Client attempted to initialize a QTFB connection twice" << std::endl;
++            return ResponseError;
++        }
++        connection->fbKey = key;
++
++        auto existing = connections.find(key);
++        if (existing != connections.end()) {
++            framebuffer = existing->second->framebuffer;
++            if (!framebuffer || framebuffer->shmType != type) {
++                return ResponseError;
++            }
++            if (messageType == MESSAGE_CUSTOM_INITIALIZE
++                && (framebuffer->image.width() != inbound.customInit.width
++                    || framebuffer->image.height() != inbound.customInit.height)) {
++                return ResponseError;
++            }
++            existing->second->connections.push_back(connection);
++        } else {
++            framebuffer = messageType == MESSAGE_CUSTOM_INITIALIZE
++                ? createSHM(type, inbound.customInit.width, inbound.customInit.height)
++                : createDefaultSHM(type);
++            if (!framebuffer) {
++                return ResponseError;
++            }
++            auto backend = std::make_unique<qtfb::management::ClientBackend>();
++            backend->framebuffer = framebuffer;
++            backend->connections.push_back(connection);
++            connections.emplace(key, std::move(backend));
+         }
+-        // It's safe.
+-        qtfb::ServerMessage outbound = {
+-            .type = MESSAGE_INITIALIZE,
+-            .init = {
+-                .shmKeyDefined = backend->shmKey,
+-                .shmSize = backend->shmSize,
+-            },
+-        };
+-        SEND(outbound);
+-        backend->connections.push_back(connection);
+-        return RESP_OK;
+-    }
+-    qtfb::management::ClientBackend *newBackend = new qtfb::management::ClientBackend();
+-    bool result = false;
+-    switch(messageType) {
+-        case MESSAGE_CUSTOM_INITIALIZE:
+-            result = createSHM(newBackend, inbound->customInit.framebufferType, inbound->customInit.width, inbound->customInit.height);
+-            break;
+-        case MESSAGE_INITIALIZE:
+-            result = createDefaultSHM(newBackend, inbound->init.framebufferType);
+-            break;
+-    }
+-    if(!result) {
+-        delete newBackend;
+-        return RESP_ERR;
+     }
+-    // Send the SHM key over to the client
+-    qtfb::ServerMessage outbound = {
++
++    const qtfb::ServerMessage outbound {
+         .type = MESSAGE_INITIALIZE,
+         .init = {
+-            .shmKeyDefined = newBackend->shmKey,
+-            .shmSize = newBackend->shmSize,
++            .shmKeyDefined = framebuffer->shmKey,
++            .shmSize = framebuffer->shmSize,
+         },
+     };
+-    SEND(outbound);
+-    newBackend->connections.push_back(connection);
+-    qtfb::management::connections[connection->fbKey] = newBackend;
+-    tryToMatchUp(connection->fbKey);
+-    return RESP_OK;
+-}
+-
+-static int handleUpdateRegion(QPointer<FBController> controller, qtfb::management::ClientConnection *connection, qtfb::ClientMessage *inbound) {
+-    int x, y, w, h;
+-    switch(inbound->update.type) {
+-        case UPDATE_ALL:
+-            CERR << "Updated all of framebuffer " << connection->fbKey << std::endl;
+-            QMetaObject::invokeMethod(controller, [controller]() {
+-                controller->markedUpdate();
+-            }, Qt::QueuedConnection);
+-            break;
+-        case UPDATE_PARTIAL:
+-            CERR << "Updated region " << inbound->update.x << " " << inbound->update.y << " " << inbound->update.w << " " << inbound->update.h << " of framebuffer " << connection->fbKey << std::endl;
+-            x = inbound->update.x, y = inbound->update.y, w = inbound->update.w, h = inbound->update.h;
+-            QMetaObject::invokeMethod(controller, [controller, x, y, w, h]() {
+-                controller->markedUpdate(QRect(
+-                    x,
+-                    y,
+-                    w,
+-                    h
+-                ));
+-            }, Qt::QueuedConnection);
+-            break;
+-        default:
+-            CERR << "Unknown update method! " << inbound->update.type << " <-- " << inbound->update.x << " " << inbound->update.y << " " << inbound->update.w << " " << inbound->update.h << " of framebuffer " << connection->fbKey << std::endl;
+-    }
+-
+-    return RESP_OK;
+-}
+-
+-static int invokeOnConnectedFramebuffer(qtfb::management::ClientConnection *connection, std::function<int(QPointer<FBController>)> consumer) {
+-    if(connection->fbKey == -1){
+-        CERR << "Cannot update region of an uninitialized connection!" << std::endl;
+-        return RESP_ERR;
++    if (!sendMessage(connection, outbound)) {
++        return ResponseError;
+     }
+-    if(qtfb::management::framebuffers.find(connection->fbKey) != qtfb::management::framebuffers.end()) {
+-        QPointer<FBController> controller = qtfb::management::framebuffers[connection->fbKey];
+-        if(controller.isNull()) {
+-            return RESP_OK;
++    associateController(key, framebuffer);
++    CERR << "remagic-runtime: qtfb key=" << key << " qtfb-connected" << std::endl;
++    return ResponseOk;
++}
++
++QPointer<FBController> controllerFor(qtfb::FBKey key)
++{
++    std::lock_guard<std::mutex> lock(backendsMutex);
++    const auto position = framebuffers.find(key);
++    return position == framebuffers.end() ? QPointer<FBController>() : position->second;
++}
++
++int withConnectedController(qtfb::management::ClientConnection *connection,
++                            const std::function<int(QPointer<FBController>)> &consumer)
++{
++    if (connection->fbKey == -1) {
++        CERR << "Cannot act on an uninitialized QTFB connection" << std::endl;
++        return ResponseError;
++    }
++    const QPointer<FBController> controller = controllerFor(connection->fbKey);
++    return controller ? consumer(controller) : ResponseOk;
++}
++
++int handleUpdateRegion(QPointer<FBController> controller,
++                       qtfb::management::ClientConnection *connection,
++                       const qtfb::ClientMessage &inbound)
++{
++    if (inbound.update.type == UPDATE_ALL) {
++        QMetaObject::invokeMethod(controller, [controller]() {
++            if (controller) controller->markedUpdate();
++        }, Qt::QueuedConnection);
++        return ResponseOk;
++    }
++    if (inbound.update.type == UPDATE_PARTIAL) {
++        if (inbound.update.w <= 0 || inbound.update.h <= 0) {
++            return ResponseOk;
+         }
+-        return consumer(controller);
+-    } else {
+-        CERR << "Could not find the framebuffer to act upon." << std::endl;
++        const QRect rect(inbound.update.x, inbound.update.y, inbound.update.w, inbound.update.h);
++        QMetaObject::invokeMethod(controller, [controller, rect]() {
++            if (controller) controller->markedUpdate(rect);
++        }, Qt::QueuedConnection);
++        return ResponseOk;
+     }
+-    return RESP_OK;
++    CERR << "Unknown update method " << inbound.update.type
++         << " for framebuffer " << connection->fbKey << std::endl;
++    return ResponseError;
+ }
+ 
+-static inline void safetyWaitForEventLoopToCatchUp() {
+-    using namespace std::chrono_literals;
+-    std::this_thread::sleep_for(1s);
++void removeActiveClient(int fd)
++{
++    std::lock_guard<std::mutex> lock(serverMutex);
++    activeClientSockets.erase(fd);
+ }
+ 
+-static void managementClientThread(int incomingFD) {
++void managementClientThread(int incomingFD)
++{
+     qtfb::management::ClientConnection connection;
+     connection.clientFD = incomingFD;
++    CERR << "QTFB connection established on FD " << incomingFD << std::endl;
+ 
+-    CERR << "Connection established from client. Sock FD is " << incomingFD << std::endl;
+-    qtfb::ClientMessage inboundMessage;
+-    for(;;){
+-        if(recv(incomingFD, &inboundMessage, sizeof(inboundMessage), 0) < 1) break;
+-        int status;
+-        switch(inboundMessage.type) {
+-            case MESSAGE_INITIALIZE:
+-            case MESSAGE_CUSTOM_INITIALIZE:
+-                status = handleInitialize(&connection, &inboundMessage, inboundMessage.type);
+-                break;
+-            case MESSAGE_UPDATE:
+-                status = invokeOnConnectedFramebuffer(&connection, [&](auto controller) {
+-                    return handleUpdateRegion(controller, &connection, &inboundMessage);
+-                });
+-                break;
+-            case MESSAGE_TERMINATE:
+-                CERR << "The client requested closing the connection." << std::endl;
+-                goto close;
+-            case MESSAGE_SET_REFRESH_MODE:
+-                status = invokeOnConnectedFramebuffer(&connection, [=](auto controller) {
+-                    int refresh = inboundMessage.refreshMode;
+-                    if(refresh > 4 || refresh < 0) {
+-                        CERR << "The client tried to set refresh mode to an undefined value!" << std::endl;
+-                        return RESP_ERR;
+-                    }
+-                    QMetaObject::invokeMethod(controller, [controller, refresh]() {
+-                        controller->setRefreshMode(refresh);
+-                    });
+-                    safetyWaitForEventLoopToCatchUp();
+-                    return RESP_OK;
+-                });
+-                break;
+-            case MESSAGE_REQUEST_FULL_REFRESH:
+-                status = invokeOnConnectedFramebuffer(&connection, [=](auto controller) {
+-                    QMetaObject::invokeMethod(controller, [controller]() {
+-                        emit controller->requestFullRefresh();
+-                    });
+-                    safetyWaitForEventLoopToCatchUp();
+-                    return RESP_OK;
+-                });
+-                break;
+-            default:
+-                CERR << "Client has tried to send a message with an invalid type: " << inboundMessage.type << std::endl;
+-                goto close;
+-        }
+-        if(status == RESP_ERR) {
+-            CERR << "Request-specific error. Disconnecting..." << std::endl;
+-            goto close;
+-        }
+-    }
+-    close: SYNCHRONIZE;
+-    qtfb::management::ClientBackend *backendToKill = NULL;
+-    if(connection.fbKey != -1) {
+-        auto position = qtfb::management::connections.find(connection.fbKey);
+-        if(position != qtfb::management::connections.end()){
+-            // There can be more than one backend. Was this the last?
+-            qtfb::management::ClientBackend *backend = qtfb::management::connections[connection.fbKey];
+-            auto position2 = std::find(backend->connections.begin(), backend->connections.end(), &connection);
+-            if(position2 != backend->connections.end()) {
+-                backend->connections.erase(position2);
+-            } else {
+-                CERR << "Cannot erase connection in list!" << std::endl;
+-            }
+-            if(backend->connections.empty()) {
+-                backendToKill = backend; // Delay destruction of the backend to after the (potential) object had dissotiated.
+-                qtfb::management::connections.erase(position);
+-            }
++    qtfb::ClientMessage inbound {};
++    while (serverRunning.load(std::memory_order_acquire)) {
++        const ssize_t received = recv(incomingFD, &inbound, sizeof(inbound), 0);
++        if (received == 0) {
++            break;
++        }
++        if (received < 0) {
++            if (errno == EINTR) continue;
++            break;
++        }
++        if (received != static_cast<ssize_t>(sizeof(inbound))) {
++            CERR << "Discarding malformed QTFB packet" << std::endl;
++            break;
+         }
+-    }
+ 
+-    if(connection.fbKey != -1 && backendToKill){
+-        if(qtfb::management::framebuffers.find(connection.fbKey) != qtfb::management::framebuffers.end()) {
+-            // The client that died was associated with a framebuffer!
+-            QPointer<FBController> controller = qtfb::management::framebuffers[connection.fbKey];
+-            if(!controller.isNull()) {
+-                // Disassociate
+-                while(controller->isMidPaint) {
+-                    usleep(1000);
+-                    if(controller.isNull()) {
+-                        // The controller had been removed as we were waiting for the repaint to stop
+-                        goto continueDeletion;
+-                    }
++        int status = ResponseOk;
++        switch (inbound.type) {
++        case MESSAGE_INITIALIZE:
++        case MESSAGE_CUSTOM_INITIALIZE:
++            status = handleInitialize(&connection, inbound, inbound.type);
++            break;
++        case MESSAGE_UPDATE:
++            status = withConnectedController(&connection, [&](QPointer<FBController> controller) {
++                return handleUpdateRegion(controller, &connection, inbound);
++            });
++            break;
++        case MESSAGE_TERMINATE:
++            goto close_connection;
++        case MESSAGE_SET_REFRESH_MODE:
++            status = withConnectedController(&connection, [&](QPointer<FBController> controller) {
++                const int refresh = inbound.refreshMode;
++                if (refresh < REFRESH_MODE_UFAST || refresh > REFRESH_MODE_UI) {
++                    return ResponseError;
+                 }
++                QMetaObject::invokeMethod(controller, [controller, refresh]() {
++                    if (controller) controller->setRefreshMode(refresh);
++                }, Qt::QueuedConnection);
++                return ResponseOk;
++            });
++            break;
++        case MESSAGE_REQUEST_FULL_REFRESH:
++            status = withConnectedController(&connection, [&](QPointer<FBController> controller) {
++                QMetaObject::invokeMethod(controller, [controller]() {
++                    if (controller) emit controller->requestFullRefresh();
++                }, Qt::QueuedConnection);
++                return ResponseOk;
++            });
++            break;
++        default:
++            status = ResponseError;
++            break;
++        }
++        if (status == ResponseError) {
++            break;
++        }
++    }
+ 
+-                controller->associateSHM(NULL);
+-                CERR << "Disassociating framebuffer " << connection.fbKey << std::endl;
++close_connection:
++    std::shared_ptr<qtfb::management::SharedFramebuffer> framebufferToRelease;
++    QPointer<FBController> controller;
++    if (connection.fbKey != -1) {
++        std::lock_guard<std::mutex> lock(backendsMutex);
++        const auto backendPosition = connections.find(connection.fbKey);
++        if (backendPosition != connections.end()) {
++            auto &clients = backendPosition->second->connections;
++            clients.erase(std::remove(clients.begin(), clients.end(), &connection), clients.end());
++            if (clients.empty()) {
++                framebufferToRelease = backendPosition->second->framebuffer;
++                connections.erase(backendPosition);
++                const auto controllerPosition = framebuffers.find(connection.fbKey);
++                if (controllerPosition != framebuffers.end()) {
++                    controller = controllerPosition->second;
++                }
+             }
+         }
+     }
++    if (controller && framebufferToRelease) {
++        controller->disassociateSHM(framebufferToRelease);
++    }
+ 
+-    continueDeletion:
+-
+-    CERR << "Closing client socket " << incomingFD << std::endl;
++    shutdown(incomingFD, SHUT_RDWR);
+     close(incomingFD);
+-    if(backendToKill != NULL) delete backendToKill;
++    removeActiveClient(incomingFD);
++    CERR << "Closed QTFB client FD " << incomingFD << std::endl;
++}
++
++void managementMainThread()
++{
++    std::vector<std::thread> clientThreads;
++    while (serverRunning.load(std::memory_order_acquire)) {
++        int listeningFD = -1;
++        {
++            std::lock_guard<std::mutex> lock(serverMutex);
++            listeningFD = serverSocket;
++        }
++        if (listeningFD < 0) break;
++
++        pollfd descriptor {.fd = listeningFD, .events = POLLIN, .revents = 0};
++        const int pollStatus = poll(&descriptor, 1, 250);
++        if (pollStatus < 0) {
++            if (errno == EINTR) continue;
++            break;
++        }
++        if (pollStatus == 0) continue;
++        if (!(descriptor.revents & POLLIN)) {
++            if (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) break;
++            continue;
++        }
++
++        const int incomingFD = accept4(listeningFD, nullptr, nullptr, SOCK_CLOEXEC);
++        if (incomingFD < 0) {
++            if (errno == EINTR) continue;
++            if (!serverRunning.load()) break;
++            CERR << "Failed to accept QTFB connection: " << std::strerror(errno) << std::endl;
++            continue;
++        }
++        if (!serverRunning.load(std::memory_order_acquire)) {
++            close(incomingFD);
++            break;
++        }
++        {
++            std::lock_guard<std::mutex> lock(serverMutex);
++            activeClientSockets.insert(incomingFD);
++        }
++        clientThreads.emplace_back(managementClientThread, incomingFD);
++    }
++
++    {
++        std::lock_guard<std::mutex> lock(serverMutex);
++        for (const int clientFD : activeClientSockets) {
++            shutdown(clientFD, SHUT_RDWR);
++        }
++    }
++    for (std::thread &thread : clientThreads) {
++        if (thread.joinable()) thread.join();
++    }
++
++    int listeningFD = -1;
++    {
++        std::lock_guard<std::mutex> lock(serverMutex);
++        listeningFD = std::exchange(serverSocket, -1);
++    }
++    if (listeningFD >= 0) close(listeningFD);
++    unlink(SOCKET_PATH);
++}
+ }
+ 
+-qtfb::management::ClientBackend::~ClientBackend() {
+-    delete image;
+-    if(shm != NULL) {
++qtfb::management::SharedFramebuffer::~SharedFramebuffer()
++{
++    image = QImage();
++    if (shm) {
+         munmap(shm, shmSize);
++        shm = nullptr;
+     }
+-    if(translationShm != NULL){
+-        delete[] translationShm;
++    if (shmFD >= 0) {
++        close(shmFD);
++        shmFD = -1;
+     }
+-    if(shmKey != -1) {
++    if (shmKey != -1) {
+         FORMAT_SHM(shmName, shmKey);
+         shm_unlink(shmName);
++        shmKey = -1;
+     }
+ }
+ 
+-static void managementMainThread(){
+-    CERR << "In main management thread." << std::endl;
+-    CERR << "Creating socket..." << std::endl;
+-    int serverSocket = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+-    if(serverSocket == -1) {
+-        CERR << "Failed to initialize the socket!" << std::endl;
+-        return;
+-    }
+-    struct sockaddr_un addr;
+-    addr.sun_family = AF_UNIX;
+-    strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
+-    unlink(SOCKET_PATH);
+-    if (bind(serverSocket, (struct sockaddr *) &addr, sizeof(addr)) == -1) {
+-        CERR << "Failed to bind the socket!" << std::endl;
+-        return;
+-    }
+-    if(listen(serverSocket, SOCKET_BACKLOG) == -1) {
+-        CERR << "Failed to listen on the socket! " << errno << std::endl;
+-        return;
+-    }
+-    for(;;) {
+-        CERR << "Awaiting incoming connections to" << SOCKET_PATH << std::endl;
+-        int incomingFD;
+-        if((incomingFD = accept(serverSocket, NULL, NULL)) == -1){
+-            CERR << "Failed to accept connection on the socket!" << std::endl;
+-            continue;
++void qtfb::management::registerController(FBKey key, QPointer<FBController> controller)
++{
++    if (key == -1 || !controller) return;
++    std::shared_ptr<SharedFramebuffer> framebuffer;
++    {
++        std::lock_guard<std::mutex> lock(backendsMutex);
++        auto [position, inserted] = framebuffers.emplace(key, controller);
++        if (!inserted) {
++            if (position->second == controller) return;
++            CERR << "Framebuffer ID " << key << " already has a controller" << std::endl;
++            return;
+         }
+-        std::thread clientThread(managementClientThread, incomingFD);
+-        clientThread.detach();
++        const auto connection = connections.find(key);
++        if (connection != connections.end()) framebuffer = connection->second->framebuffer;
+     }
++    CERR << "Registered framebuffer controller ID " << key << std::endl;
++    if (framebuffer) controller->associateSHM(framebuffer);
+ }
+ 
+-void qtfb::management::start(){
+-    srand(time(NULL));
+-    std::thread thread(managementMainThread);
+-    thread.detach();
+-}
+-
+-void qtfb::management::forwardUserInput(qtfb::FBKey key, struct qtfb::UserInputContents *input) {
+-    SYNCHRONIZE;
+-    auto position = qtfb::management::connections.find(key);
+-    if(position != qtfb::management::connections.end()){
+-        qtfb::management::ClientBackend *backend = position->second;
+-        struct ServerMessage outbound = {
+-            .type = MESSAGE_USERINPUT,
+-            .userInput = *input
+-        };
+-        for(qtfb::management::ClientConnection *connection : backend->connections) {
+-            SEND(outbound);
+-        }
++bool qtfb::management::isControllerAssociated(FBKey key)
++{
++    std::lock_guard<std::mutex> lock(backendsMutex);
++    return connections.find(key) != connections.end();
++}
++
++void qtfb::management::unregisterController(FBKey key)
++{
++    if (key == -1) return;
++    std::lock_guard<std::mutex> lock(backendsMutex);
++    framebuffers.erase(key);
++}
++
++bool qtfb::management::start()
++{
++    if (serverRunning.exchange(true)) return true;
++
++    const int socketFD = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
++    if (socketFD < 0) {
++        serverRunning.store(false);
++        return false;
++    }
++
++    sockaddr_un address {};
++    address.sun_family = AF_UNIX;
++    std::strncpy(address.sun_path, SOCKET_PATH, sizeof(address.sun_path) - 1);
++    unlink(SOCKET_PATH);
++    if (bind(socketFD, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == -1
++        || listen(socketFD, SocketBacklog) == -1) {
++        CERR << "Failed to start QTFB socket: " << std::strerror(errno) << std::endl;
++        close(socketFD);
++        unlink(SOCKET_PATH);
++        serverRunning.store(false);
++        return false;
++    }
++    chmod(SOCKET_PATH, S_IRUSR | S_IWUSR);
++
++    {
++        std::lock_guard<std::mutex> lock(serverMutex);
++        serverSocket = socketFD;
++    }
++    serverThread = std::thread(managementMainThread);
++    return true;
++}
++
++void qtfb::management::stop()
++{
++    serverRunning.store(false, std::memory_order_release);
++    {
++        std::lock_guard<std::mutex> lock(serverMutex);
++        if (serverSocket >= 0) shutdown(serverSocket, SHUT_RDWR);
++        for (const int clientFD : activeClientSockets) shutdown(clientFD, SHUT_RDWR);
++    }
++    if (serverThread.joinable()) serverThread.join();
++
++    std::map<FBKey, std::unique_ptr<ClientBackend>> leftovers;
++    {
++        std::lock_guard<std::mutex> lock(backendsMutex);
++        leftovers.swap(connections);
++    }
++    unlink(SOCKET_PATH);
++}
++
++void qtfb::management::forwardUserInput(FBKey key, const UserInputContents *input)
++{
++    if (!input) return;
++    std::lock_guard<std::mutex> lock(backendsMutex);
++    const auto position = connections.find(key);
++    if (position == connections.end()) return;
++
++    const ServerMessage outbound {
++        .type = MESSAGE_USERINPUT,
++        .userInput = *input,
++    };
++    for (ClientConnection *connection : position->second->connections) {
++        sendMessage(connection, outbound);
+     }
+ }
+diff -ruN '--exclude=.git' a/src/qtfb/fbmanagement.h b/src/qtfb/fbmanagement.h
+--- a/src/qtfb/fbmanagement.h	2026-05-21 23:48:07.000000000 +0800
++++ b/src/qtfb/fbmanagement.h	2026-07-20 18:09:03.830909403 +0800
+@@ -1,55 +1,50 @@
++#pragma once
++
+ #include <map>
++#include <memory>
+ #include <vector>
+-#include <QDebug>
+-#include <QMetaObject>
++
++#include <QImage>
+ #include <QPointer>
+-#include <thread>
+ 
+ #include <sys/types.h>
+-#include <sys/socket.h>
+-#include <sys/mman.h>
+-#include <sys/stat.h>
+-#include <sys/un.h>
+-#include <unistd.h>
+-#include <stdlib.h>
+-#include <fcntl.h>
+ 
+-#include "FBController.h"
+ #include "common.h"
+ 
+-#define SOCKET_BACKLOG 10
+-#define RESP_ERR 1
+-#define RESP_OK 0
++class FBController;
+ 
+ namespace qtfb::management {
+-    class ClientBackend {
+-    public:
+-        int shmFD = -1;
+-        int shmKey = -1;
+-        unsigned char *shm = NULL;
+-        unsigned char *translationShm = NULL;
+-        QImage *image = NULL;
+-        int shmType = -1;
+-        size_t shmSize = 0;
+-
+-        std::vector<class ClientConnection *> connections;
+-
+-        ~ClientBackend();
+-    };
+-
+-    class ClientConnection {
+-    public:
+-        int clientFD;
+-        int fbKey = -1;
+-    };
+-
+-    static std::map<FBKey, QPointer<FBController>> framebuffers;
+-    static std::map<FBKey, ClientBackend*> connections;
+-
+-    void registerController(FBKey key, QPointer<FBController> controller);
+-    void unregisterController(FBKey key);
+-    bool isControllerAssociated(FBKey key);
+ 
+-    void forwardUserInput(qtfb::FBKey key, struct qtfb::UserInputContents *input);
+-    void start();
++class SharedFramebuffer {
++public:
++    ~SharedFramebuffer();
++
++    int shmFD = -1;
++    int shmKey = -1;
++    unsigned char *shm = nullptr;
++    size_t shmSize = 0;
++    int shmType = -1;
++    QImage image;
++};
++
++class ClientConnection {
++public:
++    int clientFD = -1;
++    FBKey fbKey = -1;
++};
++
++class ClientBackend {
++public:
++    std::shared_ptr<SharedFramebuffer> framebuffer;
++    std::vector<ClientConnection *> connections;
++};
++
++void registerController(FBKey key, QPointer<FBController> controller);
++void unregisterController(FBKey key);
++bool isControllerAssociated(FBKey key);
++
++void forwardUserInput(FBKey key, const UserInputContents *input);
++bool start();
++void stop();
++
+ }

@@ -75,6 +75,7 @@ impl ManagerState {
             }
             (Parking(expected), Transition::AppParked(actual)) if expected == &actual => Manager,
             (Parking(expected), Transition::AppExited(actual)) if expected == &actual => Manager,
+            (Parking(expected), Transition::AppCrashed(actual)) if expected == &actual => Manager,
             (RestoringSystem, Transition::SystemReady) => System,
             (_, Transition::Failure) => Recovering,
             (Recovering, Transition::SystemReady) => System,
@@ -135,5 +136,31 @@ mod tests {
         state.apply(Transition::TriplePower).unwrap();
         state.apply(Transition::SystemReady).unwrap();
         assert_eq!(state.domain, DomainState::System);
+    }
+
+    #[test]
+    fn foreground_crash_returns_to_manager() {
+        let app = id("magicpaper");
+        let mut state = ManagerState {
+            domain: DomainState::Foreground(app.clone()),
+            last_app: Some(app.clone()),
+            sequence: 3,
+        };
+        state.apply(Transition::AppCrashed(app.clone())).unwrap();
+        assert_eq!(state.domain, DomainState::Manager);
+        assert_eq!(state.last_app, Some(app));
+    }
+
+    #[test]
+    fn foreground_normal_exit_returns_directly_to_manager() {
+        let app = id("koreader");
+        let mut state = ManagerState {
+            domain: DomainState::Foreground(app.clone()),
+            last_app: Some(app.clone()),
+            sequence: 4,
+        };
+        state.apply(Transition::AppExited(app.clone())).unwrap();
+        assert_eq!(state.domain, DomainState::Manager);
+        assert_eq!(state.last_app, Some(app));
     }
 }

@@ -98,12 +98,16 @@ mod device {
         let mut touch = Touch::open()?;
         loop {
             if let Some((x, y)) = touch.poll_tap() {
-                if let Some(button) = buttons.iter().find(|button| {
-                    x >= button.x
-                        && x < button.x + button.width
-                        && y >= button.y
-                        && y < button.y + button.height
-                }).cloned() {
+                if let Some(button) = buttons
+                    .iter()
+                    .find(|button| {
+                        x >= button.x
+                            && x < button.x + button.width
+                            && y >= button.y
+                            && y < button.y + button.height
+                    })
+                    .cloned()
+                {
                     let action = button.action.clone();
                     let is_close = matches!(action, Action::Close(_));
                     display.flash(&button);
@@ -133,14 +137,13 @@ mod device {
                                     Some(app) => app.session.is_none() && !app.background_active,
                                 };
                                 apps = latest;
-                                if closed { break; }
+                                if closed {
+                                    break;
+                                }
                             }
                         }
                         Action::Package(operation) => {
-                            request(Request::Package {
-                                operation,
-                            })
-                            .await?;
+                            request(Request::Package { operation }).await?;
                         }
                         Action::Unavailable => {}
                         Action::System => request(Request::ReturnSystem).await?,
@@ -463,7 +466,8 @@ mod device {
                 return WHITE;
             }
             unsafe {
-                let pointer = self.buffer.add(y as usize * self.stride + x as usize * 4) as *const u32;
+                let pointer =
+                    self.buffer.add(y as usize * self.stride + x as usize * 4) as *const u32;
                 pointer.read_unaligned()
             }
         }
@@ -490,8 +494,10 @@ mod device {
                 let path = CString::new(format!("/dev/input/event{index}")).unwrap();
                 let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK) };
                 if fd >= 0 {
-                    let (max_x, max_y) = (abs_max(fd, 53).or_else(|| abs_max(fd, 0)).unwrap_or(6760),
-                        abs_max(fd, 54).or_else(|| abs_max(fd, 1)).unwrap_or(11960));
+                    let (max_x, max_y) = (
+                        abs_max(fd, 53).or_else(|| abs_max(fd, 0)).unwrap_or(6760),
+                        abs_max(fd, 54).or_else(|| abs_max(fd, 1)).unwrap_or(11960),
+                    );
                     return Ok(Self {
                         fd,
                         x: 0,
@@ -538,18 +544,26 @@ mod device {
                         i32::from_ne_bytes(event[offset + 4..offset + 8].try_into().unwrap());
                     if kind == EV_ABS {
                         match code {
-                            ABS_X | ABS_MT_POSITION_X => self.x = value.clamp(0, self.max_x) * 960 / self.max_x,
-                            ABS_Y | ABS_MT_POSITION_Y => self.y = value.clamp(0, self.max_y) * 1696 / self.max_y,
+                            ABS_X | ABS_MT_POSITION_X => {
+                                self.x = value.clamp(0, self.max_x) * 960 / self.max_x
+                            }
+                            ABS_Y | ABS_MT_POSITION_Y => {
+                                self.y = value.clamp(0, self.max_y) * 1696 / self.max_y
+                            }
                             ABS_MT_TRACKING_ID if value >= 0 => self.down = true,
                             ABS_MT_TRACKING_ID => {
-                                if self.down { released = Some((self.x, self.y)); }
+                                if self.down {
+                                    released = Some((self.x, self.y));
+                                }
                                 self.down = false;
                             }
                             _ => {}
                         }
                     } else if kind == EV_KEY && code == 330 {
                         // BTN_TOUCH is used by single-finger capacitive taps.
-                        if value != 0 { self.down = true; } else if self.down {
+                        if value != 0 {
+                            self.down = true;
+                        } else if self.down {
                             released = Some((self.x, self.y));
                             self.down = false;
                         }

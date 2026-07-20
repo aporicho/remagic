@@ -6,19 +6,22 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc as tokio_mpsc;
 
-use crate::Event;
+use crate::{Event, QueuedEvent};
 
 const EV_KEY: u16 = 1;
 const KEY_POWER: u16 = 116;
 const EVIOCGRAB: libc::c_ulong = 0x40044590;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub enum Control {
-    Grab(bool),
+    Grab {
+        grab: bool,
+        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
 }
 
 pub fn spawn(
-    events: tokio_mpsc::Sender<Event>,
+    events: tokio_mpsc::Sender<QueuedEvent>,
 ) -> (std::thread::JoinHandle<()>, mpsc::Sender<Control>) {
     let (control_tx, control_rx) = mpsc::channel();
     let thread = std::thread::spawn(move || {
@@ -35,7 +38,16 @@ pub fn spawn(
         loop {
             while let Ok(control) = control_rx.try_recv() {
                 match control {
-                    Control::Grab(grab) => device.set_grab(grab),
+                    Control::Grab { grab, reply } => {
+                        let mut result = device.set_grab(grab);
+                        if result.is_err() && !grab {
+                            // Closing the input fd is the kernel-level escape
+                            // hatch for a failed EVIOCGRAB(false).  Reopen it
+                            // afterwards so future triple presses still work.
+                            result = device.force_release_and_reopen();
+                        }
+                        let _ = reply.send(result.map_err(|error| error.to_string()));
+                    }
                 }
             }
             for value in device.drain() {
@@ -57,14 +69,14 @@ pub fn spawn(
     (thread, control_tx)
 }
 
-fn send_action(action: PowerAction, events: &tokio_mpsc::Sender<Event>) {
+fn send_action(action: PowerAction, events: &tokio_mpsc::Sender<QueuedEvent>) {
     let event = match action {
         PowerAction::None => return,
         PowerAction::Single => Event::SinglePower,
         PowerAction::Triple => Event::TriplePower,
         PowerAction::Long => Event::LongPower,
     };
-    let _ = events.blocking_send(event);
+    let _ = events.blocking_send(QueuedEvent { event, reply: None });
 }
 
 struct PowerDevice {
@@ -98,19 +110,28 @@ impl PowerDevice {
         ))
     }
 
-    fn set_grab(&mut self, grab: bool) {
+    fn set_grab(&mut self, grab: bool) -> io::Result<()> {
         if self.grabbed == grab {
-            return;
+            return Ok(());
         }
         let result = unsafe { libc::ioctl(self.fd, EVIOCGRAB, i32::from(grab)) };
         if result == 0 {
             self.grabbed = grab;
+            Ok(())
         } else {
-            eprintln!(
-                "remagicd: EVIOCGRAB({grab}) failed: {}",
-                io::Error::last_os_error()
-            );
+            Err(io::Error::last_os_error())
         }
+    }
+
+    fn force_release_and_reopen(&mut self) -> io::Result<()> {
+        if self.fd >= 0 {
+            unsafe { libc::close(self.fd) };
+            self.fd = -1;
+        }
+        self.grabbed = false;
+        let replacement = PowerDevice::open()?;
+        *self = replacement;
+        Ok(())
     }
 
     fn drain(&mut self) -> Vec<i32> {
@@ -144,7 +165,9 @@ impl PowerDevice {
 
 impl Drop for PowerDevice {
     fn drop(&mut self) {
-        self.set_grab(false);
-        unsafe { libc::close(self.fd) };
+        let _ = self.set_grab(false);
+        if self.fd >= 0 {
+            unsafe { libc::close(self.fd) };
+        }
     }
 }

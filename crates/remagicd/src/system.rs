@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::Path;
+use std::time::Duration;
 use tokio::process::Command;
 
 const WAKELOCK: &[u8] = b"remagic-managed\n";
@@ -20,38 +21,27 @@ impl SystemController {
     }
 
     pub async fn enter_managed(&self) -> Result<(), String> {
-        self.acquire_wakelock();
+        self.acquire_wakelock()?;
         self.mask_xochitl().await?;
-        let _ = self.stop("paperweight.service").await;
+        self.stop_if_loaded("paperweight.service").await?;
         self.stop("xochitl.service").await?;
+        self.wait_inactive("xochitl.service").await?;
+        self.wait_inactive("paperweight.service").await?;
         let _ = fs::remove_file("/tmp/epframebuffer.lock");
         Ok(())
     }
 
     pub async fn restore_system(&self) -> Result<(), String> {
-        let _ = fs::remove_file("/tmp/epframebuffer.lock");
+        // The runtime unit becoming inactive is the display teardown fence.
+        // Do not manufacture ownership by deleting another process's lock;
+        // the runtime's graceful Qt teardown removes its own lock before this
+        // method is reached.
         self.unmask_xochitl().await?;
         self.reset_failed().await?;
         self.start("xochitl.service").await?;
         self.start_paperweight_if_installed().await?;
-        self.release_wakelock();
-        Ok(())
-    }
-
-    /// Stop the temporary official display host used by hosted applications
-    /// before returning to the Quill manager. This prevents epframebuffer
-    /// ownership and stale lock files from crashing remagic-home.
-    pub async fn leave_hosted_display(&self) -> Result<(), String> {
-        self.mask_xochitl().await?;
-        let _ = self.stop("paperweight.service").await;
-        let _ = self.stop("xochitl.service").await;
-        let _ = fs::remove_file("/tmp/epframebuffer.lock");
-        // xochitl can finish its teardown a moment after systemd reports the
-        // unit stopped and recreate the vendor lock during that window.
-        // Give the display host a brief grace period, then remove it again so
-        // Quill/manager owns a clean panel on the next launch.
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-        let _ = fs::remove_file("/tmp/epframebuffer.lock");
+        self.wait_active("xochitl.service").await?;
+        self.release_wakelock()?;
         Ok(())
     }
 
@@ -61,6 +51,30 @@ impl SystemController {
 
     pub async fn stop(&self, unit: &str) -> Result<(), String> {
         run("systemctl", &["stop", unit]).await
+    }
+
+    pub async fn stop_and_wait(&self, unit: &str) -> Result<(), String> {
+        let first_error = self.stop(unit).await.err();
+        if !self.is_active(unit).await {
+            return Ok(());
+        }
+
+        // A stuck Qt display thread must be gone before xochitl is allowed to
+        // reclaim the panel.  Keep this confined to the target systemd
+        // cgroup, then ask systemd to settle the unit state once more.
+        let _ = run(
+            "systemctl",
+            &["kill", "--kill-who=all", "--signal=KILL", unit],
+        )
+        .await;
+        let _ = self.stop(unit).await;
+        self.wait_inactive(unit).await.map_err(|wait_error| {
+            if let Some(first_error) = first_error {
+                format!("{first_error}; forced stop also failed: {wait_error}")
+            } else {
+                wait_error
+            }
+        })
     }
 
     pub async fn restart(&self, unit: &str) -> Result<(), String> {
@@ -79,12 +93,14 @@ impl SystemController {
         fs::write("/sys/power/state", b"mem\n").map_err(|e| format!("suspend failed: {e}"))
     }
 
-    pub fn acquire_wakelock(&self) {
-        let _ = fs::write("/sys/power/wake_lock", WAKELOCK);
+    pub fn acquire_wakelock(&self) -> Result<(), String> {
+        fs::write("/sys/power/wake_lock", WAKELOCK)
+            .map_err(|error| format!("cannot acquire managed wake lock: {error}"))
     }
 
-    pub fn release_wakelock(&self) {
-        let _ = fs::write("/sys/power/wake_unlock", WAKELOCK);
+    pub fn release_wakelock(&self) -> Result<(), String> {
+        fs::write("/sys/power/wake_unlock", WAKELOCK)
+            .map_err(|error| format!("cannot release managed wake lock: {error}"))
     }
 
     async fn reset_failed(&self) -> Result<(), String> {
@@ -120,12 +136,45 @@ impl SystemController {
         Ok(())
     }
 
+    async fn stop_if_loaded(&self, unit: &str) -> Result<(), String> {
+        let output = Command::new("systemctl")
+            .args(["show", "--property=LoadState", "--value", unit])
+            .output()
+            .await
+            .map_err(|error| format!("cannot inspect {unit}: {error}"))?;
+        if output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "loaded" {
+            self.stop(unit).await?;
+        }
+        Ok(())
+    }
+
+    async fn wait_active(&self, unit: &str) -> Result<(), String> {
+        self.wait_for_state(unit, true).await
+    }
+
+    async fn wait_inactive(&self, unit: &str) -> Result<(), String> {
+        self.wait_for_state(unit, false).await
+    }
+
+    async fn wait_for_state(&self, unit: &str, active: bool) -> Result<(), String> {
+        for _ in 0..50 {
+            if self.is_active(unit).await == active {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        Err(format!(
+            "{unit} did not become {} within 5 seconds",
+            if active { "active" } else { "inactive" }
+        ))
+    }
+
     pub async fn start_transient_worker(
         &self,
         name: &str,
         arguments: &[String],
     ) -> Result<(), String> {
-        let worker = "/home/root/apps/remagic/remagic-vellum-worker";
+        let worker = "/home/root/apps/remagic/bin/remagic-vellum-worker";
         if !Path::new(worker).exists() {
             return Err("Vellum worker is not installed".into());
         }
@@ -142,11 +191,13 @@ impl SystemController {
 }
 
 async fn run(program: &str, arguments: &[&str]) -> Result<(), String> {
-    let output = Command::new(program)
-        .args(arguments)
-        .output()
-        .await
-        .map_err(|e| format!("cannot execute {program}: {e}"))?;
+    let output = tokio::time::timeout(
+        Duration::from_secs(12),
+        Command::new(program).args(arguments).output(),
+    )
+    .await
+    .map_err(|_| format!("{program} {} timed out", arguments.join(" ")))?
+    .map_err(|e| format!("cannot execute {program}: {e}"))?;
     if output.status.success() {
         Ok(())
     } else {

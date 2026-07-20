@@ -44,10 +44,71 @@ fn parse(args: &[String]) -> Result<Request, Box<dyn std::error::Error>> {
             app_id: AppId::new(args.get(1).ok_or("close requires an app id")?.clone())?,
             complete: args.iter().any(|arg| arg == "--complete"),
         },
+        "runtime-exited" => parse_runtime_exited(&args[1..])?,
         "packages" => Request::Package {
             operation: parse_package(&args[1..])?,
         },
         _ => return Err(format!("unknown command: {command}").into()),
+    })
+}
+
+fn parse_runtime_exited(args: &[String]) -> Result<Request, Box<dyn std::error::Error>> {
+    let app_id = AppId::new(
+        args.first()
+            .ok_or("runtime-exited requires an app id")?
+            .clone(),
+    )?;
+    let mut generation = None;
+    let mut exit_code = None;
+    let mut crashed = false;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--generation" => {
+                if generation.is_some() {
+                    return Err("runtime-exited generation was specified more than once".into());
+                }
+                let value = args
+                    .get(index + 1)
+                    .ok_or("runtime-exited --generation requires a value")?;
+                let parsed = value
+                    .parse::<u64>()
+                    .map_err(|_| "runtime-exited generation must be an unsigned integer")?;
+                if parsed == 0 {
+                    return Err("runtime-exited generation must be non-zero".into());
+                }
+                generation = Some(parsed);
+                index += 2;
+            }
+            "--exit-code" => {
+                if exit_code.is_some() {
+                    return Err("runtime-exited exit code was specified more than once".into());
+                }
+                let value = args
+                    .get(index + 1)
+                    .ok_or("runtime-exited --exit-code requires a value")?;
+                exit_code = Some(
+                    value
+                        .parse::<i32>()
+                        .map_err(|_| "runtime-exited exit code must be a signed integer")?,
+                );
+                index += 2;
+            }
+            "--crashed" => {
+                if crashed {
+                    return Err("runtime-exited --crashed was specified more than once".into());
+                }
+                crashed = true;
+                index += 1;
+            }
+            option => return Err(format!("unknown runtime-exited option: {option}").into()),
+        }
+    }
+    Ok(Request::RuntimeExited {
+        app_id,
+        generation: generation.ok_or("runtime-exited requires --generation")?,
+        exit_code: exit_code.ok_or("runtime-exited requires --exit-code")?,
+        crashed,
     })
 }
 
@@ -73,4 +134,62 @@ fn parse_package(args: &[String]) -> Result<PackageOperation, Box<dyn std::error
             other => return Err(format!("unknown package operation: {other}").into()),
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn parses_generation_tokenized_runtime_exit() {
+        let request = parse(&args(&[
+            "runtime-exited",
+            "magicpaper",
+            "--generation",
+            "913",
+            "--exit-code",
+            "0",
+        ]))
+        .unwrap();
+        assert!(matches!(
+            request,
+            Request::RuntimeExited {
+                app_id,
+                generation: 913,
+                exit_code: 0,
+                crashed: false,
+            } if app_id.as_str() == "magicpaper"
+        ));
+    }
+
+    #[test]
+    fn rejects_runtime_exit_without_generation() {
+        let error = parse(&args(&[
+            "runtime-exited",
+            "koreader",
+            "--exit-code",
+            "1",
+            "--crashed",
+        ]))
+        .unwrap_err();
+        assert!(error.to_string().contains("requires --generation"));
+    }
+
+    #[test]
+    fn rejects_zero_runtime_generation() {
+        let error = parse(&args(&[
+            "runtime-exited",
+            "koreader",
+            "--generation",
+            "0",
+            "--exit-code",
+            "0",
+        ]))
+        .unwrap_err();
+        assert!(error.to_string().contains("must be non-zero"));
+    }
 }

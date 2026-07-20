@@ -8,6 +8,7 @@ license.workspace = true
 libc.workspace = true
 remagic-core = { path = "../remagic-core" }
 remagic-protocol = { path = "../remagic-protocol" }
+serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true

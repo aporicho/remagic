@@ -1,0 +1,39 @@
+#!/bin/sh
+
+# Read MagicPaper's dotenv-style configuration without executing it as shell
+# code.  The file contains API credentials and is intentionally limited to the
+# settings consumed by the oracle; runtime ownership variables are supplied by
+# the trusted application manifest instead.
+load_riddle_env() {
+    env_file=$1
+    [ -r "$env_file" ] || return 0
+
+    while IFS= read -r raw || [ -n "$raw" ]; do
+        line=$(printf '%s' "$raw" | sed 's/\r$//; s/^[[:space:]]*//; s/[[:space:]]*$//')
+        case "$line" in
+            ''|'#'*) continue ;;
+            export[[:space:]]*) line=${line#export}; line=$(printf '%s' "$line" | sed 's/^[[:space:]]*//') ;;
+        esac
+        case "$line" in
+            *=*) ;;
+            *) continue ;;
+        esac
+
+        key=$(printf '%s' "${line%%=*}" | sed 's/[[:space:]]*$//')
+        value=${line#*=}
+        value=$(printf '%s' "$value" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+        case "$key" in
+            RIDDLE_OPENAI_*|RIDDLE_OCR_*|RIDDLE_PI_*|RIDDLE_PAPER_REWRITE_MODEL|\
+            RIDDLE_WEB_SEARCH|RIDDLE_IMAGE_MAX_EDGE|RIDDLE_KEEP_PAGE|\
+            RIDDLE_MEMORY|RIDDLE_MEMORY_TURNS|RIDDLE_HEARTBEAT_RETRY_SECONDS|\
+            RIDDLE_TZ_OFFSET) ;;
+            *) continue ;;
+        esac
+
+        case "$value" in
+            \"*\") value=${value#\"}; value=${value%\"} ;;
+            \'*\') value=${value#\'}; value=${value%\'} ;;
+        esac
+        export "$key=$value"
+    done < "$env_file"
+}

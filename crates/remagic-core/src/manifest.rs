@@ -124,7 +124,10 @@ impl AppManifest {
         for root in &self.allowed_open_roots {
             validate_absolute("allowed_open_roots", root)?;
         }
-        if !matches!(self.display.as_str(), "quill" | "einkface" | "none") {
+        if !matches!(
+            self.display.as_str(),
+            "qtfb" | "quill" | "einkface" | "none"
+        ) {
             return Err(ManifestError::UnsupportedDisplay(self.display.clone()));
         }
         for key in self.environment.keys() {
@@ -285,5 +288,29 @@ mod tests {
             app.validate(),
             Err(ManifestError::UnsafeEnvironment(_))
         ));
+    }
+
+    #[test]
+    fn qtfb_display_backend_is_accepted() {
+        let app = AppManifest {
+            schema: 1,
+            id: AppId::new("test").unwrap(),
+            name: "Test".into(),
+            description: String::new(),
+            version: String::new(),
+            icon: None,
+            package: None,
+            exec: "/usr/bin/test".into(),
+            args: Vec::new(),
+            working_dir: "/tmp".into(),
+            display: "qtfb".into(),
+            park_strategy: ParkStrategy::Restart,
+            background_unit: None,
+            supports_open_path: false,
+            allowed_open_roots: Vec::new(),
+            environment: BTreeMap::new(),
+        };
+
+        assert!(app.validate().is_ok());
     }
 }

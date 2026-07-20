@@ -1,6 +1,7 @@
 [Unit]
 Description=MagicPaper screenless scheduled-task agent
-After=local-fs.target network.target
+After=home.mount local-fs.target network.target
+RequiresMountsFor=/home/root/apps/riddle /home/root/riddle-data
 
 [Service]
 Type=simple

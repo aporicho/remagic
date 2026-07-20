@@ -1,4 +1,5 @@
 mod power_device;
+mod runtime;
 mod system;
 
 use remagic_core::{
@@ -20,7 +21,7 @@ use tracing::{error, info, warn};
 const MANIFEST_ROOT: &str = "/home/root/.local/share/remagic/apps.d";
 const SESSION_ROOT: &str = "/home/root/.local/state/remagic/sessions";
 const RUNTIME_ROOT: &str = "/run/remagic";
-const HOME_UNIT: &str = "remagic-home.service";
+const HOME_UNIT: &str = "remagic-runtime.service";
 const FOREGROUND_MARKER: &str = "/run/remagic/foreground-app";
 
 #[derive(Debug)]
@@ -33,21 +34,33 @@ enum Event {
     ReturnSystem,
     Sleep,
     Close(AppId, bool),
+    RuntimeExited {
+        app_id: AppId,
+        generation: u64,
+        exit_code: i32,
+        crashed: bool,
+    },
     AppReady(AppId),
     AppParked(AppSession),
     Package(PackageOperation),
     ReloadManifests,
 }
 
+struct QueuedEvent {
+    event: Event,
+    reply: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+}
+
 struct Daemon {
     state: RwLock<ManagerState>,
     manifests: RwLock<BTreeMap<AppId, remagic_core::AppManifest>>,
     sessions: RwLock<BTreeMap<AppId, AppSession>>,
+    runtime_generations: RwLock<BTreeMap<AppId, u64>>,
     session_store: SessionStore,
     manifest_store: ManifestStore,
     controller: SystemController,
     transition_lock: Mutex<()>,
-    events: mpsc::Sender<Event>,
+    events: mpsc::Sender<QueuedEvent>,
     power_control: std::sync::mpsc::Sender<power_device::Control>,
 }
 
@@ -76,6 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         state: RwLock::new(ManagerState::default()),
         manifests: RwLock::new(manifests),
         sessions: RwLock::new(sessions),
+        runtime_generations: RwLock::new(BTreeMap::new()),
         session_store,
         manifest_store,
         controller: SystemController::new(),
@@ -112,18 +126,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let signal_daemon = daemon.clone();
     tokio::spawn(async move {
         let _ = tokio::signal::ctrl_c().await;
+        let mut exit_code = 0;
         if !matches!(signal_daemon.state.read().await.domain, DomainState::System) {
-            let _ = signal_daemon.restore_system().await;
+            if let Err(error) = signal_daemon.restore_system().await {
+                error!(%error, "system restore failed while stopping daemon");
+                exit_code = 1;
+            }
         }
-        std::process::exit(0);
+        std::process::exit(exit_code);
     });
 
-    while let Some(event) = event_rx.recv().await {
-        if let Err(error) = daemon.handle_event(event).await {
+    while let Some(queued) = event_rx.recv().await {
+        let outcome = daemon.handle_event(queued.event).await;
+        let mut fatal_recovery_error = None;
+        if let Err(error) = &outcome {
             error!(%error, "transition failed");
-            if !matches!(daemon.state.read().await.domain, DomainState::System) {
-                let _ = daemon.restore_system().await;
+            let domain = daemon.state.read().await.domain.clone();
+            match domain {
+                // An application-level error (missing file, rejected path,
+                // transient launch failure, and so on) must not tear down the
+                // complete managed display domain.  Keep the current app, or
+                // reveal the manager after launch() has rolled back to it.
+                DomainState::System | DomainState::Foreground(_) => {}
+                DomainState::Manager => {
+                    if let Err(runtime_error) = runtime::show_manager().await {
+                        warn!(%runtime_error, "could not restore manager after request failure");
+                    }
+                }
+                // Failures in an ownership transition can leave neither UI
+                // authoritative.  Only those states warrant the stock-shell
+                // recovery path.
+                DomainState::EnteringManaged
+                | DomainState::Launching(_)
+                | DomainState::Parking(_)
+                | DomainState::RestoringSystem
+                | DomainState::Sleeping
+                | DomainState::Recovering => {
+                    if let Err(recovery_error) = daemon.restore_system().await {
+                        error!(%recovery_error, "stock-shell recovery failed");
+                        fatal_recovery_error = Some(recovery_error);
+                    }
+                }
             }
+        }
+        if let Some(reply) = queued.reply {
+            let _ = reply.send(outcome);
+        }
+        if let Some(error) = fatal_recovery_error {
+            return Err(std::io::Error::other(error).into());
         }
     }
     drop(power_tx);
@@ -183,6 +233,20 @@ impl Daemon {
             Request::Close { app_id, complete } => {
                 self.enqueue(Event::Close(app_id, complete)).await
             }
+            Request::RuntimeExited {
+                app_id,
+                generation,
+                exit_code,
+                crashed,
+            } => {
+                self.enqueue(Event::RuntimeExited {
+                    app_id,
+                    generation,
+                    exit_code,
+                    crashed,
+                })
+                .await
+            }
             Request::Ready { app_id } => self.enqueue(Event::AppReady(app_id)).await,
             Request::Parked {
                 app_id,
@@ -215,10 +279,28 @@ impl Daemon {
     }
 
     async fn enqueue(&self, event: Event) -> Response {
-        match self.events.send(event).await {
-            Ok(()) => Response::Ok,
-            Err(_) => Response::Error {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        if self
+            .events
+            .send(QueuedEvent {
+                event,
+                reply: Some(reply_tx),
+            })
+            .await
+            .is_err()
+        {
+            return Response::Error {
                 message: "manager event loop is unavailable".into(),
+            };
+        }
+        match tokio::time::timeout(std::time::Duration::from_secs(20), reply_rx).await {
+            Ok(Ok(Ok(()))) => Response::Ok,
+            Ok(Ok(Err(message))) => Response::Error { message },
+            Ok(Err(_)) => Response::Error {
+                message: "manager event loop dropped the request".into(),
+            },
+            Err(_) => Response::Error {
+                message: "manager request timed out".into(),
             },
         }
     }
@@ -263,10 +345,23 @@ impl Daemon {
             Event::ReturnSystem => self.restore_system().await,
             Event::Sleep => self.sleep().await,
             Event::Close(id, complete) => self.close(id, complete).await,
+            Event::RuntimeExited {
+                app_id,
+                generation,
+                exit_code,
+                crashed,
+            } => {
+                self.record_runtime_exit(app_id, generation, exit_code, crashed)
+                    .await
+            }
             Event::AppReady(id) => {
                 let mut state = self.state.write().await;
+                if !matches!(&state.domain, DomainState::Launching(expected) if expected == &id) {
+                    warn!(%id, domain = ?state.domain, "ignored stale application-ready event");
+                    return Ok(());
+                }
                 state
-                    .apply(Transition::AppReady(id))
+                    .apply(Transition::AppReady(id.clone()))
                     .map_err(|e| e.to_string())?;
                 if let DomainState::Foreground(id) = &state.domain {
                     set_foreground_marker(Some(id))?;
@@ -282,7 +377,10 @@ impl Daemon {
                     .map_err(|error| error.to_string())?;
                 *self.manifests.write().await = manifests;
                 if matches!(self.state.read().await.domain, DomainState::Manager) {
-                    self.controller.restart(HOME_UNIT).await?;
+                    if let Err(error) = self.restart_runtime_and_wait().await {
+                        warn!(%error, "runtime reload failed; restoring stock interface");
+                        return self.restore_system().await;
+                    }
                 }
                 Ok(())
             }
@@ -327,12 +425,11 @@ impl Daemon {
                 .apply(Transition::TriplePower)
                 .map_err(|e| e.to_string())?;
         }
-        self.power_control
-            .send(power_device::Control::Grab(true))
-            .map_err(|e| e.to_string())?;
+        self.set_power_grab(true).await?;
         self.controller.enter_managed().await?;
         set_foreground_marker(None)?;
         self.controller.start(HOME_UNIT).await?;
+        wait_runtime_ready().await?;
         self.state
             .write()
             .await
@@ -411,8 +508,31 @@ impl Daemon {
             .await
             .apply(Transition::Launch(id.clone()))
             .map_err(|e| e.to_string())?;
-        self.controller.stop(HOME_UNIT).await?;
-        self.controller.start(&app_unit(&id)).await
+        let runtime_launch = match runtime::open_app(&id, open_path.as_deref()).await {
+            Ok(launch) => launch,
+            Err(error) => {
+                if let Err(close_error) = runtime::close_app(&id).await {
+                    warn!(%id, %close_error, "failed launch could not be cleaned up by runtime");
+                }
+                self.runtime_generations.write().await.remove(&id);
+                self.state
+                    .write()
+                    .await
+                    .apply(Transition::AppExited(id.clone()))
+                    .map_err(|state_error| state_error.to_string())?;
+                return Err(format!("{error}; {} launch was rolled back", id.as_str()));
+            }
+        };
+        self.runtime_generations
+            .write()
+            .await
+            .insert(id.clone(), runtime_launch.generation);
+        self.state
+            .write()
+            .await
+            .apply(Transition::AppReady(id.clone()))
+            .map_err(|e| e.to_string())?;
+        set_foreground_marker(Some(&id))
     }
 
     async fn park(
@@ -432,7 +552,9 @@ impl Daemon {
             })
             .map_err(|e| e.to_string())?;
         set_foreground_marker(None)?;
-        self.controller.stop(&app_unit(&id)).await?;
+        if show_manager {
+            runtime::show_manager().await?;
+        }
         let manifest = self.manifests.read().await.get(&id).cloned();
         let session = AppSession {
             schema: 1,
@@ -456,17 +578,16 @@ impl Daemon {
         self.save_session(session).await?;
         set_foreground_marker(None)?;
         let mut state = self.state.write().await;
-        let manager_needs_start = match &state.domain {
+        match &state.domain {
             DomainState::Parking(expected) if expected == &id => {
                 state
                     .apply(Transition::AppParked(id))
                     .map_err(|e| e.to_string())?;
-                true
             }
             // The runner may report its parked session while systemd is still
             // stopping the unit. In that race record_parked already completed
             // the transition and started the manager.
-            DomainState::Manager => true,
+            DomainState::Manager => {}
             current => {
                 return Err(format!(
                     "application stopped in unexpected state: {current:?}"
@@ -474,41 +595,34 @@ impl Daemon {
             }
         };
         drop(state);
-        if !returning_system && show_manager && manager_needs_start {
-            self.controller.leave_hosted_display().await?;
-            self.controller.start(HOME_UNIT).await?;
-        }
         Ok(())
     }
 
     async fn record_parked(&self, session: AppSession) -> Result<(), String> {
         let id = session.app_id.clone();
+        // Legacy application callbacks do not carry a launch generation.
+        // Accept them only while this exact app is already in the serialized
+        // Parking transition; otherwise a delayed callback could tear down a
+        // newly launched instance of the same app.
+        if !matches!(
+            &self.state.read().await.domain,
+            DomainState::Parking(expected) if expected == &id
+        ) {
+            warn!(%id, "ignored stale application-parked event");
+            return Ok(());
+        }
         self.save_session(session).await?;
         set_foreground_marker(None)?;
         let mut state = self.state.write().await;
-        let start_manager = match &state.domain {
+        match &state.domain {
             DomainState::Parking(expected) if expected == &id => {
                 state
                     .apply(Transition::AppParked(id))
                     .map_err(|e| e.to_string())?;
-                false
-            }
-            DomainState::Foreground(expected) | DomainState::Launching(expected)
-                if expected == &id =>
-            {
-                state
-                    .apply(Transition::AppExited(id))
-                    .map_err(|e| e.to_string())?;
-                true
             }
             _ => return Ok(()),
-        };
-        drop(state);
-        if start_manager {
-            self.controller.start(HOME_UNIT).await
-        } else {
-            Ok(())
         }
+        Ok(())
     }
 
     async fn save_session(&self, session: AppSession) -> Result<(), String> {
@@ -527,9 +641,15 @@ impl Daemon {
         let domain = self.state.read().await.domain.clone();
         if matches!(&domain, DomainState::Foreground(current) if current == &id) {
             set_foreground_marker(None)?;
-            self.controller.stop(&app_unit(&id)).await?;
-            self.controller.start(HOME_UNIT).await?;
-            self.state.write().await.domain = DomainState::Manager;
+        }
+        runtime::close_app(&id).await?;
+        self.runtime_generations.write().await.remove(&id);
+        if matches!(&domain, DomainState::Foreground(current) if current == &id) {
+            self.state
+                .write()
+                .await
+                .apply(Transition::AppExited(id.clone()))
+                .map_err(|error| error.to_string())?;
         }
         self.session_store.remove(&id).map_err(|e| e.to_string())?;
         self.sessions.write().await.remove(&id);
@@ -547,6 +667,83 @@ impl Daemon {
         Ok(())
     }
 
+    async fn record_runtime_exit(
+        &self,
+        id: AppId,
+        generation: u64,
+        exit_code: i32,
+        reported_crash: bool,
+    ) -> Result<(), String> {
+        let _guard = self.transition_lock.lock().await;
+        let crashed = runtime_exit_is_crash(exit_code, reported_crash);
+        {
+            let mut generations = self.runtime_generations.write().await;
+            if !runtime_generation_matches(&generations, &id, generation) {
+                warn!(
+                    %id,
+                    generation,
+                    expected_generation = ?generations.get(&id),
+                    exit_code,
+                    crashed,
+                    "ignored stale runtime-exit notification"
+                );
+                return Ok(());
+            }
+            generations.remove(&id);
+        }
+
+        let domain = self.state.read().await.domain.clone();
+        if matches!(&domain, DomainState::Foreground(current) if current == &id) {
+            set_foreground_marker(None)?;
+        }
+        let owns_domain = matches!(
+            &domain,
+            DomainState::Launching(current)
+                | DomainState::Foreground(current)
+                | DomainState::Parking(current)
+                if current == &id
+        );
+        if owns_domain {
+            self.state
+                .write()
+                .await
+                .apply(if crashed {
+                    Transition::AppCrashed(id.clone())
+                } else {
+                    Transition::AppExited(id.clone())
+                })
+                .map_err(|error| error.to_string())?;
+        }
+
+        if crashed {
+            let existing = self.sessions.read().await.get(&id).cloned();
+            let title = self
+                .manifests
+                .read()
+                .await
+                .get(&id)
+                .map(|manifest| manifest.name.clone())
+                .unwrap_or_else(|| id.to_string());
+            self.save_session(AppSession {
+                schema: 1,
+                app_id: id.clone(),
+                status: SessionStatus::Crashed,
+                title,
+                subtitle: "应用异常退出".into(),
+                resume_payload: existing.and_then(|session| session.resume_payload),
+                updated_at: unix_now(),
+                last_error: Some(format!("process exited with code {exit_code}")),
+            })
+            .await?;
+            warn!(%id, generation, exit_code, "managed application crashed");
+        } else {
+            self.session_store.remove(&id).map_err(|e| e.to_string())?;
+            self.sessions.write().await.remove(&id);
+            info!(%id, generation, exit_code, "managed application exited normally");
+        }
+        Ok(())
+    }
+
     async fn sleep(&self) -> Result<(), String> {
         if !matches!(self.state.read().await.domain, DomainState::Manager) {
             return Err("sleep button is only available in the manager".into());
@@ -556,15 +753,15 @@ impl Daemon {
             .await
             .apply(Transition::Sleep)
             .map_err(|e| e.to_string())?;
-        self.controller.release_wakelock();
+        self.controller.release_wakelock()?;
         self.controller.suspend().await?;
-        self.controller.acquire_wakelock();
+        self.controller.acquire_wakelock()?;
+        self.restart_runtime_and_wait().await?;
         self.state
             .write()
             .await
             .apply(Transition::Wake)
-            .map_err(|e| e.to_string())?;
-        self.controller.restart(HOME_UNIT).await
+            .map_err(|e| e.to_string())
     }
 
     async fn restore_system(&self) -> Result<(), String> {
@@ -573,23 +770,49 @@ impl Daemon {
         if matches!(domain, DomainState::System) {
             return Ok(());
         }
-        if let DomainState::Foreground(id) | DomainState::Launching(id) | DomainState::Parking(id) =
-            domain
-        {
-            let _ = self.controller.stop(&app_unit(&id)).await;
-        }
-        let _ = self.controller.stop(HOME_UNIT).await;
-        set_foreground_marker(None)?;
+        // Publish the transition before stopping the runtime so concurrent
+        // power/control requests cannot begin a second managed generation
+        // while display ownership is being returned to xochitl.
         self.state.write().await.domain = DomainState::RestoringSystem;
-        self.power_control
-            .send(power_device::Control::Grab(false))
-            .map_err(|e| e.to_string())?;
+        self.controller.stop_and_wait(HOME_UNIT).await?;
+        self.runtime_generations.write().await.clear();
+        if let Err(error) = set_foreground_marker(None) {
+            warn!(%error, "could not clear foreground marker during system restore");
+        }
+        if let Err(error) = self.set_power_grab(false).await {
+            // A disconnected input thread has dropped its fd; a failed
+            // ungrab is handled in-thread by closing and reopening the fd.
+            warn!(%error, "could not confirm power-key release during system restore");
+        }
+        // Starting xochitl is the safety-critical step.  Never skip it merely
+        // because a stale marker could not be removed or the input thread had
+        // already gone away.
         self.controller.restore_system().await?;
         self.state
             .write()
             .await
             .apply(Transition::SystemReady)
             .map_err(|e| e.to_string())
+    }
+
+    async fn set_power_grab(&self, grab: bool) -> Result<(), String> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.power_control
+            .send(power_device::Control::Grab {
+                grab,
+                reply: reply_tx,
+            })
+            .map_err(|error| format!("power input thread is unavailable: {error}"))?;
+        tokio::time::timeout(std::time::Duration::from_secs(1), reply_rx)
+            .await
+            .map_err(|_| "power input grab acknowledgement timed out".to_string())?
+            .map_err(|_| "power input thread closed without acknowledgement".to_string())?
+    }
+
+    async fn restart_runtime_and_wait(&self) -> Result<(), String> {
+        self.runtime_generations.write().await.clear();
+        self.controller.restart(HOME_UNIT).await?;
+        wait_runtime_ready().await
     }
 
     async fn package(&self, operation: PackageOperation) -> Result<(), String> {
@@ -603,8 +826,16 @@ impl Daemon {
     }
 }
 
-fn app_unit(id: &AppId) -> String {
-    format!("remagic-app@{}.service", id.as_str())
+fn runtime_generation_matches(
+    generations: &BTreeMap<AppId, u64>,
+    app: &AppId,
+    generation: u64,
+) -> bool {
+    generation != 0 && generations.get(app).copied() == Some(generation)
+}
+
+fn runtime_exit_is_crash(exit_code: i32, reported_crash: bool) -> bool {
+    reported_crash || exit_code != 0
 }
 
 fn unix_now() -> i64 {
@@ -631,5 +862,48 @@ fn set_foreground_marker(app: Option<&AppId>) -> Result<(), String> {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error.to_string()),
         },
+    }
+}
+
+async fn wait_runtime_ready() -> Result<(), String> {
+    for _ in 0..100 {
+        if tokio::net::UnixStream::connect(runtime::SOCKET)
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    Err(format!(
+        "runtime did not publish a ready socket at {} within 5 seconds",
+        runtime::SOCKET
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_runtime_exit_cannot_match_replacement_generation() {
+        let app = AppId::new("koreader").unwrap();
+        let generations = BTreeMap::from([(app.clone(), 8)]);
+        assert!(!runtime_generation_matches(&generations, &app, 7));
+        assert!(runtime_generation_matches(&generations, &app, 8));
+        assert!(!runtime_generation_matches(&generations, &app, 0));
+    }
+
+    #[test]
+    fn runtime_exit_for_untracked_app_is_rejected() {
+        let app = AppId::new("magicpaper").unwrap();
+        assert!(!runtime_generation_matches(&BTreeMap::new(), &app, 1));
+    }
+
+    #[test]
+    fn only_zero_normal_exit_is_clean() {
+        assert!(!runtime_exit_is_crash(0, false));
+        assert!(runtime_exit_is_crash(1, false));
+        assert!(runtime_exit_is_crash(0, true));
     }
 }

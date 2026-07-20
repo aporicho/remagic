@@ -2,15 +2,17 @@ schema = 1
 id = "magicpaper"
 name = "MagicPaper"
 description = "手写 AI 魔法纸"
-version = "0.1"
-exec = "/home/root/apps/remagic/libexec/magicpaper-remagic"
+version = "0.6.0"
+exec = "/home/root/apps/remagic/libexec/magicpaper-qtfb"
 working_dir = "/home/root/apps/riddle"
-display = "quill"
+display = "qtfb"
 park_strategy = "restart"
 supports_open_path = false
 background_unit = "magicpaper-agent.service"
 
 [environment]
 RIDDLE_SYSTEMD_MANAGED = "1"
+REMAGIC_RUNTIME_MANAGED = "1"
+REMAGIC_RUNTIME_SOCKET = "/run/remagic/runtime-app.sock"
 REMAGIC_SESSION = "1"
 LD_LIBRARY_PATH = "/home/root/apps/riddle:/home/root/apps/remagic/lib:/usr/lib/plugins/scenegraph:/usr/lib"

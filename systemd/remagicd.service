@@ -1,13 +1,13 @@
 [Unit]
 Description=Remagic application and foreground-domain manager
-After=local-fs.target xochitl.service
+After=home.mount local-fs.target xochitl.service
 Wants=xochitl.service
 OnFailure=remagic-recover.service
+RequiresMountsFor=/home/root/apps/remagic
 
 [Service]
 Type=simple
 ExecStart=/home/root/apps/remagic/bin/remagicd
-ExecStopPost=-/home/root/apps/remagic/libexec/remagic-recover
 Restart=on-failure
 RestartSec=2
 KillSignal=SIGINT

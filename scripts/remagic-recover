@@ -2,15 +2,99 @@
 set -u
 
 APP_ROOT=/home/root/apps/remagic
+CTL=$APP_ROOT/bin/remagicctl
+RECOVERY_LOCK=/run/remagic-recover.lock
 
-systemctl stop 'remagic-app@*.service' remagic-home.service 2>/dev/null || true
-rm -f /tmp/epframebuffer.lock /run/remagic/display.lock
-systemctl unmask --runtime xochitl.service 2>/dev/null || true
-systemctl reset-failed xochitl.service paperweight.service 2>/dev/null || true
-systemctl start xochitl.service 2>/dev/null || true
+acquire_recovery_lock() {
+    if mkdir "$RECOVERY_LOCK" 2>/dev/null; then
+        printf '%s\n' "$$" > "$RECOVERY_LOCK/pid"
+        return 0
+    fi
+    owner=$(cat "$RECOVERY_LOCK/pid" 2>/dev/null || true)
+    case "$owner" in
+        ''|*[!0-9]*) alive=false ;;
+        *)
+            if kill -0 "$owner" 2>/dev/null; then alive=true; else alive=false; fi
+            ;;
+    esac
+    if [ "$alive" = false ]; then
+        rm -f "$RECOVERY_LOCK/pid"
+        rmdir "$RECOVERY_LOCK" 2>/dev/null || true
+        if mkdir "$RECOVERY_LOCK" 2>/dev/null; then
+            printf '%s\n' "$$" > "$RECOVERY_LOCK/pid"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+if ! acquire_recovery_lock; then
+    # Another OnFailure path is already returning display ownership.  Joining
+    # that result is safer than running a second stop/start transaction.
+    attempts=0
+    while [ "$attempts" -lt 100 ]; do
+        [ "$(systemctl is-active xochitl.service 2>/dev/null || true)" = active ] && exit 0
+        sleep 0.1
+        attempts=$((attempts + 1))
+    done
+    exit 1
+fi
+release_recovery_lock() {
+    status=$?
+    rm -f "$RECOVERY_LOCK/pid"
+    rmdir "$RECOVERY_LOCK" 2>/dev/null || true
+    trap - EXIT
+    exit "$status"
+}
+trap release_recovery_lock EXIT
+
+wait_active() {
+    unit=$1
+    attempts=0
+    while [ "$attempts" -lt 50 ]; do
+        [ "$(systemctl is-active "$unit" 2>/dev/null || true)" = active ] && return 0
+        sleep 0.1
+        attempts=$((attempts + 1))
+    done
+    return 1
+}
+
+# Prefer the daemon's serialized transition while it is healthy.  This also
+# releases its EVIOCGRAB and managed-domain wake lock in the normal order.
+if [ -x "$CTL" ] && "$CTL" status >/dev/null 2>&1; then
+    "$CTL" system >/dev/null 2>&1 || true
+    if wait_active xochitl.service; then
+        rm -f /tmp/qtfb.sock /tmp/qtfb-* /run/remagic/foreground-app \
+            /run/magicpaper-koreader.request
+        exit 0
+    fi
+fi
+
+# Emergency recovery must first evict every alternative display owner.  Never
+# start xochitl while AppLoad, Quill, or a hosted application can still own the
+# e-paper backend.  A live but unresponsive remagicd may also still hold an
+# EVIOCGRAB on the power key, so stop it before restoring the stock shell.
+daemon_was_active=false
+if [ "$(systemctl is-active remagicd.service 2>/dev/null || true)" = active ]; then
+    daemon_was_active=true
+fi
+systemctl stop remagic-runtime.service 'remagic-app@*.service' remagic-home.service 2>/dev/null || true
+systemctl stop remagicd.service 2>/dev/null || true
+rm -f /tmp/qtfb.sock /tmp/qtfb-* /tmp/epframebuffer.lock /run/remagic/display.lock \
+    /run/remagic/foreground-app /run/remagic/runtime-app.sock \
+    /run/magicpaper-koreader.request
+
+systemctl unmask --runtime xochitl.service || exit 1
+systemctl reset-failed xochitl.service paperweight.service || exit 1
+systemctl start xochitl.service || exit 1
 
 if [ "$(systemctl show --property=LoadState --value paperweight.service 2>/dev/null)" = loaded ]; then
-    systemctl start paperweight.service 2>/dev/null || true
+    systemctl start paperweight.service || exit 1
+fi
+
+if ! wait_active xochitl.service; then
+    echo "remagic-recover: xochitl did not become active" >&2
+    exit 1
 fi
 
 if [ -w /sys/power/wake_unlock ]; then
@@ -18,5 +102,11 @@ if [ -w /sys/power/wake_unlock ]; then
 fi
 
 if [ -d "$APP_ROOT" ]; then
-    date -Iseconds > "$APP_ROOT/last-recovery" 2>/dev/null || true
+    date '+%Y-%m-%dT%H:%M:%S%z' > "$APP_ROOT/last-recovery" 2>/dev/null || true
+fi
+
+# When recovery was triggered by the managed runtime rather than a failed
+# daemon, bring the controller back after stock display ownership is verified.
+if [ "$daemon_was_active" = true ]; then
+    systemctl start remagicd.service || exit 1
 fi

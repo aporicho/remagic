@@ -16,6 +16,7 @@ pub struct ClickTracker {
     clicks: u8,
     deadline: Option<Instant>,
     down_since: Option<Instant>,
+    suppress_release: bool,
 }
 
 impl ClickTracker {
@@ -24,6 +25,11 @@ impl ClickTracker {
     }
 
     pub fn release(&mut self, now: Instant) -> PowerAction {
+        if self.suppress_release {
+            self.suppress_release = false;
+            self.down_since = None;
+            return PowerAction::None;
+        }
         if self
             .down_since
             .take()
@@ -50,7 +56,13 @@ impl ClickTracker {
             .down_since
             .is_some_and(|start| now.duration_since(start) >= LONG_PRESS)
         {
-            self.clear();
+            self.clicks = 0;
+            self.deadline = None;
+            self.down_since = None;
+            // poll() fires while the key is still physically held.  Consume
+            // the matching release instead of turning it into a delayed
+            // single click 800 ms later.
+            self.suppress_release = true;
             return PowerAction::Long;
         }
         if self.clicks > 0 && self.deadline.is_some_and(|deadline| now >= deadline) {
@@ -117,5 +129,21 @@ mod tests {
             PowerAction::Long
         );
         assert_eq!(tracker.poll(t + Duration::from_secs(5)), PowerAction::None);
+    }
+
+    #[test]
+    fn polled_long_press_consumes_the_later_release() {
+        let t = Instant::now();
+        let mut tracker = ClickTracker::default();
+        tracker.press(t);
+        assert_eq!(tracker.poll(t + LONG_PRESS), PowerAction::Long);
+        assert_eq!(
+            tracker.release(t + LONG_PRESS + Duration::from_millis(50)),
+            PowerAction::None
+        );
+        assert_eq!(
+            tracker.poll(t + LONG_PRESS + MULTI_CLICK_GAP),
+            PowerAction::None
+        );
     }
 }

@@ -1,0 +1,331 @@
+diff -ruN a/resources/qml/appload.qml b/resources/qml/appload.qml
+--- a/resources/qml/appload.qml	2026-07-20 20:40:01.426797587 +0800
++++ b/resources/qml/appload.qml	2026-07-20 20:42:39.087704878 +0800
+@@ -111,13 +111,15 @@
+         const existing = runningWindows[id]
+         if (existing && !existing.closing) {
+             existing.foregroundEpoch = foregroundEpoch
+-            existing.visible = true
++            if (!existing.semanticReadyRequired || existing.semanticUiReady)
++                existing.visible = true
+             existing.z = ++nextWindowZ
+             if (!existing.fullscreen) existing.maximize()
+             if (existing.qtfbActive)
+                 RuntimeControl.recordAppEventAtEpoch(app, "qtfb-connected", foregroundEpoch)
+             existing.prepareForeground(foregroundEpoch)
+-            RuntimeControl.setManagerVisible(false)
++            RuntimeControl.setManagerVisible(
++                existing.semanticReadyRequired && !existing.semanticUiReady)
+             currentForegroundApp = app
+             return existing
+         }
+@@ -138,13 +140,15 @@
+                 delete launchPending[id]
+                 return null
+             }
+-            win = windowArchetype.createObject(absoluteRoot, { x: 0, y: 0 })
++            win = windowArchetype.createObject(
++                absoluteRoot, { x: 0, y: 0, visible: app !== "koreader" })
+             if (!win) {
+                 delete launchPending[id]
+                 return null
+             }
+             win.appName = modelData.name
+             win.appIdentifier = id
++            win.semanticReadyRequired = app === "koreader"
+             win.foregroundEpoch = foregroundEpoch
+             win.supportsScaling = modelData.supportsScaling
+             win.virtualKeyboardLayout = modelData.virtualKeyboardLayout
+@@ -176,6 +180,19 @@
+             win.cleanRefreshCompleted.connect(function(epoch, submitted) {
+                 RuntimeControl.recordForegroundRefresh(app, epoch, submitted)
+             })
++            win.semanticReadyConfirmed.connect(function(epoch) {
++                if (epoch !== win.foregroundEpoch || win.closing) return
++                RuntimeControl.recordAppEventAtEpoch(app, "semantic-ready", epoch)
++                RuntimeControl.setManagerVisible(false)
++            })
++            win.semanticReadyFailed.connect(function(epoch) {
++                if (epoch !== win.foregroundEpoch || win.closing) return
++                RuntimeControl.setAppError(app, "semantic_ready_timeout")
++                RuntimeControl.setAppState(app, "error")
++                win.beginClose()
++                win.stopUnderlying()
++                showManager()
++            })
+             runningWindows[id] = win
+         }
+ 
+@@ -198,7 +215,8 @@
+         }
+ 
+         delete launchPending[id]
+-        RuntimeControl.setManagerVisible(false)
++        RuntimeControl.setManagerVisible(
++            win && win.semanticReadyRequired && !win.semanticUiReady)
+         currentForegroundApp = app
+         if (win) win.prepareForeground(foregroundEpoch)
+         return win
+diff -ruN a/resources/qml/window.qml b/resources/qml/window.qml
+--- a/resources/qml/window.qml	2026-07-20 20:40:01.426823907 +0800
++++ b/resources/qml/window.qml	2026-07-20 20:42:21.172892055 +0800
+@@ -36,6 +36,10 @@
+     property bool everActive: false
+     property bool qtfbActive: windowCanvas.active
+     property bool foregroundInputEnabled: false
++    property bool semanticReadyRequired: false
++    property bool semanticUiReady: false
++    property bool foregroundPending: false
++    property int semanticReadyPolls: 0
+     property double foregroundEpoch: 0
+     // This is defined like that so as it doesn't interfere with minimization
+     property var _height: root.globalHeight / 3
+@@ -54,12 +58,18 @@
+     signal closed
+     signal ready(double epoch)
+     signal cleanRefreshCompleted(double epoch, bool submitted)
++    signal semanticReadyConfirmed(double epoch)
++    signal semanticReadyFailed(double epoch)
+     function beginClose() {
+         if(finalized) return
++        semanticReadyTimer.stop()
++        foregroundPending = false
+         foregroundInputEnabled = false
+         closing = true
+     }
+     function markFinalized() {
++        semanticReadyTimer.stop()
++        foregroundPending = false
+         foregroundInputEnabled = false
+         finalized = true
+         closing = true
+@@ -71,11 +81,26 @@
+     }
+     function prepareForeground(epoch) {
+         if(finalized || epoch <= 0) return
+-        foregroundInputEnabled = true
+         foregroundEpoch = epoch
+-        windowCanvas.beginForegroundEpoch(epoch)
++        foregroundPending = true
++        if(semanticReadyRequired && !semanticUiReady) {
++            visible = false
++            semanticReadyPolls = 0
++            semanticReadyTimer.restart()
++            return
++        }
++        activatePreparedForeground()
++    }
++    function activatePreparedForeground() {
++        if(finalized || closing || !foregroundPending || foregroundEpoch <= 0) return
++        foregroundPending = false
++        visible = true
++        foregroundInputEnabled = true
++        windowCanvas.beginForegroundEpoch(foregroundEpoch)
+     }
+     function enterBackground() {
++        semanticReadyTimer.stop()
++        foregroundPending = false
+         foregroundInputEnabled = false
+     }
+     function loadApplication(appId) {
+@@ -125,6 +150,33 @@
+         return appIdentifier.indexOf("external::") === 0 ? appIdentifier.substring(10) : appIdentifier
+     }
+ 
++    Timer {
++        id: semanticReadyTimer
++        interval: 50
++        repeat: true
++        onTriggered: {
++            if(root.finalized || root.closing || !root.foregroundPending) {
++                stop()
++                return
++            }
++            if(RuntimeControl.applicationSemanticReady(root.publicAppIdentifier(), root.appPid)) {
++                stop()
++                root.semanticUiReady = true
++                const epoch = root.foregroundEpoch
++                root.semanticReadyConfirmed(epoch)
++                root.activatePreparedForeground()
++                return
++            }
++            root.semanticReadyPolls += 1
++            if(root.semanticReadyPolls >= 280) {
++                stop()
++                const epoch = root.foregroundEpoch
++                root.foregroundPending = false
++                root.semanticReadyFailed(epoch)
++            }
++        }
++    }
++
+     states: [
+         State {
+             name: "minimized"
+diff -ruN a/src/RuntimeControl.cpp b/src/RuntimeControl.cpp
+--- a/src/RuntimeControl.cpp	2026-07-20 20:40:01.425498066 +0800
++++ b/src/RuntimeControl.cpp	2026-07-20 20:41:21.581188375 +0800
+@@ -165,6 +165,10 @@
+     if (app.isEmpty() || _shuttingDown) return 0;
+     AppRuntimeStatus &status = _appStatuses[app];
+     if (coldStart || status.generation == 0) {
++        if (coldStart && app == QStringLiteral("koreader")) {
++            QFile::remove(QStringLiteral("/run/remagic/koreader-ready"));
++            QFile::remove(QStringLiteral("/run/remagic/koreader-exit"));
++        }
+         status.generation = ++_generation;
+         status.error.clear();
+         status.qtfbConnected = false;
+@@ -275,6 +279,20 @@
+     std::cerr << " event=" << event.toStdString() << std::endl;
+ }
+ 
++bool RuntimeControl::applicationSemanticReady(const QString &app, qint64 pid) const
++{
++    if (app != QStringLiteral("koreader") || pid <= 1) return true;
++    const auto position = _appStatuses.constFind(app);
++    if (position == _appStatuses.cend() || position->generation == 0) return false;
++
++    QFile marker(QStringLiteral("/run/remagic/koreader-ready"));
++    if (!marker.open(QIODevice::ReadOnly | QIODevice::Text)) return false;
++    const QByteArray expected = QByteArrayLiteral("pid=") + QByteArray::number(pid)
++        + QByteArrayLiteral("\ngeneration=") + QByteArray::number(position->generation)
++        + QByteArrayLiteral("\n");
++    return marker.readAll() == expected;
++}
++
+ void RuntimeControl::setManagerVisible(bool visible)
+ {
+     _managerVisible = visible;
+diff -ruN a/src/RuntimeControl.h b/src/RuntimeControl.h
+--- a/src/RuntimeControl.h	2026-07-20 20:40:01.425539956 +0800
++++ b/src/RuntimeControl.h	2026-07-20 20:41:03.328360292 +0800
+@@ -42,6 +42,7 @@
+     Q_INVOKABLE void recordForegroundRefresh(const QString &app, quint64 foregroundEpoch,
+                                               bool submitted);
+     Q_INVOKABLE void recordUiEvent(const QString &ui, const QString &app, const QString &event);
++    Q_INVOKABLE bool applicationSemanticReady(const QString &app, qint64 pid) const;
+     Q_INVOKABLE void setManagerVisible(bool visible);
+     Q_INVOKABLE QString appState(const QString &app) const;
+     Q_INVOKABLE bool requestLaunch(const QString &app, const QString &openPath = QString());
+diff -ruN a/src/libraryexternals.cpp b/src/libraryexternals.cpp
+--- a/src/libraryexternals.cpp	2026-07-20 20:40:01.425564654 +0800
++++ b/src/libraryexternals.cpp	2026-07-20 20:41:52.785604097 +0800
+@@ -7,10 +7,13 @@
+ #include <vector>
+ 
+ #include <QCoreApplication>
++#include <QFile>
+ #include <QFileInfo>
+ #include <QPointer>
+ #include <QProcess>
++#include <QSaveFile>
+ #include <QTimer>
++#include <QVariant>
+ 
+ #include <sys/types.h>
+ #include <unistd.h>
+@@ -47,6 +50,31 @@
+         CERR << "Failed to signal process group " << pid << ": " << std::strerror(errno) << std::endl;
+     }
+ }
++
++QByteArray applicationIdentity(qint64 pid, quint64 generation)
++{
++    return QByteArrayLiteral("pid=") + QByteArray::number(pid)
++        + QByteArrayLiteral("\ngeneration=") + QByteArray::number(generation)
++        + QByteArrayLiteral("\n");
++}
++
++bool writeApplicationMarker(const QString &path, qint64 pid, quint64 generation)
++{
++    QSaveFile marker(path);
++    marker.setDirectWriteFallback(false);
++    if (!marker.open(QIODevice::WriteOnly | QIODevice::Text)) return false;
++    const QByteArray identity = applicationIdentity(pid, generation);
++    return marker.write(identity) == identity.size() && marker.commit();
++}
++
++void removeOwnedApplicationMarker(const QString &path, qint64 pid, quint64 generation)
++{
++    QFile marker(path);
++    if (!marker.open(QIODevice::ReadOnly | QIODevice::Text)) return;
++    const bool owned = marker.readAll() == applicationIdentity(pid, generation);
++    marker.close();
++    if (owned) QFile::remove(path);
++}
+ }
+ 
+ appload::library::ExternalApplication::ExternalApplication(QString root)
+@@ -129,11 +157,16 @@
+ 
+     QDEBUG << "Starting external binary" << execPath;
+     auto *process = new QProcess(QCoreApplication::instance());
++    const QString appPath = execPath;
++    const QString publicID = publicApplicationID(applicationID);
++    const quint64 generation = RuntimeControl::generationForApplication(publicID);
+     QProcessEnvironment processEnvironment = QProcessEnvironment::systemEnvironment();
+     processEnvironment.remove("LD_PRELOAD");
+     for (const auto &entry : environment) processEnvironment.insert(entry.first, entry.second);
+     for (const auto [key, value] : extraEnv.asKeyValueRange()) processEnvironment.insert(key, value);
+     if (qtfbKey != -1) processEnvironment.insert("QTFB_KEY", QString::number(qtfbKey));
++    processEnvironment.insert("REMAGIC_APP_ID", publicID);
++    processEnvironment.insert("REMAGIC_APP_GENERATION", QString::number(generation));
+ 
+     process->setProcessEnvironment(processEnvironment);
+     process->setWorkingDirectory(workingDirectory);
+@@ -146,9 +179,6 @@
+     });
+ #endif
+ 
+-    const QString appPath = execPath;
+-    const QString publicID = publicApplicationID(applicationID);
+-    const quint64 generation = RuntimeControl::generationForApplication(publicID);
+     QObject::connect(process, &QProcess::errorOccurred, process,
+             [applicationID, appPath](QProcess::ProcessError error) {
+         qWarning() << "Process error for" << applicationID << appPath << error;
+@@ -169,6 +199,12 @@
+             externalProcesses.erase(current);
+         }
+         applicationForPid.erase(pid);
++        if (publicID == QStringLiteral("koreader")) {
++            removeOwnedApplicationMarker(QStringLiteral("/run/remagic/koreader-ready"),
++                                         pid, generation);
++            removeOwnedApplicationMarker(QStringLiteral("/run/remagic/koreader-exit"),
++                                         pid, generation);
++        }
+         sendPidDiedMessage(pid);
+         if (!expectedExit)
+             RuntimeControl::reportApplicationExit(publicID, generation, exitCode, crashed);
+@@ -184,6 +220,7 @@
+ 
+     const qint64 pid = process->processId();
+     process->setProperty("remagicPid", pid);
++    process->setProperty("remagicGeneration", QVariant::fromValue(generation));
+     externalProcesses[applicationID] = process;
+     applicationForPid[pid] = applicationID;
+     CERR << "remagic-runtime: app=" << publicID.toStdString()
+@@ -216,6 +253,23 @@
+     if (process->property("remagicTerminating").toBool()) return;
+     process->setProperty("remagicTerminating", true);
+     process->setProperty("remagicExpectedExit", true);
++    const QString publicID = publicApplicationID(id->second);
++    const quint64 generation = process->property("remagicGeneration").toULongLong();
++    if (publicID == QStringLiteral("koreader") && generation != 0
++        && writeApplicationMarker(QStringLiteral("/run/remagic/koreader-exit"),
++                                  pid, generation)) {
++        CERR << "remagic-runtime: app=koreader event=graceful-exit-requested pid="
++             << pid << " generation=" << generation << std::endl;
++        QTimer::singleShot(3500, QCoreApplication::instance(), [pid, process]() {
++            if (process && process->state() != QProcess::NotRunning)
++                signalProcessGroup(pid, SIGTERM);
++        });
++        QTimer::singleShot(5500, QCoreApplication::instance(), [pid, process]() {
++            if (process && process->state() != QProcess::NotRunning)
++                signalProcessGroup(pid, SIGKILL);
++        });
++        return;
++    }
+     signalProcessGroup(pid, SIGTERM);
+     QTimer::singleShot(2000, QCoreApplication::instance(), [pid, process]() {
+         if (process && process->state() != QProcess::NotRunning) {

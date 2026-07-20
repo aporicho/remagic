@@ -28,6 +28,13 @@ pub enum Request {
         #[serde(default)]
         complete: bool,
     },
+    RuntimeExited {
+        app_id: AppId,
+        generation: u64,
+        exit_code: i32,
+        #[serde(default)]
+        crashed: bool,
+    },
     Ready {
         app_id: AppId,
     },
@@ -162,5 +169,26 @@ mod tests {
         let request: Request = read_frame(&mut right).await.unwrap();
         send.await.unwrap();
         assert!(matches!(request, Request::Status));
+    }
+
+    #[test]
+    fn runtime_exit_round_trip_preserves_generation_and_status() {
+        let request = Request::RuntimeExited {
+            app_id: AppId::new("koreader").unwrap(),
+            generation: 4_271_337,
+            exit_code: 9,
+            crashed: true,
+        };
+        let bytes = serde_json::to_vec(&request).unwrap();
+        let decoded: Request = serde_json::from_slice(&bytes).unwrap();
+        assert!(matches!(
+            decoded,
+            Request::RuntimeExited {
+                app_id,
+                generation: 4_271_337,
+                exit_code: 9,
+                crashed: true,
+            } if app_id.as_str() == "koreader"
+        ));
     }
 }

@@ -256,6 +256,7 @@ dependencies = [
  "libc",
  "remagic-core",
  "remagic-protocol",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",
