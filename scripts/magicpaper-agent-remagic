@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+
+exec /home/root/apps/remagic/libexec/magicpaper-remagic --agent

@@ -1,0 +1,8 @@
+[Unit]
+Description=Restore the reMarkable system shell after a Remagic failure
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/root/apps/remagic/libexec/remagic-recover
+

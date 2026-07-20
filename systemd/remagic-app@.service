@@ -1,0 +1,14 @@
+[Unit]
+Description=Remagic foreground application %i
+Requires=remagicd.service
+After=remagicd.service
+
+[Service]
+Type=simple
+ExecStart=/home/root/apps/remagic/bin/remagic-runner %i
+Environment=LD_LIBRARY_PATH=/home/root/apps/remagic/lib:/usr/lib/plugins/scenegraph:/usr/lib
+Restart=no
+TimeoutStopSec=5
+KillMode=control-group
+SendSIGKILL=yes
+UMask=0077

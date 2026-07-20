@@ -1,0 +1,59 @@
+#!/bin/sh
+set -eu
+
+KOREADER_DIR=${KOREADER_DIR:-/home/root/apps/koreader}
+EINKFACE=/home/root/.paperweight/services/core/einkfaceclient
+QTFB_SHIM=/home/root/apps/remagic/lib/qtfb-shim-einkface.so
+
+if [ ! -x "$KOREADER_DIR/koreader.sh" ]; then
+    echo "Independent KOReader is not installed at $KOREADER_DIR" >&2
+    exit 1
+fi
+if [ ! -r "$EINKFACE" ]; then
+    echo "KOReader einkface client is missing" >&2
+    exit 1
+fi
+ln -sf "$EINKFACE" "$QTFB_SHIM"
+
+# Paper Pro Move's KOReader build intentionally requires the official
+# xochitl/Paperweight display host.  Remagic normally masks xochitl while its
+# own Quill UI is active, so restore only the host services needed by this app.
+systemctl unmask --runtime xochitl.service 2>/dev/null || true
+systemctl reset-failed xochitl.service paperweight.service 2>/dev/null || true
+systemctl start paperweight.service 2>/dev/null || true
+systemctl start xochitl.service
+attempts=0
+while { [ ! -S /tmp/pwei-einkface.sock ] || ! pidof xochitl >/dev/null 2>&1 || ! pidof core >/dev/null 2>&1; } && [ "$attempts" -lt 80 ]; do
+    sleep 0.1
+    attempts=$((attempts + 1))
+done
+if [ ! -S /tmp/pwei-einkface.sock ] || ! pidof xochitl >/dev/null 2>&1 || ! pidof core >/dev/null 2>&1; then
+    echo "KOReader einkface host is not ready" >&2
+    exit 1
+fi
+
+export KOREADER_DIR
+export KO_DONT_GRAB_INPUT=1
+export KO_DONT_SET_DEPTH=1
+export LD_PRELOAD="$QTFB_SHIM${LD_PRELOAD:+:$LD_PRELOAD}"
+export EINKFACE_WINDOW_TITLE=KOReader
+export EINKFACE_SHIM_MODEL=false
+export QTFB_SHIM_MODE=N_RGB565
+export LD_LIBRARY_PATH="/home/root/apps/remagic/lib:/usr/lib/plugins/scenegraph${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+# A recalled task resumes KOReader's most recent document. A fresh launch with
+# no session still opens the normal file manager; an explicit read command is
+# passed through unchanged.
+if [ "$#" -eq 0 ] && [ -n "${REMAGIC_RESUME_PAYLOAD:-}" ]; then
+    last_file=$(sed -n 's/^[[:space:]]*\["lastfile"\][[:space:]]*=[[:space:]]*"\(.*\)",[[:space:]]*$/\1/p' \
+        "$KOREADER_DIR/settings.reader.lua" 2>/dev/null | sed -n '1p')
+    if [ -n "$last_file" ] && [ -f "$last_file" ]; then
+        set -- "$last_file"
+    fi
+fi
+
+# The upstream wrapper unconditionally probes fbdepth/fbink before launching
+# reader.lua. Move has no /dev/fb0; einkface provides the display to reader.lua
+# directly, so bypass that framebuffer-only wrapper.
+cd "$KOREADER_DIR"
+exec "$KOREADER_DIR/reader.lua" "$@"

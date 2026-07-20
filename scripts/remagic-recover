@@ -1,0 +1,22 @@
+#!/bin/sh
+set -u
+
+APP_ROOT=/home/root/apps/remagic
+
+systemctl stop 'remagic-app@*.service' remagic-home.service 2>/dev/null || true
+rm -f /tmp/epframebuffer.lock /run/remagic/display.lock
+systemctl unmask --runtime xochitl.service 2>/dev/null || true
+systemctl reset-failed xochitl.service paperweight.service 2>/dev/null || true
+systemctl start xochitl.service 2>/dev/null || true
+
+if [ "$(systemctl show --property=LoadState --value paperweight.service 2>/dev/null)" = loaded ]; then
+    systemctl start paperweight.service 2>/dev/null || true
+fi
+
+if [ -w /sys/power/wake_unlock ]; then
+    printf '%s\n' remagic-managed > /sys/power/wake_unlock 2>/dev/null || true
+fi
+
+if [ -d "$APP_ROOT" ]; then
+    date -Iseconds > "$APP_ROOT/last-recovery" 2>/dev/null || true
+fi

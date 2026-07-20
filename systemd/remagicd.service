@@ -1,0 +1,20 @@
+[Unit]
+Description=Remagic application and foreground-domain manager
+After=local-fs.target xochitl.service
+Wants=xochitl.service
+OnFailure=remagic-recover.service
+
+[Service]
+Type=simple
+ExecStart=/home/root/apps/remagic/bin/remagicd
+ExecStopPost=-/home/root/apps/remagic/libexec/remagic-recover
+Restart=on-failure
+RestartSec=2
+KillSignal=SIGINT
+TimeoutStopSec=15
+RuntimeDirectory=remagic
+RuntimeDirectoryMode=0700
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

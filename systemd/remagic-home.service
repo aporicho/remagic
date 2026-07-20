@@ -1,0 +1,13 @@
+[Unit]
+Description=Remagic task manager interface
+Requires=remagicd.service
+After=remagicd.service
+
+[Service]
+Type=simple
+ExecStart=/home/root/apps/remagic/bin/remagic-home
+Environment=LD_LIBRARY_PATH=/home/root/apps/remagic/lib:/usr/lib/plugins/scenegraph:/usr/lib
+Restart=no
+TimeoutStopSec=5
+KillMode=mixed
+UMask=0077

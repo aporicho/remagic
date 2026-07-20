@@ -1,0 +1,16 @@
+[package]
+name = "remagic-home"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+ab_glyph.workspace = true
+libc.workspace = true
+remagic-core = { path = "../remagic-core" }
+remagic-protocol = { path = "../remagic-protocol" }
+tokio.workspace = true
+
+[features]
+device = []

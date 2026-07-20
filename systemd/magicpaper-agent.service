@@ -1,0 +1,16 @@
+[Unit]
+Description=MagicPaper screenless scheduled-task agent
+After=local-fs.target network.target
+
+[Service]
+Type=simple
+ExecStart=/home/root/apps/remagic/libexec/magicpaper-agent-remagic
+Environment=LD_LIBRARY_PATH=/home/root/apps/riddle:/home/root/apps/remagic/lib:/usr/lib/plugins/scenegraph:/usr/lib
+Restart=on-failure
+RestartSec=15
+Nice=10
+IOSchedulingClass=idle
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+
+HERE=/home/root/apps/riddle
+CONFIG=${RIDDLE_CONFIG:-/home/root/.config/riddle/oracle.env}
+
+if [ -r "$CONFIG" ]; then
+    set -a
+    . "$CONFIG"
+    set +a
+elif [ -r "$HERE/oracle.env" ]; then
+    set -a
+    . "$HERE/oracle.env"
+    set +a
+fi
+
+cd "$HERE"
+exec "$HERE/riddle" "$@"
