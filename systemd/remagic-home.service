@@ -1,19 +1,19 @@
 [Unit]
 Description=Remagic task manager interface
 Requires=remagicd.service
-After=remagicd.service
+BindsTo=remagic-display-host.service
+After=remagicd.service remagic-display-host.service
+ConditionPathExists=/run/remagic/managed-domain
 
 [Service]
 Type=simple
 ExecStart=/home/root/apps/remagic/bin/remagic-home
 Environment=LD_LIBRARY_PATH=/home/root/apps/remagic/lib:/usr/lib/plugins/scenegraph:/usr/lib
-Restart=no
+Environment=REMAGIC_QTFB_SOCKET=/tmp/qtfb.sock
+Environment=QTFB_KEY=245209900
+Restart=on-failure
+RestartSec=300ms
 TimeoutStopSec=5
-# Quill/Qt may abort while tearing down its display thread after SIGTERM.
-# The daemon has already released the display ownership before stopping this
-# UI, so terminate the short-lived renderer directly and avoid a core dump.
-KillSignal=SIGKILL
 KillMode=control-group
 SendSIGKILL=yes
-SuccessExitStatus=SIGKILL
 UMask=0077

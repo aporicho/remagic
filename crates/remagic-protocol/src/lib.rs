@@ -5,10 +5,80 @@ use std::path::PathBuf;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+mod control_v2;
+mod display;
+mod lifecycle;
+
+pub use control_v2::{
+    AppViewV2, ControlErrorCode, ControlEvent, ControlEventEnvelope, ControlIntent, ControlReply,
+    ControlRequest, ControlResponse, LegacyControlConversionError, SupervisorSnapshot,
+};
+pub use display::{
+    DamageRect, DisplayClientMessage, DisplayErrorCode, DisplayHostMessage, DisplayValidationError,
+    FrameCommit, FrameIntent, InkCancel, InkCommit, LeaseRevocationReason, PenFrame, PenPhase,
+    PenTool, PixelFormat, SurfaceDescriptor, TouchFrame, TouchPhase,
+};
+pub use lifecycle::{
+    LifecycleCommand, LifecycleCommandBody, LifecycleCommandEnvelope, LifecycleCompatibilityError,
+    LifecycleEvent, LifecycleEventBody, LifecycleEventEnvelope, LifecycleStage,
+    LifecycleValidationError, ShutdownReason,
+};
+
 pub const DEFAULT_SOCKET: &str = "/run/remagic/control.sock";
 pub const MAX_FRAME: usize = 64 * 1024;
+pub const PROTOCOL_V2: u16 = 2;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Envelope<T> {
+    pub protocol: u16,
+    pub request_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_state_revision: Option<u64>,
+    pub body: T,
+}
+
+impl<T> Envelope<T> {
+    pub fn new(request_id: impl Into<String>, body: T) -> Self {
+        Self {
+            protocol: PROTOCOL_V2,
+            request_id: request_id.into(),
+            expected_state_revision: None,
+            body,
+        }
+    }
+
+    pub fn with_expected_revision(mut self, state_revision: u64) -> Self {
+        self.expected_state_revision = Some(state_revision);
+        self
+    }
+
+    pub fn validate_header(&self) -> Result<(), ProtocolValidationError> {
+        if self.protocol != PROTOCOL_V2 {
+            return Err(ProtocolValidationError::UnsupportedProtocol(self.protocol));
+        }
+        let valid = !self.request_id.is_empty()
+            && self.request_id.len() <= 128
+            && self.request_id.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
+            });
+        if !valid {
+            return Err(ProtocolValidationError::InvalidRequestId(
+                self.request_id.clone(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
+pub enum ProtocolValidationError {
+    #[error("unsupported protocol version {0}")]
+    UnsupportedProtocol(u16),
+    #[error("invalid request id: {0}")]
+    InvalidRequestId(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request {
     Status,
@@ -56,7 +126,7 @@ pub enum Request {
     },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum PackageOperation {
     Bootstrap,
@@ -68,7 +138,7 @@ pub enum PackageOperation {
     Upgrade,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppView {
     pub id: AppId,
     pub name: String,
@@ -81,7 +151,7 @@ pub struct AppView {
     pub package: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
     Ok,
@@ -102,7 +172,7 @@ pub enum Response {
     },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AppCommand {
     EnterForeground {
@@ -110,6 +180,13 @@ pub enum AppCommand {
         resume_payload: Option<serde_json::Value>,
         #[serde(default)]
         open_path: Option<PathBuf>,
+        /// Optional display-host fence for schema-v2 callers. Transitional
+        /// callers may omit both fields and let the runner advance its local
+        /// compatibility token.
+        #[serde(default)]
+        foreground_epoch: Option<u64>,
+        #[serde(default)]
+        lease_id: Option<u64>,
     },
     PreparePark,
     EnterBackground,
@@ -160,6 +237,27 @@ pub enum FrameError {
 mod tests {
     use super::*;
 
+    #[test]
+    fn v2_header_boundaries_are_validated() {
+        for id in ["a".to_owned(), "a".repeat(128), "req:1_test.v2".to_owned()] {
+            assert!(Envelope::new(id, ControlIntent::Snapshot)
+                .validate_header()
+                .is_ok());
+        }
+        for id in [String::new(), "a".repeat(129), "contains space".into()] {
+            assert!(matches!(
+                Envelope::new(id, ControlIntent::Snapshot).validate_header(),
+                Err(ProtocolValidationError::InvalidRequestId(_))
+            ));
+        }
+        let mut envelope = Envelope::new("request", ControlIntent::Snapshot);
+        envelope.protocol = 1;
+        assert_eq!(
+            envelope.validate_header(),
+            Err(ProtocolValidationError::UnsupportedProtocol(1))
+        );
+    }
+
     #[tokio::test]
     async fn frames_round_trip() {
         let (mut left, mut right) = tokio::io::duplex(1024);
@@ -169,6 +267,29 @@ mod tests {
         let request: Request = read_frame(&mut right).await.unwrap();
         send.await.unwrap();
         assert!(matches!(request, Request::Status));
+    }
+
+    #[tokio::test]
+    async fn invalid_frame_lengths_are_rejected_before_allocation() {
+        for length in [0_u32, (MAX_FRAME + 1) as u32] {
+            let (mut left, mut right) = tokio::io::duplex(16);
+            let send = tokio::spawn(async move {
+                left.write_u32(length).await.unwrap();
+            });
+            let error = read_frame::<_, Request>(&mut right).await.unwrap_err();
+            send.await.unwrap();
+            assert!(matches!(error, FrameError::Length(actual) if actual == length as usize));
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_serialized_frame_is_not_written() {
+        let (mut writer, _reader) = tokio::io::duplex(16);
+        let response = Response::Error {
+            message: "x".repeat(MAX_FRAME),
+        };
+        let error = write_frame(&mut writer, &response).await.unwrap_err();
+        assert!(matches!(error, FrameError::Length(actual) if actual > MAX_FRAME));
     }
 
     #[test]
@@ -189,6 +310,34 @@ mod tests {
                 exit_code: 9,
                 crashed: true,
             } if app_id.as_str() == "koreader"
+        ));
+    }
+
+    #[test]
+    fn foreground_command_preserves_v2_fence_and_accepts_legacy_omission() {
+        let command = AppCommand::EnterForeground {
+            resume_payload: Some(serde_json::json!({"page": 9})),
+            open_path: None,
+            foreground_epoch: Some(41),
+            lease_id: Some(73),
+        };
+        let value = serde_json::to_value(&command).unwrap();
+        assert_eq!(value["type"], "enter_foreground");
+        assert_eq!(value["foreground_epoch"], 41);
+        assert_eq!(value["lease_id"], 73);
+        assert_eq!(
+            serde_json::from_value::<AppCommand>(value).unwrap(),
+            command
+        );
+
+        let legacy: AppCommand = serde_json::from_str(r#"{"type":"enter_foreground"}"#).unwrap();
+        assert!(matches!(
+            legacy,
+            AppCommand::EnterForeground {
+                foreground_epoch: None,
+                lease_id: None,
+                ..
+            }
         ));
     }
 }

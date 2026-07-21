@@ -1,16 +1,14 @@
 #!/bin/sh
 set -eu
 
-HERE=/home/root/apps/riddle
+HERE=${MAGICPAPER_RUNTIME_ROOT:-/home/root/apps/remagic/opt/magicpaper}
+LEGACY=${MAGICPAPER_LEGACY_ROOT:-/home/root/apps/riddle}
+ENV_LOADER=${MAGICPAPER_ENV_LOADER:-/home/root/apps/remagic/libexec/riddle-env}
 CONFIG=${RIDDLE_CONFIG:-/home/root/.config/riddle/oracle.env}
 umask 077
-. /home/root/apps/remagic/libexec/riddle-env
+. "$ENV_LOADER"
 
-if [ -r "$CONFIG" ]; then
-    load_riddle_env "$CONFIG"
-elif [ -r "$HERE/oracle.env" ]; then
-    load_riddle_env "$HERE/oracle.env"
-fi
+load_riddle_config "$CONFIG" "$LEGACY/oracle.env" "${RIDDLE_TEST_MODE:-0}"
 
 cd "$HERE"
-exec "$HERE/riddle" "$@"
+exec "$HERE/riddle-qtfb" "$@"

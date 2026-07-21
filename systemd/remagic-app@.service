@@ -1,14 +1,21 @@
 [Unit]
 Description=Remagic foreground application %i
 Requires=remagicd.service
-After=remagicd.service
+BindsTo=remagic-display-host.service
+After=remagicd.service remagic-display-host.service
+ConditionPathExists=/run/remagic/managed-domain
 
 [Service]
 Type=simple
 ExecStart=/home/root/apps/remagic/bin/remagic-runner %i
 Environment=LD_LIBRARY_PATH=/home/root/apps/remagic/lib:/usr/lib/plugins/scenegraph:/usr/lib
+Environment=REMAGIC_QTFB_SOCKET=/tmp/qtfb.sock
+Environment=REMAGIC_PLATFORM_CAPABILITIES=display:qtfb-v1,input:touch-v1,input:pen-v1,ink:direct-v1,lifecycle:v2,network:outbound-v1
 Restart=no
-TimeoutStopSec=5
-KillMode=control-group
+TimeoutStopSec=8
+# The runner translates SIGTERM into the manifest lifecycle shutdown first;
+# core validation caps that absolute deadline at 5.5 seconds, leaving time
+# for runner task drain and its bounded callback before this cgroup fence.
+KillMode=mixed
 SendSIGKILL=yes
 UMask=0077

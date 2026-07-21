@@ -1,0 +1,77 @@
+schema = 2
+id = "magicpaper"
+name = "MagicPaper (isolated acceptance)"
+description = "Disposable no-network acceptance instance"
+version = "0.7.0-test"
+exec = "/home/root/apps/remagic/libexec/magicpaper-qtfb"
+working_dir = "/home/root/apps/remagic/opt/magicpaper"
+display = "qtfb"
+resident = true
+capabilities = [
+  "display:qtfb-v1",
+  "input:touch-v1",
+  "input:pen-v1",
+  "ink:direct-v1",
+  "lifecycle:v2",
+]
+supports_open_path = false
+
+[readiness]
+mode = "first_frame"
+timeout_ms = 15000
+
+[shutdown]
+graceful_timeout_ms = 3500
+term_timeout_ms = 4500
+kill_timeout_ms = 5500
+
+[data_schema]
+version = 1
+backup_paths = [
+  "/home/root/.local/state/remagic/acceptance/current/magicpaper/data",
+  "/home/root/.local/state/remagic/acceptance/current/magicpaper/config",
+]
+backup_timeout_ms = 30000
+migration_timeout_ms = 30000
+
+[runtime]
+profile = "qtfb_compat"
+required_libraries = []
+
+[runtime.directories]
+home = "/home/root"
+config_home = "/home/root/.local/state/remagic/acceptance/current/magicpaper/config"
+data_home = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data"
+state_home = "/home/root/.local/state/remagic/acceptance/current/magicpaper/state"
+cache_home = "/home/root/.local/state/remagic/acceptance/current/magicpaper/cache"
+runtime_dir = "/run/remagic/apps/magicpaper"
+
+[runtime.locale]
+lang = "C.UTF-8"
+
+[runtime.timezone]
+name = "Asia/Shanghai"
+
+[runtime.fonts]
+directories = ["/home/root/apps/remagic/opt/magicpaper/fonts"]
+
+[runtime.certificates]
+required = false
+
+[runtime.network]
+mode = "deny"
+
+[environment]
+RIDDLE_SYSTEMD_MANAGED = "1"
+RIDDLE_TEST_MODE = "1"
+RIDDLE_CONFIG = "/home/root/.local/state/remagic/acceptance/current/magicpaper/config/oracle.env"
+RIDDLE_DATA_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data"
+RIDDLE_AGENT_QUEUE_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/agent"
+RIDDLE_PI_DATA_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/pi"
+RIDDLE_PI_HOME = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/pi-home"
+RIDDLE_MEMORY_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/memories"
+RIDDLE_TASKS_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/tasks"
+RIDDLE_TODOS_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/todos"
+RIDDLE_PREFERENCES_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/preferences"
+RIDDLE_REMARKABLE_LIBRARY = "/home/root/.local/state/remagic/acceptance/current/magicpaper/empty-library"
+RIDDLE_KOREADER_LIBRARY = "/home/root/.local/state/remagic/acceptance/current/magicpaper/empty-library"

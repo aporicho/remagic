@@ -1,18 +1,74 @@
-schema = 1
+schema = 2
 id = "magicpaper"
 name = "MagicPaper"
 description = "手写 AI 魔法纸"
-version = "0.6.0"
+version = "0.7.0"
 exec = "/home/root/apps/remagic/libexec/magicpaper-qtfb"
-working_dir = "/home/root/apps/riddle"
+working_dir = "/home/root/apps/remagic/opt/magicpaper"
 display = "qtfb"
-park_strategy = "restart"
+resident = true
+capabilities = [
+  "display:qtfb-v1",
+  "input:touch-v1",
+  "input:pen-v1",
+  "ink:direct-v1",
+  "lifecycle:v2",
+  "network:outbound-v1",
+]
 supports_open_path = false
-background_unit = "magicpaper-agent.service"
+
+[readiness]
+mode = "first_frame"
+timeout_ms = 15000
+
+[shutdown]
+graceful_timeout_ms = 3500
+term_timeout_ms = 4500
+kill_timeout_ms = 5500
+
+[background_service]
+kind = "systemd"
+unit = "magicpaper-agent.service"
+
+[data_schema]
+version = 1
+backup_paths = [
+  "/home/root/riddle-data",
+  "/home/root/.config/riddle",
+]
+backup_timeout_ms = 120000
+migration_timeout_ms = 120000
+
+[runtime]
+profile = "qtfb_compat"
+required_libraries = []
+
+[runtime.directories]
+home = "/home/root"
+config_home = "/home/root/.config/riddle"
+data_home = "/home/root/riddle-data"
+state_home = "/home/root/.local/state/magicpaper"
+cache_home = "/home/root/.cache/magicpaper"
+runtime_dir = "/run/remagic/apps/magicpaper"
+
+[runtime.locale]
+lang = "C.UTF-8"
+
+[runtime.timezone]
+name = "Asia/Shanghai"
+
+[runtime.fonts]
+directories = [
+  "/home/root/apps/remagic/opt/magicpaper/fonts",
+  "/home/root/.local/share/fonts",
+]
+
+[runtime.certificates]
+required = true
+ca_bundle = "/etc/ssl/certs/ca-certificates.crt"
+
+[runtime.network]
+mode = "outbound"
 
 [environment]
 RIDDLE_SYSTEMD_MANAGED = "1"
-REMAGIC_RUNTIME_MANAGED = "1"
-REMAGIC_RUNTIME_SOCKET = "/run/remagic/runtime-app.sock"
-REMAGIC_SESSION = "1"
-LD_LIBRARY_PATH = "/home/root/apps/riddle:/home/root/apps/remagic/lib:/usr/lib/plugins/scenegraph:/usr/lib"

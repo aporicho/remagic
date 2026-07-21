@@ -1,0 +1,73 @@
+schema = 2
+id = "koreader"
+name = "KOReader (isolated acceptance)"
+description = "Disposable KO_HOME acceptance instance"
+version = "2026.03-test"
+exec = "/home/root/apps/remagic-koreader/bin/koreader-remagic"
+working_dir = "/home/root/apps/remagic-koreader/program"
+display = "qtfb"
+resident = true
+capabilities = ["display:qtfb-v1", "input:touch-v1", "lifecycle:v2"]
+supports_open_path = true
+allowed_open_roots = [
+  "/home/root/.local/state/remagic/acceptance/current/koreader/library-state/library",
+  "/home/root/.local/share/remarkable/xochitl",
+]
+
+[readiness]
+mode = "first_frame"
+timeout_ms = 20000
+
+[shutdown]
+graceful_timeout_ms = 3500
+term_timeout_ms = 4500
+kill_timeout_ms = 5500
+
+[data_schema]
+version = 1
+migrator = "/home/root/apps/remagic-koreader/libexec/koreader-data-migrate"
+backup_paths = [
+  "/home/root/.local/state/remagic/acceptance/current/koreader/data",
+]
+backup_timeout_ms = 30000
+migration_timeout_ms = 30000
+
+[runtime]
+profile = "qtfb_compat"
+required_libraries = []
+
+[runtime.directories]
+home = "/home/root"
+config_home = "/home/root/.local/state/remagic/acceptance/current/koreader/config"
+data_home = "/home/root/.local/state/remagic/acceptance/current/koreader/data"
+state_home = "/home/root/.local/state/remagic/acceptance/current/koreader/state"
+cache_home = "/home/root/.local/state/remagic/acceptance/current/koreader/cache"
+runtime_dir = "/run/remagic/apps/koreader"
+
+[runtime.locale]
+lang = "C.UTF-8"
+
+[runtime.timezone]
+name = "Asia/Shanghai"
+
+[runtime.fonts]
+directories = ["/home/root/apps/remagic-koreader/program/fonts/remagic"]
+
+[runtime.certificates]
+required = false
+
+[runtime.network]
+mode = "deny"
+
+[environment]
+KOREADER_DIR = "/home/root/apps/remagic-koreader/program"
+KO_HOME = "/home/root/.local/state/remagic/acceptance/current/koreader/data"
+KOREADER_DATA_DIR = "/home/root/.local/state/remagic/acceptance/current/koreader/data"
+KOREADER_SETTINGS = "/home/root/.local/state/remagic/acceptance/current/koreader/data/settings.reader.lua"
+KOREADER_BACKUP_ROOT = "/home/root/.local/state/remagic/acceptance/current/koreader/backups"
+KOREADER_LEGACY_DATA_DIRS = "/home/root/.local/state/remagic/acceptance/current/koreader/empty-legacy"
+KOREADER_LIBRARY_STATE_ROOT = "/home/root/.local/state/remagic/acceptance/current/koreader/library-state"
+KOREADER_SOURCE_LIBRARY_DIR = "/home/root/.local/state/remagic/acceptance/current/koreader/source-library"
+KOREADER_LIBRARY_DIR = "/home/root/.local/state/remagic/acceptance/current/koreader/library-state/library"
+KOREADER_ACTIVE_STARTUP_SCRIPT = "/home/root/.local/state/remagic/acceptance/current/koreader/runtime/koreader.sh"
+KOREADER_ALLOWED_OPEN_ROOTS = "/home/root/.local/state/remagic/acceptance/current/koreader/library-state/library:/home/root/.local/share/remarkable/xochitl"

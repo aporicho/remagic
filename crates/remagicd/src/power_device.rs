@@ -2,11 +2,13 @@ use remagic_core::power::{ClickTracker, PowerAction};
 use std::ffi::CString;
 use std::io;
 use std::os::fd::RawFd;
+use std::sync::atomic::AtomicU64;
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc as tokio_mpsc;
 
-use crate::{Event, QueuedEvent};
+use crate::daemon::{Event, QueuedEvent};
 
 const EV_KEY: u16 = 1;
 const KEY_POWER: u16 = 116;
@@ -22,6 +24,7 @@ pub enum Control {
 
 pub fn spawn(
     events: tokio_mpsc::Sender<QueuedEvent>,
+    launch_interrupt_epoch: Arc<AtomicU64>,
 ) -> (std::thread::JoinHandle<()>, mpsc::Sender<Control>) {
     let (control_tx, control_rx) = mpsc::channel();
     let thread = std::thread::spawn(move || {
@@ -60,23 +63,31 @@ pub fn spawn(
                 } else {
                     PowerAction::None
                 };
-                send_action(action, &events);
+                send_action(action, &events, &launch_interrupt_epoch);
             }
-            send_action(tracker.poll(Instant::now()), &events);
+            send_action(
+                tracker.poll(Instant::now()),
+                &events,
+                &launch_interrupt_epoch,
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
     });
     (thread, control_tx)
 }
 
-fn send_action(action: PowerAction, events: &tokio_mpsc::Sender<QueuedEvent>) {
+fn send_action(
+    action: PowerAction,
+    events: &tokio_mpsc::Sender<QueuedEvent>,
+    launch_interrupt_epoch: &AtomicU64,
+) {
     let event = match action {
         PowerAction::None => return,
         PowerAction::Single => Event::SinglePower,
         PowerAction::Triple => Event::TriplePower,
         PowerAction::Long => Event::LongPower,
     };
-    let _ = events.blocking_send(QueuedEvent { event, reply: None });
+    let _ = events.blocking_send(QueuedEvent::unattended(event, launch_interrupt_epoch));
 }
 
 struct PowerDevice {

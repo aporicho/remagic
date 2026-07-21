@@ -1,9 +1,0 @@
-#!/bin/bash
-set -euo pipefail
-
-RUNTIME=/home/root/apps/remagic/runtime
-cd "$RUNTIME"
-rm -f /tmp/qtfb.sock /run/remagic/runtime-app.sock
-export QT_QUICK_BACKEND=epaper
-export QT_QPA_PLATFORM=epaper
-exec "$RUNTIME/remagic-appload-runtime" -platform epaper

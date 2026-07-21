@@ -1,0 +1,334 @@
+use super::{queued_magicpaper_result, Action, Button};
+use ab_glyph::{point, Font, FontArc, Glyph, PxScale, ScaleFont};
+use remagic_protocol::{AppView, PackageOperation};
+use std::fs;
+use std::io;
+
+const WHITE: u32 = 0xFFFF_FFFF;
+const BLACK: u32 = 0xFF18_1818;
+const GRAY: u32 = 0xFFE8_E6E1;
+const DARK_GRAY: u32 = 0xFF73_716C;
+
+pub(super) fn load_font() -> Result<FontArc, Box<dyn std::error::Error>> {
+    let paths = [
+        "/home/root/apps/remagic/fonts/UIFont.ttf",
+        "/usr/share/fonts/ttf/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    ];
+    for path in paths {
+        if let Ok(bytes) = fs::read(path) {
+            if let Ok(font) = FontArc::try_from_vec(bytes) {
+                return Ok(font);
+            }
+        }
+    }
+    Err("Remagic UI font is missing".into())
+}
+
+pub(super) struct Display {
+    width: i32,
+    height: i32,
+    stride: usize,
+    client: crate::qtfb::Client,
+}
+
+impl Display {
+    pub(super) fn open() -> io::Result<Self> {
+        let client = crate::qtfb::Client::connect()?;
+        Ok(Self {
+            width: client.width,
+            height: client.height,
+            stride: client.stride,
+            client,
+        })
+    }
+
+    pub(super) fn render(&mut self, font: &FontArc, apps: &[AppView]) -> io::Result<Vec<Button>> {
+        self.fill(WHITE);
+        self.render_header(font);
+        let mut buttons = Vec::new();
+        let y = self.render_system_card(font, &mut buttons);
+        let y = self.render_app_cards(font, apps, &mut buttons, y);
+        self.render_package_card(font, &mut buttons, y);
+        self.render_sleep_button(font, &mut buttons);
+        self.client.update_all()?;
+        Ok(buttons)
+    }
+
+    fn render_header(&mut self, font: &FontArc) {
+        self.text(font, "应用与任务", 54.0, 48, 82, BLACK);
+        self.text(
+            font,
+            "单按返回上一应用 · 三按返回原版系统",
+            25.0,
+            50,
+            128,
+            DARK_GRAY,
+        );
+    }
+
+    fn render_system_card(&mut self, font: &FontArc, buttons: &mut Vec<Button>) -> i32 {
+        let y = 178;
+        let card_h = 132;
+        self.card(38, y, self.width - 76, card_h);
+        self.text(font, "原版系统", 40.0, 72, y + 57, BLACK);
+        self.text(font, "reMarkable + 镇纸", 24.0, 72, y + 96, DARK_GRAY);
+        buttons.push(Button {
+            x: 38,
+            y,
+            width: self.width - 76,
+            height: card_h,
+            action: Action::System,
+        });
+        y + card_h + 22
+    }
+
+    fn render_app_cards(
+        &mut self,
+        font: &FontArc,
+        apps: &[AppView],
+        buttons: &mut Vec<Button>,
+        mut y: i32,
+    ) -> i32 {
+        let card_h = 132;
+        for app in apps.iter().take(7) {
+            if y + card_h > self.height - 210 {
+                break;
+            }
+            self.card(38, y, self.width - 76, card_h);
+            self.text(font, &app.name, 39.0, 72, y + 54, BLACK);
+            self.text(font, &app_status(app), 24.0, 72, y + 96, DARK_GRAY);
+            self.render_close_button(font, app, buttons, y);
+            buttons.push(Button {
+                x: 38,
+                y,
+                width: self.width - 76,
+                height: card_h,
+                action: app_action(app),
+            });
+            y += card_h + 22;
+        }
+        y
+    }
+
+    fn render_close_button(
+        &mut self,
+        font: &FontArc,
+        app: &AppView,
+        buttons: &mut Vec<Button>,
+        y: i32,
+    ) {
+        if app.session.is_none() && !app.background_active {
+            return;
+        }
+        self.round_rect(self.width - 190, y + 28, 112, 70, 0xFFD0_CECB);
+        self.text(font, "关闭", 25.0, self.width - 164, y + 72, BLACK);
+        buttons.push(Button {
+            x: self.width - 190,
+            y: y + 28,
+            width: 112,
+            height: 70,
+            action: Action::Close(app.id.clone()),
+        });
+    }
+
+    fn render_package_card(&mut self, font: &FontArc, buttons: &mut Vec<Button>, y: i32) {
+        if y + 112 >= self.height - 170 {
+            return;
+        }
+        self.card(38, y, self.width - 76, 112);
+        self.text(font, "Vellum 软件包", 35.0, 72, y + 48, BLACK);
+        let ready = vellum_ready();
+        let status = if ready {
+            "已就绪 · 轻点更新索引"
+        } else {
+            "未安装 · 轻点安全安装"
+        };
+        self.text(font, status, 22.0, 72, y + 86, DARK_GRAY);
+        buttons.push(Button {
+            x: 38,
+            y,
+            width: self.width - 76,
+            height: 112,
+            action: Action::Package(if ready {
+                PackageOperation::Refresh
+            } else {
+                PackageOperation::Bootstrap
+            }),
+        });
+    }
+
+    fn render_sleep_button(&mut self, font: &FontArc, buttons: &mut Vec<Button>) {
+        let y = self.height - 150;
+        self.round_rect(38, y, self.width - 76, 104, BLACK);
+        self.text(font, "休眠", 38.0, self.width / 2 - 46, y + 67, WHITE);
+        buttons.push(Button {
+            x: 38,
+            y,
+            width: self.width - 76,
+            height: 104,
+            action: Action::Sleep,
+        });
+    }
+
+    fn card(&mut self, x: i32, y: i32, width: i32, height: i32) {
+        self.round_rect(x, y, width, height, GRAY);
+        self.hline(x + 18, x + width - 18, y + height - 1, 0xFFD2_D0CB);
+    }
+
+    pub(super) fn press(&mut self, button: &Button) -> io::Result<Vec<u32>> {
+        let mut saved = Vec::with_capacity((button.width * button.height) as usize);
+        for y in button.y..button.y + button.height {
+            for x in button.x..button.x + button.width {
+                let color = self.read_pixel(x, y);
+                saved.push(color);
+                self.pixel(x, y, (color & 0xFF00_0000) | ((!color) & 0x00FF_FFFF));
+            }
+        }
+        self.client
+            .update(button.x, button.y, button.width, button.height)?;
+        Ok(saved)
+    }
+
+    pub(super) fn release(&mut self, button: &Button, saved: Vec<u32>) -> io::Result<()> {
+        let mut index = 0;
+        for y in button.y..button.y + button.height {
+            for x in button.x..button.x + button.width {
+                self.pixel(x, y, saved[index]);
+                index += 1;
+            }
+        }
+        self.client
+            .update(button.x, button.y, button.width, button.height)
+    }
+
+    pub(super) fn poll_touch_events(&mut self) -> io::Result<Vec<crate::qtfb::TouchEvent>> {
+        self.client.poll_touch_events()
+    }
+
+    fn fill(&mut self, color: u32) {
+        for y in 0..self.height {
+            for x in 0..self.width {
+                self.pixel(x, y, color)
+            }
+        }
+    }
+
+    fn round_rect(&mut self, x: i32, y: i32, width: i32, height: i32, color: u32) {
+        let radius = 18;
+        for py in y..y + height {
+            for px in x..x + width {
+                let dx = if px < x + radius {
+                    x + radius - px
+                } else if px >= x + width - radius {
+                    px - (x + width - radius - 1)
+                } else {
+                    0
+                };
+                let dy = if py < y + radius {
+                    y + radius - py
+                } else if py >= y + height - radius {
+                    py - (y + height - radius - 1)
+                } else {
+                    0
+                };
+                if dx == 0 || dy == 0 || dx * dx + dy * dy <= radius * radius {
+                    self.pixel(px, py, color);
+                }
+            }
+        }
+    }
+
+    fn hline(&mut self, x0: i32, x1: i32, y: i32, color: u32) {
+        for x in x0..x1 {
+            self.pixel(x, y, color)
+        }
+    }
+
+    fn text(&mut self, font: &FontArc, text: &str, size: f32, x: i32, baseline: i32, color: u32) {
+        let scaled = font.as_scaled(PxScale::from(size));
+        let mut caret = x as f32;
+        let mut previous = None;
+        for ch in text.chars() {
+            let id = scaled.glyph_id(ch);
+            if let Some(previous) = previous {
+                caret += scaled.kern(previous, id)
+            }
+            let glyph: Glyph = id.with_scale_and_position(size, point(caret, baseline as f32));
+            if let Some(outline) = font.outline_glyph(glyph) {
+                let bounds = outline.px_bounds();
+                outline.draw(|gx, gy, coverage| {
+                    if coverage > 0.25 {
+                        self.pixel(
+                            bounds.min.x as i32 + gx as i32,
+                            bounds.min.y as i32 + gy as i32,
+                            color,
+                        );
+                    }
+                });
+            }
+            caret += scaled.h_advance(id);
+            previous = Some(id);
+        }
+    }
+
+    fn pixel(&mut self, x: i32, y: i32, color: u32) {
+        if x < 0 || y < 0 || x >= self.width || y >= self.height {
+            return;
+        }
+        let red = ((color >> 16) & 0xff) as u16;
+        let green = ((color >> 8) & 0xff) as u16;
+        let blue = (color & 0xff) as u16;
+        let rgb565 = ((red & 0xf8) << 8) | ((green & 0xfc) << 3) | (blue >> 3);
+        let offset = y as usize * self.stride + x as usize * 2;
+        self.client.pixels_mut()[offset..offset + 2].copy_from_slice(&rgb565.to_le_bytes());
+    }
+
+    fn read_pixel(&self, x: i32, y: i32) -> u32 {
+        if x < 0 || y < 0 || x >= self.width || y >= self.height {
+            return WHITE;
+        }
+        let offset = y as usize * self.stride + x as usize * 2;
+        let bytes = &self.client.pixels()[offset..offset + 2];
+        let value = u16::from_le_bytes([bytes[0], bytes[1]]);
+        let red = ((value >> 11) & 0x1f) as u32 * 255 / 31;
+        let green = ((value >> 5) & 0x3f) as u32 * 255 / 63;
+        let blue = (value & 0x1f) as u32 * 255 / 31;
+        0xff00_0000 | (red << 16) | (green << 8) | blue
+    }
+}
+
+fn app_status(app: &AppView) -> String {
+    if app.id.as_str() == "magicpaper" && queued_magicpaper_result() {
+        "有新的定时任务结果".into()
+    } else if let Some(session) = &app.session {
+        if session.subtitle.is_empty() {
+            "已暂停，可继续".into()
+        } else {
+            session.subtitle.clone()
+        }
+    } else if app.installed && app.background_active {
+        "已安装 · 后台服务运行中".into()
+    } else if app.installed {
+        "已安装".into()
+    } else {
+        "未安装".into()
+    }
+}
+
+fn app_action(app: &AppView) -> Action {
+    if app.installed {
+        Action::Launch(app.id.clone())
+    } else if let Some(package) = &app.package {
+        Action::Package(PackageOperation::Install {
+            package: package.clone(),
+        })
+    } else {
+        Action::Unavailable
+    }
+}
+
+fn vellum_ready() -> bool {
+    std::path::Path::new("/home/root/.vellum/bin/vellum").is_file()
+        || std::path::Path::new("/usr/bin/vellum").is_file()
+}

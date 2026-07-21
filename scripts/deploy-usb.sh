@@ -20,4 +20,4 @@ fi
 
 scp -F /dev/null -O "$ARCHIVE" "$CHECKSUM" "root@$HOST:/tmp/"
 ssh -F /dev/null "root@$HOST" \
-    "cd /tmp && sha256sum -c remagic-manager-aarch64.tar.gz.sha256 && rm -rf /tmp/remagic-install && mkdir -p /tmp/remagic-install && tar -xzf /tmp/remagic-manager-aarch64.tar.gz -C /tmp/remagic-install && /tmp/remagic-install/remagic-manager/scripts/install-device.sh"
+    'set -eu; txn=/tmp/remagic-install.$$.new; cleanup() { rm -rf "$txn"; }; trap cleanup EXIT HUP INT TERM; cd /tmp; sha256sum -c remagic-manager-aarch64.tar.gz.sha256; mkdir "$txn"; tar -xzf /tmp/remagic-manager-aarch64.tar.gz -C "$txn"; "$txn/remagic-manager/scripts/install-device.sh"'

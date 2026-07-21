@@ -1,0 +1,20 @@
+[Unit]
+Description=Remagic single-owner display and input host
+BindsTo=remagicd.service
+After=home.mount remagicd.service
+ConditionPathExists=/run/remagic/managed-domain
+RequiresMountsFor=/home/root/apps/remagic
+OnFailure=remagic-recover.service
+
+[Service]
+Type=simple
+ExecStart=/home/root/apps/remagic/bin/remagic-display-host
+Environment=LD_LIBRARY_PATH=/home/root/apps/remagic/lib:/usr/lib/plugins/scenegraph:/usr/lib
+Environment=REMAGIC_QTFB_SOCKET=/tmp/qtfb.sock
+Environment=REMAGIC_DISPLAY_SOCKET=/run/remagic/display.sock
+Restart=no
+KillSignal=SIGINT
+TimeoutStopSec=8
+KillMode=mixed
+SendSIGKILL=yes
+UMask=0077

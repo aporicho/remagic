@@ -37,3 +37,22 @@ load_riddle_env() {
         export "$key=$value"
     done < "$env_file"
 }
+
+# Deterministic acceptance must never import production credentials, even if
+# the isolated config was lost or a secret leaked into the service manager's
+# inherited environment. Production retains the legacy fallback only for
+# upgrades from the standalone MagicPaper layout.
+load_riddle_config() {
+    config_file=$1
+    legacy_file=$2
+    test_mode=${3:-0}
+    if [ "$test_mode" = 1 ]; then
+        unset RIDDLE_OPENAI_KEY RIDDLE_OCR_TOKEN
+        return 0
+    fi
+    if [ -r "$config_file" ]; then
+        load_riddle_env "$config_file"
+    elif [ -r "$legacy_file" ]; then
+        load_riddle_env "$legacy_file"
+    fi
+}

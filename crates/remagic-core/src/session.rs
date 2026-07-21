@@ -14,7 +14,7 @@ pub enum SessionStatus {
     Crashed,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AppSession {
     pub schema: u32,
     pub app_id: AppId,

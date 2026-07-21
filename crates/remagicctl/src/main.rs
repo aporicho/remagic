@@ -3,9 +3,52 @@ use remagic_protocol::{read_frame, write_frame, PackageOperation, Request, Respo
 use std::path::PathBuf;
 use tokio::net::UnixStream;
 
+mod display;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if matches!(args.first().map(String::as_str), Some("display-status")) {
+        return display::json_command(serde_json::json!({"command": "status"})).await;
+    }
+    if matches!(
+        args.first().map(String::as_str),
+        Some("display-submissions")
+    ) {
+        return display::submissions().await;
+    }
+    if matches!(args.first().map(String::as_str), Some("display-signature")) {
+        let key = parse_coordinate(args.get(1), "display-signature key")?;
+        return display::surface_signature(key).await;
+    }
+    if matches!(args.first().map(String::as_str), Some("refresh")) {
+        return display::json_command(serde_json::json!({"command": "request_full_refresh"})).await;
+    }
+    if matches!(args.first().map(String::as_str), Some("tap")) {
+        let x = parse_coordinate(args.get(1), "tap X")?;
+        let y = parse_coordinate(args.get(2), "tap Y")?;
+        return display::json_command(serde_json::json!({
+            "command": "inject_tap",
+            "x": x,
+            "y": y,
+        }))
+        .await;
+    }
+    if matches!(args.first().map(String::as_str), Some("pen-line")) {
+        let x0 = parse_coordinate(args.get(1), "pen-line X0")?;
+        let y0 = parse_coordinate(args.get(2), "pen-line Y0")?;
+        let x1 = parse_coordinate(args.get(3), "pen-line X1")?;
+        let y1 = parse_coordinate(args.get(4), "pen-line Y1")?;
+        return display::json_command(serde_json::json!({
+            "command": "inject_pen_line",
+            "x0": x0,
+            "y0": y0,
+            "x1": x1,
+            "y1": y1,
+            "points": 24,
+        }))
+        .await;
+    }
     let request = parse(&args)?;
     let socket =
         std::env::var("REMAGIC_SOCKET").unwrap_or_else(|_| remagic_protocol::DEFAULT_SOCKET.into());
@@ -17,6 +60,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+fn parse_coordinate(
+    value: Option<&String>,
+    label: &str,
+) -> Result<i32, Box<dyn std::error::Error>> {
+    value
+        .ok_or_else(|| format!("{label} requires a value").into())
+        .and_then(|value| {
+            value
+                .parse::<i32>()
+                .map_err(|_| format!("{label} must be an integer").into())
+        })
 }
 
 fn parse(args: &[String]) -> Result<Request, Box<dyn std::error::Error>> {

@@ -1410,7 +1410,26 @@ diff -ruN '--exclude=.git' a/shim/src/input-shim.h b/shim/src/input-shim.h
 diff -ruN '--exclude=.git' a/shim/src/shim.cpp b/shim/src/shim.cpp
 --- a/shim/src/shim.cpp	2026-05-21 23:48:07.000000000 +0800
 +++ b/shim/src/shim.cpp	2026-07-20 18:18:24.015178332 +0800
-@@ -184,6 +184,7 @@
+@@ -88,7 +88,18 @@
+     }
+ }
+ 
+ void __attribute__((constructor)) __construct () {
++    // LD_PRELOAD is inherited by every program KOReader starts.  Only the
++    // initial reader process may own its QTFB key; helper programs such as
++    // uname and systemctl must remain ordinary processes.  The launcher sets
++    // this one-shot marker for reader.lua's LuaJIT interpreter.  Consume it
++    // before KOReader forks so an exec'd child loads an inert shim.
++    shimModelType = -1;
++    const char *activation = getenv("QTFB_SHIM_ONESHOT");
++    if(activation == NULL || strcmp(activation, "1") != 0) {
++        return;
++    }
++    unsetenv("QTFB_SHIM_ONESHOT");
+     if(pidEventQueue != NULL) {
+         return;
+     }
+@@ -184,6 +195,7 @@
          } else if(strcmp(fbMode, "N_RGB565") == 0) {
              switch(realDeviceType) {
                  case DEV_TYPE_RM1:
@@ -1418,7 +1437,7 @@ diff -ruN '--exclude=.git' a/shim/src/shim.cpp b/shim/src/shim.cpp
                      shimType = FBFMT_RM2FB;
                      break;
                  case DEV_TYPE_RMPP:
-@@ -309,6 +310,12 @@
+@@ -309,6 +321,12 @@
      startPollingThread();
  }
  

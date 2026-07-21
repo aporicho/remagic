@@ -3,110 +3,151 @@ set -u
 
 APP_ROOT=/home/root/apps/remagic
 CTL=$APP_ROOT/bin/remagicctl
-RECOVERY_LOCK=/run/remagic-recover.lock
+COMMON=$APP_ROOT/libexec/deployment-common.sh
+REMAGIC_ACCEPTANCE_RECOVERY_LIB=$APP_ROOT/libexec/device-test-recovery.sh
+RECOVERY_LOCK=${REMAGIC_RECOVERY_LOCK:-/run/remagic-recover.lock}
+INSTALL_GUARD=/home/root/.local/state/remagic/install/in-progress
 
-acquire_recovery_lock() {
-    if mkdir "$RECOVERY_LOCK" 2>/dev/null; then
-        printf '%s\n' "$$" > "$RECOVERY_LOCK/pid"
-        return 0
-    fi
-    owner=$(cat "$RECOVERY_LOCK/pid" 2>/dev/null || true)
+if [ ! -r "$COMMON" ]; then
+    echo "remagic-recover: deployment helper is missing; refusing unsafe lock cleanup" >&2
+    systemctl unmask --runtime xochitl.service >/dev/null 2>&1 || true
+    systemctl start xochitl.service >/dev/null 2>&1 || true
+    exit 1
+fi
+. "$COMMON"
+
+lock_has_live_owner() {
+    path=$1
+    owner=$(sed -n '1p' "$path/pid" 2>/dev/null || true)
     case "$owner" in
-        ''|*[!0-9]*) alive=false ;;
-        *)
-            if kill -0 "$owner" 2>/dev/null; then alive=true; else alive=false; fi
-            ;;
+        ''|*[!0-9]*|0|1) return 1 ;;
+        *) kill -0 "$owner" 2>/dev/null ;;
     esac
-    if [ "$alive" = false ]; then
-        rm -f "$RECOVERY_LOCK/pid"
-        rmdir "$RECOVERY_LOCK" 2>/dev/null || true
-        if mkdir "$RECOVERY_LOCK" 2>/dev/null; then
-            printf '%s\n' "$$" > "$RECOVERY_LOCK/pid"
-            return 0
-        fi
-    fi
-    return 1
 }
 
-if ! acquire_recovery_lock; then
-    # Another OnFailure path is already returning display ownership.  Joining
-    # that result is safer than running a second stop/start transaction.
+wait_for_install_transaction() {
     attempts=0
-    while [ "$attempts" -lt 100 ]; do
-        [ "$(systemctl is-active xochitl.service 2>/dev/null || true)" = active ] && exit 0
+    while [ -d "$REMAGIC_INSTALL_LOCK" ] && lock_has_live_owner "$REMAGIC_INSTALL_LOCK"; do
+        [ "$attempts" -lt 300 ] || return 1
         sleep 0.1
         attempts=$((attempts + 1))
     done
-    exit 1
-fi
-release_recovery_lock() {
+    return 0
+}
+
+finish_recovery() {
     status=$?
-    rm -f "$RECOVERY_LOCK/pid"
-    rmdir "$RECOVERY_LOCK" 2>/dev/null || true
-    trap - EXIT
+    trap - EXIT HUP INT TERM
+    release_directory_lock "$RECOVERY_LOCK"
     exit "$status"
 }
-trap release_recovery_lock EXIT
 
-wait_active() {
-    unit=$1
+# An installer owns the broader transaction.  Never race its rollback or
+# replace files beneath it.  A complete stock handoff is already a valid
+# recovery result; otherwise let the installer finish before continuing.
+if [ -d "$REMAGIC_INSTALL_LOCK" ] && lock_has_live_owner "$REMAGIC_INSTALL_LOCK"; then
+    if stock_handoff_is_complete; then
+        exit 0
+    fi
+    wait_for_install_transaction || {
+        echo "remagic-recover: install transaction did not settle" >&2
+        exit 1
+    }
+fi
+
+if ! acquire_directory_lock "$RECOVERY_LOCK" remagic-recover; then
     attempts=0
-    while [ "$attempts" -lt 50 ]; do
-        [ "$(systemctl is-active "$unit" 2>/dev/null || true)" = active ] && return 0
+    while [ -d "$RECOVERY_LOCK" ] && [ "$attempts" -lt 200 ]; do
         sleep 0.1
         attempts=$((attempts + 1))
     done
-    return 1
-}
-
-# Prefer the daemon's serialized transition while it is healthy.  This also
-# releases its EVIOCGRAB and managed-domain wake lock in the normal order.
-if [ -x "$CTL" ] && "$CTL" status >/dev/null 2>&1; then
-    "$CTL" system >/dev/null 2>&1 || true
-    if wait_active xochitl.service; then
-        rm -f /tmp/qtfb.sock /tmp/qtfb-* /run/remagic/foreground-app \
-            /run/magicpaper-koreader.request
-        exit 0
-    fi
+    stock_handoff_is_complete && exit 0
+    acquire_directory_lock "$RECOVERY_LOCK" remagic-recover || exit 1
 fi
+trap finish_recovery EXIT
+trap 'exit 1' HUP INT TERM
 
-# Emergency recovery must first evict every alternative display owner.  Never
-# start xochitl while AppLoad, Quill, or a hosted application can still own the
-# e-paper backend.  A live but unresponsive remagicd may also still hold an
-# EVIOCGRAB on the power key, so stop it before restoring the stock shell.
-daemon_was_active=false
-if [ "$(systemctl is-active remagicd.service 2>/dev/null || true)" = active ]; then
-    daemon_was_active=true
-fi
-systemctl stop remagic-runtime.service 'remagic-app@*.service' remagic-home.service 2>/dev/null || true
-systemctl stop remagicd.service 2>/dev/null || true
-rm -f /tmp/qtfb.sock /tmp/qtfb-* /tmp/epframebuffer.lock /run/remagic/display.lock \
-    /run/remagic/foreground-app /run/remagic/runtime-app.sock \
-    /run/magicpaper-koreader.request
-
-systemctl unmask --runtime xochitl.service || exit 1
-systemctl reset-failed xochitl.service paperweight.service || exit 1
-systemctl start xochitl.service || exit 1
-
-if [ "$(systemctl show --property=LoadState --value paperweight.service 2>/dev/null)" = loaded ]; then
-    systemctl start paperweight.service || exit 1
-fi
-
-if ! wait_active xochitl.service; then
-    echo "remagic-recover: xochitl did not become active" >&2
+# Close the check/acquire race with install and uninstall. A deployment that
+# won the global lock will perform recovery itself; never overlap its switch.
+if [ -d "$REMAGIC_INSTALL_LOCK" ] && lock_has_live_owner "$REMAGIC_INSTALL_LOCK"; then
+    stock_handoff_is_complete && exit 0
+    echo "remagic-recover: deployment transaction won the ownership race" >&2
     exit 1
 fi
 
-if [ -w /sys/power/wake_unlock ]; then
-    printf '%s\n' remagic-managed > /sys/power/wake_unlock 2>/dev/null || true
+cleanup_stale_acceptance_environment allow-live || exit 1
+
+release_managed_wakelock() {
+    if [ -w /sys/power/wake_unlock ]; then
+        printf '%s\n' remagic-managed > /sys/power/wake_unlock 2>/dev/null || true
+    fi
+}
+
+record_recovery() {
+    if [ -d "$APP_ROOT" ]; then
+        date '+%Y-%m-%dT%H:%M:%S%z' >"$APP_ROOT/last-recovery" 2>/dev/null || true
+    fi
+}
+
+# Prefer the daemon's serialized ownership transition.  Success is accepted
+# only after checking the same postconditions as emergency recovery.
+if [ "$REMAGIC_ACCEPTANCE_STALE_CLEANED" = false ] && \
+   [ -x "$CTL" ] && "$CTL" status >/dev/null 2>&1; then
+    "$CTL" system >/dev/null 2>&1 || true
+    attempts=0
+    while [ "$attempts" -lt 120 ]; do
+        if stock_handoff_is_complete; then
+            # remagicd is still alive in this path; keep its request socket.
+            remove_display_runtime_files
+            release_managed_wakelock
+            record_recovery
+            exit 0
+        fi
+        sleep 0.1
+        attempts=$((attempts + 1))
+    done
 fi
 
-if [ -d "$APP_ROOT" ]; then
-    date '+%Y-%m-%dT%H:%M:%S%z' > "$APP_ROOT/last-recovery" 2>/dev/null || true
+# Suppress the daemon's Restart=on-failure job while ownership is repaired.
+restart_daemon=false
+unit_is_active remagicd.service && restart_daemon=true
+case "$("$SYSTEMCTL" is-enabled remagicd.service 2>/dev/null || true)" in
+    enabled|enabled-runtime) restart_daemon=true ;;
+esac
+"$SYSTEMCTL" mask --runtime remagicd.service >/dev/null 2>&1 || true
+
+stop_unit_confirmed remagicd.service || {
+    echo "remagic-recover: remagicd did not stop" >&2
+    exit 1
+}
+stop_unit_confirmed paperweight.service || {
+    echo "remagic-recover: paperweight did not stop" >&2
+    exit 1
+}
+stop_alternative_display_owners || exit 1
+assert_no_known_owner_processes || exit 1
+remove_stale_qtfb_surfaces || exit 1
+remove_manager_runtime_files
+
+# Never unlink /tmp/epframebuffer.lock here.  If xochitl is already active it
+# may own that lock; if it is inactive, starting it is the only safe creator.
+restore_stock_services || {
+    echo "remagic-recover: xochitl did not become the stock owner" >&2
+    exit 1
+}
+stock_handoff_is_complete || {
+    echo "remagic-recover: stock ownership postcondition failed" >&2
+    exit 1
+}
+release_managed_wakelock
+record_recovery
+
+"$SYSTEMCTL" unmask --runtime remagicd.service >/dev/null 2>&1 || true
+if [ "$restart_daemon" = true ] && \
+   ! deployment_guard_is_incomplete "$INSTALL_GUARD" \
+       /home/root/.local/state/remagic/install/transactions; then
+    "$SYSTEMCTL" start remagicd.service >/dev/null 2>&1 || exit 1
+    wait_unit_active remagicd.service 100 || exit 1
 fi
 
-# When recovery was triggered by the managed runtime rather than a failed
-# daemon, bring the controller back after stock display ownership is verified.
-if [ "$daemon_was_active" = true ]; then
-    systemctl start remagicd.service || exit 1
-fi
+exit 0

@@ -2,6 +2,7 @@
 Description=Remagic application and foreground-domain manager
 After=home.mount local-fs.target xochitl.service
 Wants=xochitl.service
+Conflicts=remagic-runtime.service riddle-takeover.service riddle-power-launcher.service appload.service rm-appload.service
 OnFailure=remagic-recover.service
 RequiresMountsFor=/home/root/apps/remagic
 
@@ -9,7 +10,10 @@ RequiresMountsFor=/home/root/apps/remagic
 Type=simple
 ExecStart=/home/root/apps/remagic/bin/remagicd
 Restart=on-failure
-RestartSec=2
+# Give the single recovery transaction time to restore stock ownership before
+# systemd considers an automatic restart. The recovery helper may start the
+# daemon sooner after it has verified all ownership postconditions.
+RestartSec=15
 KillSignal=SIGINT
 TimeoutStopSec=15
 RuntimeDirectory=remagic
