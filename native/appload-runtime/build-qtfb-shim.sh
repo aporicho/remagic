@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Build only the small QTFB compatibility client used by KOReader. Remagic's
+# Build only the small QTFB compatibility client used by KOReader. ReMagic's
 # display ownership, application supervision and home UI are native services;
 # the AppLoad executable/QML runtime is deliberately not part of the bundle.
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)

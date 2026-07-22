@@ -18,7 +18,7 @@ impl Display {
             self.centered_text(font, &current_time(), 76.0, 230, BLACK);
         }
         self.round_rect(58, 548, self.width - 116, 232, 0xFFF2_F1EE);
-        self.centered_text(font, "Remagic 已锁定", 50.0, 642, BLACK);
+        self.centered_text(font, "ReMagic 已锁定", 50.0, 642, BLACK);
         if settings.lock.show_hint {
             self.centered_text(font, "按电源键唤醒后自动返回管理器", 27.0, 710, DARK_GRAY);
         }

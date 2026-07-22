@@ -1,5 +1,5 @@
 [Unit]
-Description=Remagic foreground application %i
+Description=ReMagic foreground application %i
 Requires=remagicd.service
 BindsTo=remagic-display-host.service
 After=remagicd.service remagic-display-host.service

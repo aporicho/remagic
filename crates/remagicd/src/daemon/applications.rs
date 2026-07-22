@@ -18,11 +18,27 @@ impl Daemon {
         Ok(())
     }
 
+    /// A resident session is `Background` only while its process generation
+    /// remains live. Forced rollback and stock-domain restoration retain the
+    /// resume snapshot but must report it as a cold `Parked` session.
+    pub(super) async fn mark_session_process_stopped(&self, id: &AppId) -> Result<(), String> {
+        let Some(mut session) = self.sessions.read().await.get(id).cloned() else {
+            return Ok(());
+        };
+        if session.status != SessionStatus::Background {
+            return Ok(());
+        }
+        session.status = SessionStatus::Parked;
+        session.updated_at = utils::unix_now();
+        self.save_session(session).await
+    }
+
     pub(super) async fn close(&self, id: AppId, complete: bool) -> Result<(), String> {
         let _guard = self.transition_lock.lock().await;
         let domain = self.state.read().await.domain.clone();
         let was_foreground = matches!(&domain, DomainState::Foreground(current) if current == &id);
         let manifest = self.manifests.read().await.get(&id).cloned();
+        self.thaw_before_shutdown(&id).await?;
         self.request_shutdown(&id, manifest.as_ref()).await;
         if was_foreground {
             self.reveal_manager_before_close().await?
@@ -42,6 +58,27 @@ impl Daemon {
         self.sessions.write().await.remove(&id);
         if complete {
             self.stop_background_service(manifest).await?
+        }
+        Ok(())
+    }
+
+    async fn thaw_before_shutdown(&self, id: &AppId) -> Result<(), String> {
+        if !self
+            .runtime_background_execution
+            .read()
+            .await
+            .get(id)
+            .copied()
+            .is_some_and(remagic_core::BackgroundExecution::freezes_process)
+        {
+            return Ok(());
+        }
+        let unit = utils::app_unit(id);
+        if self.controller.is_active_checked(&unit).await? {
+            self.controller
+                .thaw_and_wait(&unit)
+                .await
+                .map_err(|error| format!("could not thaw {id} before shutdown: {error}"))?;
         }
         Ok(())
     }
@@ -73,6 +110,7 @@ impl Daemon {
 
     async fn clear_runtime_tracking(&self, id: &AppId) {
         self.runtime_generations.write().await.remove(id);
+        self.runtime_background_execution.write().await.remove(id);
         self.runtime_foreground_fences.write().await.remove(id);
         self.runtime_input_modes.write().await.remove(id);
         self.runtime_exit_reports.write().await.remove(id);
@@ -119,6 +157,7 @@ impl Daemon {
             return Ok(());
         }
         self.runtime_foreground_fences.write().await.remove(&id);
+        self.runtime_background_execution.write().await.remove(&id);
         self.runtime_input_modes.write().await.remove(&id);
         let crashed = utils::runtime_exit_is_crash(exit_code, reported_crash);
         let domain = self.state.read().await.domain.clone();
@@ -234,6 +273,32 @@ mod exit_report_tests {
         }
     }
 
+    #[tokio::test]
+    async fn stopped_resident_session_is_durably_demoted_from_background_to_parked() {
+        let id = AppId::new("koreader").unwrap();
+        let root = temporary_path("demote-background");
+        let mut background = session(&id, "第 17 页");
+        background.status = SessionStatus::Background;
+        let daemon = testing_daemon(
+            remagic_core::ManagerState::default(),
+            BTreeMap::new(),
+            BTreeMap::from([(id.clone(), background)]),
+            root.clone(),
+        );
+
+        daemon.mark_session_process_stopped(&id).await.unwrap();
+
+        assert_eq!(
+            daemon.sessions.read().await[&id].status,
+            SessionStatus::Parked
+        );
+        assert_eq!(
+            remagic_core::SessionStore::new(&root).load_all().unwrap()[&id].status,
+            SessionStatus::Parked
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn testing_daemon(
         state: remagic_core::ManagerState,
         manifests: BTreeMap<AppId, remagic_core::AppManifest>,
@@ -247,6 +312,7 @@ mod exit_report_tests {
             manifests: RwLock::new(manifests),
             sessions: RwLock::new(sessions),
             runtime_generations: RwLock::new(BTreeMap::new()),
+            runtime_background_execution: RwLock::new(BTreeMap::new()),
             runtime_foreground_fences: RwLock::new(BTreeMap::new()),
             runtime_input_modes: RwLock::new(BTreeMap::new()),
             runtime_exit_reports: RwLock::new(BTreeMap::new()),

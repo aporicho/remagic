@@ -25,5 +25,6 @@ sh tests/test-koreader-adapter-inventory.sh
 sh tests/test-lock-acceptance-inventory.sh
 sh tests/test-device-test-isolation.sh
 sh tests/test-magicpaper-config-isolation.sh
+sh tests/test-magicpaper-data-migrate.sh
 
-echo "remagic-manager checks passed"
+echo "remagic checks passed"

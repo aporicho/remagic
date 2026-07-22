@@ -16,7 +16,7 @@ fn isolated_device_manifests_satisfy_the_production_runtime_contract() {
         assert_eq!(manifest.runtime.profile, RuntimeProfile::QtfbCompat);
         assert_eq!(manifest.runtime.network.mode, NetworkMode::Deny);
         let (key, expected) = if name == "magicpaper" {
-            ("RIDDLE_TEST_MODE", "1")
+            ("MAGICPAPER_TEST_MODE", "1")
         } else {
             (
                 "KO_HOME",

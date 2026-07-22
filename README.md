@@ -1,14 +1,14 @@
-# Remagic Manager
+# ReMagic
 
-Remagic Manager 是 reMarkable Paper Pro Move 上的独立应用系统层。原版界面与镇纸共同属于“系统域”；Remagic 只在运行第三方应用时接管显示、触摸和笔输入，并可随时把所有权完整还给原版系统。
+ReMagic 是 reMarkable Paper Pro Move 上的独立应用系统层。原版界面与镇纸共同属于“系统域”；ReMagic 只在运行第三方应用时接管显示、触摸和笔输入，并可随时把所有权完整还给原版系统。
 
-它不使用 Oxide，也不把镇纸或 AppLoad 当作应用运行时。KOReader、MagicPaper 只依赖 Remagic 提供的受监督环境。
+它不使用 Oxide，也不把镇纸或 AppLoad 当作应用运行时。KOReader、MagicPaper 只依赖 ReMagic 提供的受监督环境。
 
 ## 三个项目的边界
 
-- `remagic-manager`：电源键入口、显示/输入唯一所有权、应用监督、前后台切换、任务页、运行环境和故障恢复。
-- `riddle-move`：MagicPaper 的书写、AI、任务、TODO、历史、字体与后台 agent。
-- `remagic-koreader`：上游 KOReader 的独立启动、书库、数据迁移、字体和生命周期适配。
+- `remagic`：电源键入口、显示/输入唯一所有权、应用监督、前后台切换、任务页、运行环境和故障恢复。
+- `magicpaper`：MagicPaper 的书写、AI、任务、TODO、历史、字体与后台 agent。
+- `koreader-for-remagic`：上游 KOReader 的独立启动、书库、数据迁移、字体和生命周期适配。
 
 应用不能直接抓取原始输入或物理屏幕，也不能绕过管理器切换前台。所有跨项目交互都通过带版本的 manifest、lifecycle 和 display/QTFB 契约完成。
 
@@ -33,15 +33,15 @@ Remagic Manager 是 reMarkable Paper Pro Move 上的独立应用系统层。原�
 
 runner 以 generation 绑定的 `schema-prepared`、`schema-complete` 两道原子栅栏分隔启动阶段；等待预算分别覆盖 `backup_timeout_ms`、`migration_timeout_ms + 10 秒提交余量`、应用 ready，以及 QTFB 的独立 surface/首帧时限（总上限 1450 秒），所以任何前置阶段都不会挤占后续阶段声明的时间。迁移前，管理器会先静默声明的后台写入服务，ready 后再恢复；MagicPaper 的 systemd 单元也会在重启时根据 pending journal 拒绝抢跑。新的电源键、关闭、返回或启动交互会抢占尚未完成的旧启动，客户端超时的队列事件不会迟到执行。备份与版本记录保留在应用持久 state 目录，不占用设备只读根分区。
 
-暂停只撤销前台输入/显示 lease，应用进程和 surface 继续驻留。再次进入会恢复同一 PID 和页面。关闭先发送语义化 Shutdown，再按 manifest 的宽限期执行 TERM→KILL。返回系统域会停止全部托管 cgroup、显示宿主和共享 surface，最后恢复 xochitl 与镇纸。
+暂停先等待应用确认状态已经保存，再撤销前台输入/显示 lease。应用可在 manifest 中选择继续运行或冻结整个 systemd cgroup；KOReader 使用冻结策略，因此后台不耗 CPU，召回时先解冻同一 PID、surface 和阅读页面。关闭先解冻（若需要）、发送语义化 Shutdown，再按 manifest 的宽限期执行 TERM→KILL。返回系统域会停止全部托管 cgroup、显示宿主和共享 surface，最后恢复 xochitl 与镇纸。
 
 ## 交互
 
-- 原版界面三按电源键：进入 Remagic 任务页。
+- 原版界面三按电源键：进入 ReMagic 任务页。
 - 应用内单按电源键：暂停应用并回到任务页。
 - 任务页单按电源键：召回最近应用。
 - 任务页或应用内三按电源键：返回原版/镇纸系统域。
-- 任务页“休眠”：先提交并冻结 Remagic 锁屏，再释放 wakelock 进入系统休眠；按一次电源键唤醒后，Home 会自动准备并切回完整任务页，不需要再点屏幕，也不经过原版系统。只有自动返回暂时失败时，锁屏上的“立即返回”才作为手动恢复入口；30 秒后仍未恢复会带着同一冻结锁屏再次休眠。
+- 任务页“休眠”：先提交并冻结 ReMagic 锁屏，再释放 wakelock 进入系统休眠；按一次电源键唤醒后，Home 会自动准备并切回完整任务页，不需要再点屏幕，也不经过原版系统。只有自动返回暂时失败时，锁屏上的“立即返回”才作为手动恢复入口；30 秒后仍未恢复会带着同一冻结锁屏再次休眠。
 
 任务页右上角的“设置”进入锁屏设置。可循环选择默认白纸、原生锁屏和自定义 PNG，切换“填充裁切/完整适应”，以及开关时钟和唤醒提示；“预览锁屏”不会真的休眠。设置原子保存于 `/home/root/.config/remagic/home.toml`。自定义壁纸放入 `/home/root/.local/share/remagic/wallpapers/`，返回设置页后再次进入即可刷新列表；只读取普通 PNG 文件，损坏或过大的图片会安全回退到白底。
 
@@ -51,7 +51,7 @@ USB 供电或其他内核唤醒锁可能阻止真正 suspend。此时休眠入�
 
 卡片和按钮支持手指操作，按下立即反色。应用之间直接切换时不经过黑白空白页；每次进入新前台只允许一次完整刷新，普通按压、书写和返回任务页使用局部更新。
 
-## 与早期 Remagic/AppLoad 方案的区别
+## 与早期 ReMagic/AppLoad 方案的区别
 
 - 删除 AppLoad 可执行文件、QML 启动器和第二套输入/显示所有权；只从固定、校验过的 `rm-appload v0.5.3` 源码构建 KOReader 所需的小型 `qtfb-shim.so`。
 - 原来的单体 daemon/runtime 被拆为状态机、监督、运行环境、协议、显示宿主和 UI 模块。
@@ -60,11 +60,13 @@ USB 供电或其他内核唤醒锁可能阻止真正 suspend。此时休眠入�
 - 显示宿主、Home、应用子进程或 daemon 异常退出均有明确恢复路径；无法维持托管域时优先恢复原版系统。
 - 安装不覆盖书籍、KOReader 阅读位置、MagicPaper 记忆、任务、TODO、字体设置或 API 配置。
 - MagicPaper 后台任务服务以持久的“应用 ID + 数据 schema 版本”栅栏启动；首装、升级、降级或断电留下迁移日志时保持停止，只有受监督的前台 runner 完成恢复/迁移后才会启动。
-- KOReader 的固定程序树位于 Remagic 自有的 `remagic-koreader/program`，可写数据树与它分离；既有 `/home/root/apps/koreader` 只读作 legacy 数据源，安装和卸载都不替换或删除它。升级只迁移设置、阅读记录、截图、剪贴板和词典等数据，旧插件、用户补丁及其他可执行扩展不会自动迁移或激活。
+- KOReader 官方包位于内容寻址的 `koreader-for-remagic/vendor/releases/<版本-归档SHA>/koreader`，除首次消费官方 `update_once.marker` 外不增删其代码、插件或字体。ReMagic wrapper、生命周期/策略 userpatch 和中文字体位于独立的 `adapter/releases/<内容SHA>`；manifest 只引用一对固定 release，安装前后复验完整文件清单和 SHA-256。
+- KOReader 进程的 systemd 私有挂载把整个 `/home/root` 默认设为只读，只开放 KOReader 自己的数据、缓存和测试目录；进程没有任何 Linux capability，systemd/系统 D-Bus 控制 socket 不可见，不能重挂文件系统或修改其他应用/书籍。所有设置、数据库、阅读位置和镜像到 `KO_HOME` 的三个最小 userpatch 都写在独立数据目录。官方 Terminal 插件仍在 vendor 中但由策略禁用，OTA 能力由管理器策略隐藏，升级不由应用自行改写程序树。为兼容当前 reMarkable/QTFB，进程仍使用 uid 0，因此这里是可信应用的故障隔离边界，不宣称能安全执行恶意插件。
+- 既有 `/home/root/apps/koreader` 只读作 legacy 数据源，安装和卸载都不替换或删除它。升级只迁移设置、阅读记录、截图、剪贴板和词典等数据，旧插件、用户补丁及其他可执行扩展不会自动迁移或激活。
 
 ## 构建与部署
 
-需要 chiappa SDK，以及同级目录中的 `riddle-move`、`remagic-koreader` 和 `quill-move`：
+需要 chiappa SDK，以及同级目录中的 `magicpaper`、`koreader-for-remagic` 和 `quill-move`：
 
 ```sh
 ./scripts/check.sh
@@ -72,7 +74,7 @@ USB 供电或其他内核唤醒锁可能阻止真正 suspend。此时休眠入�
 ./scripts/deploy-usb.sh
 ```
 
-构建会交叉编译 aarch64 二进制，验证并打包上游 KOReader、独立 QTFB shim、四种 KOReader 中文字体，以及 MagicPaper 的手写字体和完整中文字形回退。安装前后均校验 bundle；安装失败会恢复 xochitl。
+构建会交叉编译 aarch64 二进制，验证并打包不含 ReMagic 注入文件的上游 KOReader vendor release、独立 adapter release、QTFB shim、四种外置 KOReader 中文字体，以及 MagicPaper 的手写字体和完整中文字形回退。vendor 与 adapter 都以内容指纹命名，release 记录、官方文件清单、逐文件 SHA 和整个 bundle 会在停止设备服务前共同校验；安装失败会恢复 xochitl。
 
 黄油拾叁体与 851 远星夜行体不从被忽略的旧 `dist` 目录取用。构建直接校验并解包原始 zip，默认位置为 `~/Downloads/黄油拾叁体.zip` 和 `~/Downloads/851远星夜行手写体.zip`；其他位置可分别用 `MAGICPAPER_BUTTER_FONT_ARCHIVE`、`MAGICPAPER_851_FONT_ARCHIVE` 指定。压缩包与解出的 TTF 都必须匹配固定 SHA-256，防止旧缓存或同名文件混入发布包。
 

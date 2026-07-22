@@ -1,4 +1,4 @@
-//! Remagic's clean display host.
+//! ReMagic's clean display host.
 //!
 //! The host deliberately contains no application lifecycle or package logic.
 //! It owns the physical panel and input devices for one managed-domain

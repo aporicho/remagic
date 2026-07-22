@@ -1,6 +1,6 @@
 # Architecture and review-size standards
 
-Remagic is a small system layer, not a single application. Source boundaries
+ReMagic is a small system layer, not a single application. Source boundaries
 therefore follow ownership and lifecycle responsibilities rather than UI
 screens or arbitrary line-count slices.
 

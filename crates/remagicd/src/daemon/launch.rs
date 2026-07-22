@@ -9,6 +9,8 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tracing::warn;
 
+mod generation;
+mod rollback;
 mod schema;
 
 struct LaunchContext {
@@ -20,6 +22,7 @@ struct LaunchContext {
     unit: String,
     active: bool,
     generation: u64,
+    background_execution: remagic_core::BackgroundExecution,
     foreground_epoch: u64,
     lease_id: u64,
     surface_key: i32,
@@ -212,6 +215,18 @@ impl Daemon {
         } else {
             self.allocate_generation()
         };
+        let captured_background_execution = self
+            .runtime_background_execution
+            .read()
+            .await
+            .get(&id)
+            .copied();
+        let background_execution = generation::background_execution(
+            active,
+            captured_background_execution,
+            manifest.runtime.background_execution,
+            &id,
+        )?;
         let foreground_epoch = self.allocate_foreground_epoch();
         let runtime_dir = manifest
             .runtime
@@ -233,6 +248,7 @@ impl Daemon {
             unit,
             active,
             generation,
+            background_execution,
             foreground_epoch,
             launch_path,
             background_unit,
@@ -256,12 +272,24 @@ impl Daemon {
         let mut active = self.controller.is_active_checked(unit).await?;
         let generation = self.runtime_generations.read().await.get(id).copied();
         let fence = self.runtime_foreground_fences.read().await.get(id).copied();
-        if active && (generation.is_none() || fence.is_none()) {
+        let scheduling = self
+            .runtime_background_execution
+            .read()
+            .await
+            .get(id)
+            .copied();
+        if active && (generation.is_none() || fence.is_none() || scheduling.is_none()) {
             warn!(%id, "active application has no complete supervisor token; restarting safely");
+            // The missing policy itself is why this process cannot be safely
+            // recalled. Thaw unconditionally: it is idempotent for a running
+            // unit and is required before stopping a possibly frozen one.
+            self.controller.thaw_and_wait(unit).await?;
             self.controller.stop_and_wait(unit).await?;
+            self.mark_session_process_stopped(id).await?;
             active = false;
             self.runtime_generations.write().await.remove(id);
             self.runtime_foreground_fences.write().await.remove(id);
+            self.runtime_background_execution.write().await.remove(id);
         }
         Ok(active)
     }
@@ -278,6 +306,17 @@ impl Daemon {
         // its startup input-mode request cannot race registration.
         self.register_runtime(context).await?;
         if context.active {
+            if context.background_execution.freezes_process() {
+                self.controller
+                    .thaw_and_wait(&context.unit)
+                    .await
+                    .map_err(|error| {
+                        format!(
+                            "could not thaw {} before foreground recall: {error}",
+                            context.id
+                        )
+                    })?;
+            }
             app_runtime::command(
                 &context.runtime_dir,
                 &AppCommand::EnterForeground {
@@ -340,6 +379,10 @@ impl Daemon {
             .write()
             .await
             .insert(context.id.clone(), context.generation);
+        self.runtime_background_execution
+            .write()
+            .await
+            .insert(context.id.clone(), context.background_execution);
         self.runtime_foreground_fences.write().await.insert(
             context.id.clone(),
             (context.foreground_epoch, context.lease_id),
@@ -445,58 +488,6 @@ impl Daemon {
                 }
             }
         }
-    }
-
-    async fn rollback_error(&self, context: &LaunchContext, cause: String) -> String {
-        match self.rollback_launch(context).await {
-            Ok(()) => format!("{cause}; {} launch was rolled back", context.id),
-            Err(rollback) => format!(
-                "{cause}; {} rollback failed and requires domain recovery: {rollback}",
-                context.id
-            ),
-        }
-    }
-
-    async fn rollback_launch(&self, context: &LaunchContext) -> Result<(), String> {
-        // Nothing below this fence may erase ownership evidence or claim that
-        // Home is authoritative while the failed application cgroup survives.
-        self.controller
-            .stop_and_wait(&context.unit)
-            .await
-            .map_err(|error| format!("could not stop {}: {error}", context.unit))?;
-        let _ = fs::remove_file(&context.launch_path);
-        self.runtime_generations.write().await.remove(&context.id);
-        self.runtime_foreground_fences
-            .write()
-            .await
-            .remove(&context.id);
-        self.runtime_input_modes.write().await.remove(&context.id);
-        self.runtime_exit_reports.write().await.remove(&context.id);
-        self.runtime_missing_observations
-            .write()
-            .await
-            .remove(&context.id);
-        self.state
-            .write()
-            .await
-            .apply(Transition::AppExited(context.id.clone()))
-            .map_err(|error| format!("could not roll back launch state: {error}"))?;
-        self.show_manager_surface(false)
-            .await
-            .map_err(|error| format!("could not restore manager surface: {error}"))?;
-        let schema_safe = schema::background_restore_is_safe(context);
-        if schema_safe {
-            self.start_background_service(context)
-                .await
-                .map_err(|error| format!("could not restore background service: {error}"))?;
-        } else {
-            warn!(
-                app = %context.id,
-                generation = context.generation,
-                "background service remains stopped because schema completion was not proven"
-            );
-        }
-        Ok(())
     }
 }
 

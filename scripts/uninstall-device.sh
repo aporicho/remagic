@@ -6,11 +6,12 @@ case ${1:-} in ''|--purge) ;; *) echo "usage: uninstall-device.sh [--purge]" >&2
 
 PURGE=${1:-}
 APP_ROOT=/home/root/apps/remagic
-ADAPTER_ROOT=/home/root/apps/remagic-koreader
+ADAPTER_ROOT=/home/root/apps/koreader-for-remagic
 STATE_ROOT=/home/root/.local/state/remagic/install
 ORIGINAL_ROOT=$STATE_ROOT/original
 MANIFEST_ROOT=/home/root/.local/share/remagic/apps.d
 UNIT_ROOT=/usr/lib/systemd/system
+KOREADER_UNIT_DROPIN=$UNIT_ROOT/remagic-app@koreader.service.d/10-koreader-runtime.conf
 WANTS_ROOT=/etc/systemd/system/multi-user.target.wants
 IN_PROGRESS=$STATE_ROOT/in-progress
 COMMON=$APP_ROOT/libexec/deployment-common.sh
@@ -68,6 +69,7 @@ restore_switch() {
         canonical_absolute_path "$backup" || return 1
     case "$name:$live:$stage:$backup" in
         app:/home/root/apps/remagic:/home/root/apps/.remagic.stage.*:/home/root/apps/.remagic.rollback.*|\
+        adapter:/home/root/apps/koreader-for-remagic:/home/root/apps/.koreader-for-remagic.stage.*:/home/root/apps/.koreader-for-remagic.rollback.*|\
         adapter:/home/root/apps/remagic-koreader:/home/root/apps/.remagic-koreader.stage.*:/home/root/apps/.remagic-koreader.rollback.*|\
         koreader:/home/root/apps/koreader:/home/root/apps/.koreader.stage.*:/home/root/apps/.koreader.rollback.*) ;;
         *) echo "uninstall-device.sh: refusing unsafe switch journal: $record" >&2; return 1 ;;
@@ -85,6 +87,7 @@ restore_removed_tree() {
     canonical_absolute_path "$live" && canonical_absolute_path "$backup" || return 1
     case "$name:$live:$backup" in
         app:/home/root/apps/remagic:/home/root/apps/.remagic.uninstall.*|\
+        adapter:/home/root/apps/koreader-for-remagic:/home/root/apps/.koreader-for-remagic.uninstall.*|\
         adapter:/home/root/apps/remagic-koreader:/home/root/apps/.remagic-koreader.uninstall.*) ;;
         *) echo "uninstall-device.sh: refusing unsafe removal journal: $record" >&2; return 1 ;;
     esac
@@ -154,6 +157,7 @@ snapshot_managed_state() {
     snapshot_path "$snapshots" unit_app "$UNIT_ROOT/remagic-app@.service"
     snapshot_path "$snapshots" unit_recover "$UNIT_ROOT/remagic-recover.service"
     snapshot_path "$snapshots" unit_agent "$UNIT_ROOT/magicpaper-agent.service"
+    snapshot_path "$snapshots" unit_koreader_dropin "$KOREADER_UNIT_DROPIN"
     snapshot_path "$snapshots" want_remagicd "$WANTS_ROOT/remagicd.service"
     snapshot_path "$snapshots" want_agent "$WANTS_ROOT/magicpaper-agent.service"
     snapshot_path "$snapshots" want_old_remagicd "$UNIT_ROOT/multi-user.target.wants/remagicd.service"
@@ -198,7 +202,7 @@ restore_original_launcher_links() {
         fi
         return 0
     fi
-    if [ -r "$STATE_ROOT/previous.env" ] && grep -q '^RIDDLE_POWER_LAUNCHER=enabled$' "$STATE_ROOT/previous.env"; then
+    if [ -r "$STATE_ROOT/previous.env" ] && grep -q '^MAGICPAPER_POWER_LAUNCHER=enabled$' "$STATE_ROOT/previous.env"; then
         mkdir -p "$WANTS_ROOT"
         ln -s /usr/lib/systemd/system/riddle-power-launcher.service \
             "$WANTS_ROOT/riddle-power-launcher.service"
@@ -208,7 +212,7 @@ restore_original_launcher_links() {
 original_launcher_should_start() {
     [ -e "$ORIGINAL_ROOT/launcher-active" ] && return 0
     if [ ! -e "$ORIGINAL_ROOT/captured" ] && [ -r "$STATE_ROOT/previous.env" ]; then
-        grep -q '^RIDDLE_POWER_LAUNCHER=enabled$' "$STATE_ROOT/previous.env"
+        grep -q '^MAGICPAPER_POWER_LAUNCHER=enabled$' "$STATE_ROOT/previous.env"
         return
     fi
     return 1
@@ -226,7 +230,10 @@ for transaction_name in $transaction_names; do
     abandoned=$STATE_ROOT/transactions/$transaction_name
     case "$(transaction_status "$abandoned")" in
         committed|rolled-back)
-            cleanup_finished_deployment_transaction "$abandoned"
+            cleanup_finished_deployment_transaction "$abandoned" || {
+                echo "uninstall-device.sh: could not retire completed transaction: $abandoned" >&2
+                exit 1
+            }
             clear_deployment_guard_for_transaction "$IN_PROGRESS" "$abandoned"
             continue
             ;;
@@ -261,7 +268,7 @@ restore_xochitl_service
 remove_tree_transactionally "$CURRENT_TXN" app "$APP_ROOT" \
     /home/root/apps/.remagic.uninstall.$TXN_ID
 remove_tree_transactionally "$CURRENT_TXN" adapter "$ADAPTER_ROOT" \
-    /home/root/apps/.remagic-koreader.uninstall.$TXN_ID
+    /home/root/apps/.koreader-for-remagic.uninstall.$TXN_ID
 
 if [ -f /home/root/apps/riddle/riddle.pre-remagic ]; then
     rm -f /home/root/apps/riddle/riddle
@@ -276,7 +283,7 @@ rm -f "$WANTS_ROOT/remagicd.service" "$WANTS_ROOT/magicpaper-agent.service" \
 rm -f "$UNIT_ROOT/remagicd.service" "$UNIT_ROOT/remagic-display-host.service" \
     "$UNIT_ROOT/remagic-home.service" "$UNIT_ROOT/remagic-runtime.service" \
     "$UNIT_ROOT/remagic-app@.service" "$UNIT_ROOT/remagic-recover.service" \
-    "$UNIT_ROOT/magicpaper-agent.service"
+    "$UNIT_ROOT/magicpaper-agent.service" "$KOREADER_UNIT_DROPIN"
 rm -f "$MANIFEST_ROOT/magicpaper.toml" "$MANIFEST_ROOT/koreader.toml"
 restore_original_launcher_links
 
@@ -298,6 +305,7 @@ for name in app adapter; do
     }
     case "$name:$backup" in
         app:/home/root/apps/.remagic.uninstall.*|\
+        adapter:/home/root/apps/.koreader-for-remagic.uninstall.*|\
         adapter:/home/root/apps/.remagic-koreader.uninstall.*) ;;
         *) echo "uninstall-device.sh: refusing unsafe cleanup journal" >&2; exit 1 ;;
     esac
@@ -314,5 +322,5 @@ fi
 restore_root_mount
 release_directory_lock "$REMAGIC_INSTALL_LOCK"
 LOCK_HELD=false
-echo "Remagic Manager removed; stock and Paperweight ownership were restored."
+echo "ReMagic removed; stock and Paperweight ownership were restored."
 echo "MagicPaper and KOReader user data were preserved."

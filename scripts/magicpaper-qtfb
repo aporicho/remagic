@@ -3,15 +3,17 @@ set -eu
 
 RUNTIME=${MAGICPAPER_RUNTIME_ROOT:-/home/root/apps/remagic/opt/magicpaper}
 LEGACY=${MAGICPAPER_LEGACY_ROOT:-/home/root/apps/riddle}
-ENV_LOADER=${MAGICPAPER_ENV_LOADER:-/home/root/apps/remagic/libexec/riddle-env}
-CONFIG=${RIDDLE_CONFIG:-/home/root/.config/riddle/oracle.env}
+LEGACY_CONFIG=${MAGICPAPER_LEGACY_CONFIG:-/home/root/.config/riddle/oracle.env}
+ENV_LOADER=${MAGICPAPER_ENV_LOADER:-/home/root/apps/remagic/libexec/magicpaper-env}
+CONFIG=${MAGICPAPER_CONFIG:-/home/root/.config/magicpaper/oracle.env}
 umask 077
 . "$ENV_LOADER"
 
-load_riddle_config "$CONFIG" "$LEGACY/oracle.env" "${RIDDLE_TEST_MODE:-0}"
+load_magicpaper_config "$CONFIG" "$LEGACY_CONFIG" "$LEGACY/oracle.env" \
+    "${MAGICPAPER_TEST_MODE:-0}"
 
-export RIDDLE_FONT_DIR=${RIDDLE_FONT_DIR:-$RUNTIME/fonts}
+export MAGICPAPER_FONT_DIR=${MAGICPAPER_FONT_DIR:-$RUNTIME/fonts}
 export REMAGIC_RUNTIME_MANAGED=1
 export REMAGIC_RUNTIME_SOCKET=${REMAGIC_RUNTIME_SOCKET:-/run/remagic/runtime-app.sock}
 cd "$RUNTIME"
-exec "$RUNTIME/riddle-qtfb" "$@"
+exec "$RUNTIME/magicpaper" "$@"

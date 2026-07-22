@@ -27,7 +27,7 @@ pub(super) fn load_font() -> Result<FontArc, Box<dyn std::error::Error>> {
             }
         }
     }
-    Err("Remagic UI font is missing".into())
+    Err("ReMagic UI font is missing".into())
 }
 
 pub(super) struct Display {

@@ -1,5 +1,5 @@
 //! Stable wire definitions shared by the QTFB compatibility server and the
-//! native Remagic surface protocol.
+//! native ReMagic surface protocol.
 
 use crate::geometry::Rect;
 use serde::{Deserialize, Serialize};

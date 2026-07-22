@@ -104,6 +104,7 @@ impl Daemon {
             .await?;
         self.controller.stop_and_wait(DISPLAY_UNIT).await?;
         self.runtime_generations.write().await.clear();
+        self.runtime_background_execution.write().await.clear();
         self.runtime_foreground_fences.write().await.clear();
         self.runtime_input_modes.write().await.clear();
         if let Err(error) = utils::set_foreground_marker(None) {
@@ -122,11 +123,32 @@ impl Daemon {
     }
 
     async fn stop_managed_apps(&self) -> Result<(), String> {
-        let app_ids: Vec<_> = self.manifests.read().await.keys().cloned().collect();
-        for app_id in app_ids {
-            self.controller
-                .stop_and_wait(&utils::app_unit(&app_id))
-                .await?;
+        let apps: Vec<_> = self.manifests.read().await.values().cloned().collect();
+        for manifest in apps {
+            let app_id = manifest.id;
+            let unit = utils::app_unit(&app_id);
+            if self
+                .runtime_background_execution
+                .read()
+                .await
+                .get(&app_id)
+                .copied()
+                .is_some_and(remagic_core::BackgroundExecution::freezes_process)
+                && self.controller.is_active_checked(&unit).await?
+            {
+                self.controller
+                    .thaw_and_wait(&unit)
+                    .await
+                    .map_err(|error| {
+                        format!("could not thaw {app_id} before system restore: {error}")
+                    })?;
+            }
+            self.controller.stop_and_wait(&unit).await?;
+            if let Err(error) = self.mark_session_process_stopped(&app_id).await {
+                // Restoring the stock display owner is a safety boundary and
+                // must not be blocked by task-list metadata persistence.
+                warn!(%app_id, %error, "could not mark stopped application session as parked");
+            }
         }
         Ok(())
     }

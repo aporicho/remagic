@@ -138,24 +138,9 @@ async fn handle_lifecycle_event(app_id: &AppId, event: LifecycleEvent) {
             eprintln!(
                 "remagic-runner: application {app_id} ready (first_frame={first_frame_sequence:?})"
             );
-            send_legacy_callback(Request::Ready {
-                app_id: app_id.clone(),
-            })
-            .await;
         }
-        LifecycleEvent::BackgroundReady {
-            title,
-            subtitle,
-            resume_payload,
-        } => {
+        LifecycleEvent::BackgroundReady { .. } => {
             eprintln!("remagic-runner: application {app_id} background-ready");
-            send_legacy_callback(Request::Parked {
-                app_id: app_id.clone(),
-                title,
-                subtitle,
-                resume_payload,
-            })
-            .await;
         }
         LifecycleEvent::StateSaved { .. } => {
             eprintln!("remagic-runner: application {app_id} state saved");
@@ -174,11 +159,14 @@ async fn handle_lifecycle_event(app_id: &AppId, event: LifecycleEvent) {
             );
         }
         LifecycleEvent::Notification { title, body } => {
-            send_legacy_callback(Request::Notify {
-                app_id: app_id.clone(),
-                title,
-                body,
-            })
+            send_callback(
+                Request::Notify {
+                    app_id: app_id.clone(),
+                    title,
+                    body,
+                },
+                "notification",
+            )
             .await;
         }
     }
@@ -221,10 +209,6 @@ async fn publish_exit(prepared: &PreparedApplication, status: &ExitStatus) {
         "legacy exit",
     )
     .await;
-}
-
-async fn send_legacy_callback(request: Request) {
-    send_callback(request, "legacy lifecycle").await;
 }
 
 async fn send_callback(request: Request, label: &str) {

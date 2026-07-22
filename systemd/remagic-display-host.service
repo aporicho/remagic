@@ -1,5 +1,5 @@
 [Unit]
-Description=Remagic single-owner display and input host
+Description=ReMagic single-owner display and input host
 BindsTo=remagicd.service
 After=home.mount remagicd.service
 ConditionPathExists=/run/remagic/managed-domain

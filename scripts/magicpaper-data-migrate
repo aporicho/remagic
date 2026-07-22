@@ -1,0 +1,131 @@
+#!/bin/sh
+set -eu
+
+# MagicPaper used two historical storage layouts before its public project
+# name was finalized.  The schema-v2 runner invokes this helper before either
+# the foreground application or its background agent may write the new tree.
+umask 077
+DATA_ROOT=${MAGICPAPER_DATA_ROOT:-/home/root/.local/share/magicpaper}
+CONFIG_ROOT=${MAGICPAPER_CONFIG_ROOT:-/home/root/.config/magicpaper}
+LEGACY_DATA_ROOTS=${MAGICPAPER_LEGACY_DATA_ROOTS:-/home/root/.local/share/remagic-magicpaper:/home/root/riddle-data}
+LEGACY_CONFIG_ROOTS=${MAGICPAPER_LEGACY_CONFIG_ROOTS:-/home/root/.config/remagic-magicpaper:/home/root/.config/riddle}
+LEGACY_CONFIG_FILE=${MAGICPAPER_LEGACY_CONFIG_FILE:-/home/root/apps/riddle/oracle.env}
+
+STAGES=
+
+cleanup() {
+    old_ifs=$IFS
+    IFS=:
+    for stage in $STAGES; do
+        [ -z "$stage" ] || rm -rf -- "$stage"
+    done
+    IFS=$old_ifs
+}
+trap cleanup EXIT HUP INT TERM
+
+canonical_absolute_path() {
+    candidate=$1
+    case "$candidate" in /*) ;; *) return 1 ;; esac
+    case "/${candidate#/}/" in */../*|*/./*|*//*) return 1 ;; esac
+}
+
+assert_safe_directory_path() {
+    directory=$1
+    canonical_absolute_path "$directory" || {
+        echo "MagicPaper migration path is not canonical: $directory" >&2
+        return 1
+    }
+    remaining=${directory#/}
+    current=
+    while [ -n "$remaining" ]; do
+        case "$remaining" in
+            */*) component=${remaining%%/*}; remaining=${remaining#*/} ;;
+            *) component=$remaining; remaining= ;;
+        esac
+        current=$current/$component
+        [ ! -L "$current" ] || {
+            echo "MagicPaper migration refuses a directory symlink: $current" >&2
+            return 1
+        }
+        if [ -e "$current" ] && [ ! -d "$current" ]; then
+            echo "MagicPaper migration found a non-directory path: $current" >&2
+            return 1
+        fi
+    done
+}
+
+directory_has_entries() {
+    [ -d "$1" ] && [ -n "$(find "$1" -mindepth 1 -print -quit 2>/dev/null)" ]
+}
+
+first_legacy_directory() {
+    candidates=$1
+    old_ifs=$IFS
+    IFS=:
+    for candidate in $candidates; do
+        [ -n "$candidate" ] || continue
+        assert_safe_directory_path "$candidate" || exit 1
+        if directory_has_entries "$candidate"; then
+            unsafe=$(find "$candidate" ! -type f ! -type d -print -quit 2>/dev/null) || exit 1
+            [ -z "$unsafe" ] || {
+                echo "MagicPaper migration refuses a special legacy object: $unsafe" >&2
+                exit 1
+            }
+            printf '%s\n' "$candidate"
+            IFS=$old_ifs
+            return 0
+        fi
+    done
+    IFS=$old_ifs
+    return 2
+}
+
+migrate_directory_if_empty() {
+    target=$1
+    candidates=$2
+    mode=$3
+    assert_safe_directory_path "$target"
+    mkdir -p -- "$target"
+    chmod "$mode" "$target"
+    assert_safe_directory_path "$target"
+    directory_has_entries "$target" && return 0
+
+    if source=$(first_legacy_directory "$candidates"); then
+        :
+    else
+        source_status=$?
+        [ "$source_status" -eq 2 ] && return 0
+        return "$source_status"
+    fi
+
+    stage=${target}.migration.$$
+    assert_safe_directory_path "$stage"
+    [ ! -e "$stage" ] && [ ! -L "$stage" ] || {
+        echo "MagicPaper migration stage already exists: $stage" >&2
+        return 1
+    }
+    mkdir -- "$stage"
+    STAGES=${STAGES:+$STAGES:}$stage
+    cp -a -- "$source/." "$stage/"
+    chmod "$mode" "$stage"
+
+    # The schema runner has stopped the background writer.  Still re-check the
+    # target immediately before publication so an unexpected writer can never
+    # be overwritten.
+    directory_has_entries "$target" && return 0
+    rmdir -- "$target"
+    mv -- "$stage" "$target"
+}
+
+migrate_directory_if_empty "$DATA_ROOT" "$LEGACY_DATA_ROOTS" 0700
+migrate_directory_if_empty "$CONFIG_ROOT" "$LEGACY_CONFIG_ROOTS" 0700
+
+# The oldest standalone package sometimes stored oracle.env beside its binary
+# instead of in ~/.config/riddle.  Import it only when no newer configuration
+# was found, and never follow a symlink containing credentials.
+if ! directory_has_entries "$CONFIG_ROOT" && [ -f "$LEGACY_CONFIG_FILE" ] && \
+   [ ! -L "$LEGACY_CONFIG_FILE" ]; then
+    install -m 0600 -- "$LEGACY_CONFIG_FILE" "$CONFIG_ROOT/oracle.env"
+fi
+
+exit 0

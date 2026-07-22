@@ -67,7 +67,7 @@ impl Daemon {
         }
         let interaction_epoch = self.launch_interrupt_epoch.load(Ordering::Acquire);
         if lock_surface_sequence == 0 {
-            return Err("sleep requires a committed Remagic lock page".into());
+            return Err("sleep requires a committed ReMagic lock page".into());
         }
         let lock_surface = display_host::wait_surface_sequence(
             display_host::HOME_SURFACE_KEY,
@@ -216,13 +216,13 @@ impl Daemon {
             return Ok(());
         }
         if !matches!(domain, DomainState::Sleeping) {
-            return Err("Remagic is not locked".into());
+            return Err("ReMagic is not locked".into());
         }
         if !request_fence.begin_commit() {
             return Err("wake request was cancelled before commit".into());
         }
         if manager_surface_sequence == 0 {
-            return Err("wake requires a committed Remagic manager page".into());
+            return Err("wake requires a committed ReMagic manager page".into());
         }
         let replacement = display_host::wait_surface_sequence(
             display_host::HOME_SURFACE_KEY,

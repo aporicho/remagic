@@ -6,39 +6,44 @@ set -eu
 SOURCE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 COMMON=$SOURCE_DIR/scripts/lib/deployment-common.sh
 KOREADER_STORAGE_LIB=$SOURCE_DIR/scripts/lib/koreader-storage.sh
-KOREADER_ADAPTER_STAGE_LIB=$SOURCE_DIR/scripts/lib/koreader-adapter-stage.sh
+KOREADER_RELEASE_LIB=$SOURCE_DIR/scripts/lib/koreader-release.sh
 REMAGIC_ACCEPTANCE_RECOVERY_LIB=$SOURCE_DIR/scripts/lib/device-test-recovery.sh
 MAGICPAPER_FONT_CONTRACT=$SOURCE_DIR/scripts/lib/magicpaper-font-contract.sh
 [ -r "$COMMON" ] || { echo "install-device.sh: deployment helper is missing" >&2; exit 1; }
 [ -r "$KOREADER_STORAGE_LIB" ] || { echo "install-device.sh: KOReader storage helper is missing" >&2; exit 1; }
-[ -r "$KOREADER_ADAPTER_STAGE_LIB" ] || { echo "install-device.sh: KOReader adapter staging helper is missing" >&2; exit 1; }
+[ -r "$KOREADER_RELEASE_LIB" ] || { echo "install-device.sh: KOReader release helper is missing" >&2; exit 1; }
 [ -r "$MAGICPAPER_FONT_CONTRACT" ] || {
     echo "install-device.sh: MagicPaper font contract is missing" >&2
     exit 1
 }
 . "$COMMON"
 . "$KOREADER_STORAGE_LIB"
-. "$KOREADER_ADAPTER_STAGE_LIB"
+. "$KOREADER_RELEASE_LIB"
 # shellcheck source=scripts/lib/magicpaper-font-contract.sh
 . "$MAGICPAPER_FONT_CONTRACT"
 umask 077
 
 APP_ROOT=/home/root/apps/remagic
-ADAPTER_ROOT=/home/root/apps/remagic-koreader
-KOREADER_PROGRAM_ROOT=$ADAPTER_ROOT/program
+ADAPTER_ROOT=/home/root/apps/koreader-for-remagic
+KOREADER_RELEASE_RECORD=$SOURCE_DIR/opt/koreader-for-remagic/deployment/current.env
 KOREADER_LEGACY_ROOT=/home/root/apps/koreader
-KOREADER_LEGACY_ROOTS=$KOREADER_LEGACY_ROOT:/home/root/.paperweight/services/koreader/koreader:/home/root/.config/koreader
-KOREADER_DATA_ROOT=/home/root/.local/share/remagic-koreader/data
-KOREADER_BACKUP_ROOT=/home/root/.local/state/remagic-koreader/backups
+KOREADER_LEGACY_ROOTS=/home/root/.local/share/remagic-koreader/data:$KOREADER_LEGACY_ROOT:/home/root/.paperweight/services/koreader/koreader:/home/root/.config/koreader
+KOREADER_DATA_ROOT=/home/root/.local/share/koreader-for-remagic/data
+KOREADER_BACKUP_ROOT=/home/root/.local/state/koreader-for-remagic/backups
+KOREADER_CONFIG_ROOT=/home/root/.config/koreader-for-remagic
+KOREADER_CACHE_ROOT=/home/root/.cache/koreader-for-remagic
+KOREADER_DEPLOYMENT_LOCK=/home/root/apps/.koreader-for-remagic.install.lock
 KOREADER_MIGRATABLE_PATHS='settings.reader.lua settings.reader.lua.old history.lua defaults.custom.lua settings docsettings hashdocsettings history screenshots styletweaks sync clipboard data/dict data/tessdata'
 STATE_ROOT=/home/root/.local/state/remagic/install
 TRANSACTION_ROOT=$STATE_ROOT/transactions
 ORIGINAL_ROOT=$STATE_ROOT/original
 MANIFEST_ROOT=/home/root/.local/share/remagic/apps.d
 UNIT_ROOT=/usr/lib/systemd/system
+KOREADER_UNIT_DROPIN_REL=remagic-app@koreader.service.d/10-koreader-runtime.conf
+KOREADER_UNIT_DROPIN=$UNIT_ROOT/$KOREADER_UNIT_DROPIN_REL
 WANTS_ROOT=/etc/systemd/system/multi-user.target.wants
 IN_PROGRESS=$STATE_ROOT/in-progress
-MAGICPAPER_SCHEMA_VERSION=1
+MAGICPAPER_SCHEMA_VERSION=2
 MAGICPAPER_SCHEMA_ROOT=/home/root/.local/state/magicpaper/.remagic-schema
 MAGICPAPER_SCHEMA_FENCE=$MAGICPAPER_SCHEMA_ROOT/schema-ready
 MAGICPAPER_SCHEMA_PENDING=$MAGICPAPER_SCHEMA_ROOT/pending.json
@@ -86,6 +91,7 @@ restore_switch() {
         canonical_absolute_path "$backup" || return 1
     case "$name:$live:$stage:$backup" in
         app:/home/root/apps/remagic:/home/root/apps/.remagic.stage.*:/home/root/apps/.remagic.rollback.*|\
+        adapter:/home/root/apps/koreader-for-remagic:/home/root/apps/.koreader-for-remagic.stage.*:/home/root/apps/.koreader-for-remagic.rollback.*|\
         adapter:/home/root/apps/remagic-koreader:/home/root/apps/.remagic-koreader.stage.*:/home/root/apps/.remagic-koreader.rollback.*|\
         koreader:/home/root/apps/koreader:/home/root/apps/.koreader.stage.*:/home/root/apps/.koreader.rollback.*) ;;
         *) echo "install-device.sh: refusing unsafe switch journal: $record" >&2; return 1 ;;
@@ -103,6 +109,7 @@ restore_removed_tree() {
     canonical_absolute_path "$live" && canonical_absolute_path "$backup" || return 1
     case "$name:$live:$backup" in
         app:/home/root/apps/remagic:/home/root/apps/.remagic.uninstall.*|\
+        adapter:/home/root/apps/koreader-for-remagic:/home/root/apps/.koreader-for-remagic.uninstall.*|\
         adapter:/home/root/apps/remagic-koreader:/home/root/apps/.remagic-koreader.uninstall.*) ;;
         *) echo "install-device.sh: refusing unsafe removal journal: $record" >&2; return 1 ;;
     esac
@@ -195,46 +202,37 @@ share/bundle.sha256
 share/vellum-bootstrap.sh
 shims/qtfb-shim.so
 shims/LICENSE.qtfb-shim
-opt/magicpaper/riddle-qtfb
+opt/magicpaper/magicpaper
 opt/magicpaper/fonts/851LakeusNightWriting.ttf
 opt/magicpaper/fonts/ButterShiSan.ttf
 opt/magicpaper/fonts/CoverageFallback.ttf
 opt/magicpaper/fonts/FZPingXianYaSong.ttf
-opt/koreader/reader.lua
-opt/koreader/luajit
-opt/koreader/git-rev
-opt/koreader/fonts/remagic/STDongGuanTi-Regular.ttf
-opt/koreader/fonts/remagic/STDongGuanTi-Bold.ttf
-opt/koreader/fonts/remagic/STDongGuanTi-Light.ttf
-opt/koreader/fonts/remagic/FZPingXianYaSong.ttf
-opt/koreader/patches/1-remagic-storage.lua
-opt/koreader/patches/2-remagic-runtime.lua
-opt/remagic-koreader/share/patches/1-remagic-storage.lua
-opt/remagic-koreader/share/patches/2-remagic-runtime.lua
+opt/koreader-for-remagic/deployment/current.env
+opt/koreader-for-remagic/deployment/vendor.files
+opt/koreader-for-remagic/deployment/vendor.sha256
 scripts/lib/deployment-common.sh
 scripts/lib/koreader-storage.sh
-scripts/lib/koreader-adapter-stage.sh
+scripts/lib/koreader-release.sh
 scripts/lib/magicpaper-font-contract.sh
 scripts/lib/device-test-isolation.sh
 scripts/lib/device-test-recovery.sh
 scripts/remagic-recover
 scripts/remagic-register
-scripts/koreader-remagic
-scripts/koreader-lifecycle
+scripts/koreader-for-remagic
 scripts/koreader-data-migrate
 scripts/koreader-db-inspect
 scripts/koreader-db-inspect.lua
 scripts/koreader-library-sync
 scripts/koreader-library-index.lua
 scripts/koreader-not-running
-scripts/remagic-lifecycle-async.lua
 scripts/remagic-lifecycle-protocol.lua
 scripts/remagic-open-path.lua
 scripts/magicpaper-remagic
 scripts/magicpaper-agent-remagic
 scripts/magicpaper-qtfb
+scripts/magicpaper-data-migrate
 scripts/remagic-schema-ready
-scripts/riddle-env
+scripts/magicpaper-env
 scripts/uninstall-device.sh
 scripts/device-acceptance-v2.sh
 scripts/device-fault-acceptance-v2.sh
@@ -248,15 +246,35 @@ systemd/remagic-home.service
 systemd/remagic-app@.service
 systemd/remagic-recover.service
 systemd/magicpaper-agent.service
+systemd/remagic-app@koreader.service.d/10-koreader-runtime.conf
 testing/manifests/magicpaper.toml
 testing/manifests/koreader.toml'
 
 validate_bundle() {
+    koreader_release_load "$KOREADER_RELEASE_RECORD" || {
+        echo "install-device.sh: invalid KOReader release record" >&2
+        return 1
+    }
+    KOREADER_PROGRAM_ROOT=$(koreader_release_vendor_root "$ADAPTER_ROOT")
+    KOREADER_ADAPTER_RELEASE_ROOT=$(koreader_release_adapter_root "$ADAPTER_ROOT")
+    KOREADER_SOURCE_PROGRAM_ROOT=$(koreader_release_vendor_root \
+        "$SOURCE_DIR/opt/koreader-for-remagic")
+    KOREADER_SOURCE_ADAPTER_ROOT=$(koreader_release_adapter_root \
+        "$SOURCE_DIR/opt/koreader-for-remagic")
+    export KOREADER_PROGRAM_ROOT KOREADER_ADAPTER_RELEASE_ROOT \
+        KOREADER_SOURCE_PROGRAM_ROOT KOREADER_SOURCE_ADAPTER_ROOT
     grep -qx 'koreader=2026.03' "$SOURCE_DIR/share/build-info.txt" || {
         echo "install-device.sh: unsupported KOReader program version" >&2
         return 1
     }
-    grep -qx 'v2026.03' "$SOURCE_DIR/opt/koreader/git-rev" || {
+    grep -Fqx "koreader-vendor-release=$KOREADER_VENDOR_RELEASE" \
+        "$SOURCE_DIR/share/build-info.txt" && \
+        grep -Fqx "koreader-adapter-release=$KOREADER_ADAPTER_RELEASE" \
+            "$SOURCE_DIR/share/build-info.txt" || {
+        echo "install-device.sh: KOReader release record and build metadata differ" >&2
+        return 1
+    }
+    grep -qx 'v2026.03' "$KOREADER_SOURCE_PROGRAM_ROOT/git-rev" || {
         echo "install-device.sh: KOReader git-rev does not match v2026.03" >&2
         return 1
     }
@@ -267,28 +285,58 @@ validate_bundle() {
     }
     for manifest in "$SOURCE_DIR/manifests/koreader.toml" \
         "$SOURCE_DIR/testing/manifests/koreader.toml"; do
-        grep -qx 'working_dir = "/home/root/apps/remagic-koreader/program"' "$manifest" && \
-            grep -qx 'KOREADER_DIR = "/home/root/apps/remagic-koreader/program"' "$manifest" && \
-            grep -qx 'directories = \["/home/root/apps/remagic-koreader/program/fonts/remagic"\]' "$manifest" || {
-            echo "install-device.sh: KOReader manifest does not use the managed program root: $manifest" >&2
+        grep -Fqx "working_dir = \"$KOREADER_PROGRAM_ROOT\"" "$manifest" && \
+            grep -Fqx "KOREADER_DIR = \"$KOREADER_PROGRAM_ROOT\"" "$manifest" && \
+            grep -Fqx "exec = \"$KOREADER_ADAPTER_RELEASE_ROOT/bin/koreader-for-remagic\"" "$manifest" && \
+            grep -Fqx "directories = [\"$KOREADER_ADAPTER_RELEASE_ROOT/share/fonts\"]" "$manifest" && \
+            grep -Fqx 'background_execution = "freeze"' "$manifest" || {
+            echo "install-device.sh: KOReader manifest does not use the pinned releases: $manifest" >&2
             return 1
         }
     done
-    grep -qx 'KO_HOME = "/home/root/.local/share/remagic-koreader/data"' \
+    grep -qx 'KO_HOME = "/home/root/.local/share/koreader-for-remagic/data"' \
         "$SOURCE_DIR/manifests/koreader.toml" || {
         echo "install-device.sh: production KOReader data root contract is invalid" >&2
         return 1
     }
-    [ ! -e "$SOURCE_DIR/opt/koreader/update_once.marker" ] && \
-        [ ! -L "$SOURCE_DIR/opt/koreader/update_once.marker" ] || {
-        echo "install-device.sh: forbidden KOReader update_once.marker is present" >&2
+    [ ! -e "$KOREADER_SOURCE_PROGRAM_ROOT/update_once.marker" ] && \
+        [ ! -L "$KOREADER_SOURCE_PROGRAM_ROOT/update_once.marker" ] || {
+        echo "install-device.sh: KOReader update_once.marker was not consumed" >&2
         return 1
     }
-    [ ! -e "$SOURCE_DIR/opt/koreader/plugins/terminal.koplugin" ] && \
-        [ ! -L "$SOURCE_DIR/opt/koreader/plugins/terminal.koplugin" ] || {
-        echo "install-device.sh: writable KOReader terminal plugin is present" >&2
+    [ -d "$KOREADER_SOURCE_PROGRAM_ROOT/plugins/terminal.koplugin" ] && \
+        [ ! -L "$KOREADER_SOURCE_PROGRAM_ROOT/plugins/terminal.koplugin" ] || {
+        echo "install-device.sh: official KOReader terminal plugin is missing" >&2
         return 1
     }
+    [ ! -e "$KOREADER_SOURCE_PROGRAM_ROOT/fonts/remagic" ] && \
+        { [ ! -d "$KOREADER_SOURCE_PROGRAM_ROOT/patches" ] || \
+          [ -z "$(find "$KOREADER_SOURCE_PROGRAM_ROOT/patches" -maxdepth 1 \
+              -name '*remagic*.lua' -print -quit)" ]; } || {
+        echo "install-device.sh: ReMagic assets leaked into the KOReader vendor tree" >&2
+        return 1
+    }
+    koreader_release_verify "$SOURCE_DIR/opt/koreader-for-remagic" || {
+        echo "install-device.sh: KOReader release integrity verification failed" >&2
+        return 1
+    }
+    for relative in \
+        "opt/koreader-for-remagic/adapter/releases/$KOREADER_ADAPTER_RELEASE/bin/koreader-for-remagic" \
+        "opt/koreader-for-remagic/adapter/releases/$KOREADER_ADAPTER_RELEASE/libexec/koreader-data-migrate" \
+        "opt/koreader-for-remagic/adapter/releases/$KOREADER_ADAPTER_RELEASE/libexec/koreader-db-inspect" \
+        "opt/koreader-for-remagic/adapter/releases/$KOREADER_ADAPTER_RELEASE/libexec/koreader-db-inspect.lua" \
+        "opt/koreader-for-remagic/adapter/releases/$KOREADER_ADAPTER_RELEASE/libexec/koreader-library-sync" \
+        "opt/koreader-for-remagic/adapter/releases/$KOREADER_ADAPTER_RELEASE/libexec/koreader-library-index.lua" \
+        "opt/koreader-for-remagic/adapter/releases/$KOREADER_ADAPTER_RELEASE/libexec/koreader-not-running" \
+        "opt/koreader-for-remagic/adapter/releases/$KOREADER_ADAPTER_RELEASE/libexec/remagic-lifecycle-protocol.lua" \
+        "opt/koreader-for-remagic/adapter/releases/$KOREADER_ADAPTER_RELEASE/libexec/remagic-open-path.lua" \
+        "opt/koreader-for-remagic/adapter/releases/$KOREADER_ADAPTER_RELEASE/share/patches/10-remagic-environment.lua" \
+        "opt/koreader-for-remagic/adapter/releases/$KOREADER_ADAPTER_RELEASE/share/patches/20-remagic-policy.lua" \
+        "opt/koreader-for-remagic/adapter/releases/$KOREADER_ADAPTER_RELEASE/share/patches/21-remagic-lifecycle-v2.lua" \
+        "opt/koreader-for-remagic/adapter/releases/$KOREADER_ADAPTER_RELEASE/share/fonts/fonts.sha256"; do
+        required_files="$required_files
+$relative"
+    done
     printf '%s\n' "$required_files" | while IFS= read -r relative; do
         [ -n "$relative" ] || continue
         path=$SOURCE_DIR/$relative
@@ -325,25 +373,37 @@ validate_bundle() {
     for executable in \
         bin/remagicd bin/remagicctl bin/remagic-home bin/remagic-runner \
         bin/remagic-vellum-worker bin/remagic-display-host \
-        opt/magicpaper/riddle-qtfb opt/koreader/reader.lua opt/koreader/luajit \
-        scripts/remagic-recover scripts/koreader-remagic scripts/koreader-lifecycle \
+        opt/magicpaper/magicpaper \
+        scripts/remagic-recover scripts/koreader-for-remagic \
         scripts/remagic-register \
         scripts/koreader-data-migrate scripts/koreader-db-inspect \
         scripts/koreader-library-sync scripts/koreader-not-running \
         scripts/magicpaper-remagic scripts/magicpaper-agent-remagic \
-        scripts/magicpaper-qtfb scripts/remagic-schema-ready \
+        scripts/magicpaper-qtfb scripts/magicpaper-data-migrate scripts/remagic-schema-ready \
         scripts/install-device.sh scripts/uninstall-device.sh; do
         [ -x "$SOURCE_DIR/$executable" ] || {
             echo "install-device.sh: executable bit missing: $executable" >&2
             return 1
         }
     done
+    for executable in \
+        "$KOREADER_SOURCE_ADAPTER_ROOT/bin/koreader-for-remagic" \
+        "$KOREADER_SOURCE_ADAPTER_ROOT/libexec/koreader-data-migrate" \
+        "$KOREADER_SOURCE_ADAPTER_ROOT/libexec/koreader-db-inspect" \
+        "$KOREADER_SOURCE_ADAPTER_ROOT/libexec/koreader-library-sync" \
+        "$KOREADER_SOURCE_ADAPTER_ROOT/libexec/koreader-not-running"; do
+        [ -x "$executable" ] || {
+            echo "install-device.sh: adapter executable bit missing: $executable" >&2
+            return 1
+        }
+    done
     for artifact in \
         bin/remagicd bin/remagicctl bin/remagic-home bin/remagic-runner \
         bin/remagic-vellum-worker bin/remagic-display-host lib/libquill.so \
-        shims/qtfb-shim.so opt/magicpaper/riddle-qtfb opt/koreader/luajit; do
+        shims/qtfb-shim.so opt/magicpaper/magicpaper; do
         assert_aarch64_elf "$SOURCE_DIR/$artifact" || return 1
     done
+    assert_aarch64_elf "$KOREADER_SOURCE_PROGRAM_ROOT/luajit" || return 1
     expected_quill=$(sed -n 's/^libquill-sha256=//p' "$SOURCE_DIR/share/build-info.txt")
     expected_host=$(sed -n 's/^display-host-sha256=//p' "$SOURCE_DIR/share/build-info.txt")
     actual_quill=$(sha256sum "$SOURCE_DIR/lib/libquill.so" | awk '{print $1}')
@@ -429,13 +489,15 @@ stage_manager() {
     stage_file 0755 "$SOURCE_DIR/lib/libquill.so" "$stage/lib/libquill.so"
     stage_file 0755 "$SOURCE_DIR/shims/qtfb-shim.so" "$stage/shims/qtfb-shim.so"
     stage_file 0644 "$SOURCE_DIR/shims/LICENSE.qtfb-shim" "$stage/share/LICENSE.qtfb-shim"
-    for helper in deployment-common.sh remagic-recover remagic-register magicpaper-remagic \
-        magicpaper-agent-remagic magicpaper-qtfb remagic-schema-ready \
-        uninstall-device.sh riddle-env; do
+    for helper in deployment-common.sh koreader-release.sh remagic-recover remagic-register magicpaper-remagic \
+        magicpaper-agent-remagic magicpaper-qtfb magicpaper-data-migrate remagic-schema-ready \
+        uninstall-device.sh magicpaper-env; do
         source=$SOURCE_DIR/scripts/$helper
-        [ "$helper" = deployment-common.sh ] && source=$SOURCE_DIR/scripts/lib/$helper
+        case "$helper" in
+            deployment-common.sh|koreader-release.sh) source=$SOURCE_DIR/scripts/lib/$helper ;;
+        esac
         mode=0755
-        [ "$helper" = riddle-env ] && mode=0644
+        [ "$helper" = magicpaper-env ] && mode=0644
         stage_file "$mode" "$source" "$stage/libexec/$helper"
     done
     stage_file 0755 "$SOURCE_DIR/scripts/lib/device-test-isolation.sh" \
@@ -452,12 +514,14 @@ stage_manager() {
         remagic-app@.service remagic-recover.service magicpaper-agent.service; do
         stage_file 0644 "$SOURCE_DIR/systemd/$unit" "$stage/share/systemd/$unit"
     done
+    stage_file 0644 "$SOURCE_DIR/systemd/$KOREADER_UNIT_DROPIN_REL" \
+        "$stage/share/systemd/$KOREADER_UNIT_DROPIN_REL"
     for manifest in magicpaper.toml koreader.toml; do
         stage_file 0644 "$SOURCE_DIR/testing/manifests/$manifest" \
             "$stage/share/testing/manifests/$manifest"
     done
     stage_file 0644 "$SOURCE_DIR/fonts/UIFont.ttf" "$stage/fonts/UIFont.ttf"
-    stage_file 0755 "$SOURCE_DIR/opt/magicpaper/riddle-qtfb" "$stage/opt/magicpaper/riddle-qtfb"
+    stage_file 0755 "$SOURCE_DIR/opt/magicpaper/magicpaper" "$stage/opt/magicpaper/magicpaper"
     for font_name in 851LakeusNightWriting.ttf ButterShiSan.ttf \
         CoverageFallback.ttf FZPingXianYaSong.ttf; do
         stage_file 0644 "$SOURCE_DIR/opt/magicpaper/fonts/$font_name" \
@@ -468,9 +532,42 @@ stage_manager() {
 
 stage_adapter() {
     stage=$1
-    deployment_stage_koreader_adapter_files "$stage" "$SOURCE_DIR"
-    cp -a "$SOURCE_DIR/opt/koreader" "$stage/program"
+    rm -rf "$stage"
+    cp -a "$SOURCE_DIR/opt/koreader-for-remagic" "$stage"
+
+    # Preserve exactly one post-commit rollback candidate.  Release files are
+    # immutable, so hard links retain the old content without doubling space.
+    previous_record=$ADAPTER_ROOT/deployment/current.env
+    if [ -d "$ADAPTER_ROOT" ] && [ ! -L "$ADAPTER_ROOT" ] && \
+       koreader_release_load "$previous_record"; then
+        previous_vendor=$KOREADER_VENDOR_RELEASE
+        previous_adapter=$KOREADER_ADAPTER_RELEASE
+        koreader_release_load "$KOREADER_RELEASE_RECORD" || return 1
+        if [ "$previous_vendor:$previous_adapter" != \
+             "$KOREADER_VENDOR_RELEASE:$KOREADER_ADAPTER_RELEASE" ]; then
+            previous_vendor_root=$ADAPTER_ROOT/vendor/releases/$previous_vendor
+            previous_adapter_root=$ADAPTER_ROOT/adapter/releases/$previous_adapter
+            [ -d "$previous_vendor_root" ] && [ ! -L "$previous_vendor_root" ] && \
+                [ -d "$previous_adapter_root" ] && [ ! -L "$previous_adapter_root" ] || {
+                echo "install-device.sh: previous KOReader release is incomplete" >&2
+                return 1
+            }
+            if [ ! -e "$stage/vendor/releases/$previous_vendor" ]; then
+                cp -al "$previous_vendor_root" \
+                    "$stage/vendor/releases/$previous_vendor"
+            fi
+            if [ ! -e "$stage/adapter/releases/$previous_adapter" ]; then
+                cp -al "$previous_adapter_root" \
+                    "$stage/adapter/releases/$previous_adapter"
+            fi
+            printf 'vendor_release=%s\nadapter_release=%s\n' \
+                "$previous_vendor" "$previous_adapter" \
+                >"$stage/deployment/previous.env"
+        fi
+    fi
+    koreader_release_load "$KOREADER_RELEASE_RECORD" || return 1
     chown -R 0:0 "$stage"
+    koreader_release_verify "$stage"
 }
 
 capture_original_state() {
@@ -498,7 +595,7 @@ capture_original_state() {
     snapshot_path "$ORIGINAL_ROOT/snapshots" riddle_want_etc \
         "$original_want_etc"
     launcher_enabled=$("$SYSTEMCTL" is-enabled riddle-power-launcher.service 2>/dev/null || true)
-    if [ -r "$STATE_ROOT/previous.env" ] && grep -q '^RIDDLE_POWER_LAUNCHER=enabled$' "$STATE_ROOT/previous.env"; then
+    if [ -r "$STATE_ROOT/previous.env" ] && grep -q '^MAGICPAPER_POWER_LAUNCHER=enabled$' "$STATE_ROOT/previous.env"; then
         launcher_enabled=enabled
     fi
     printf '%s\n' "$launcher_enabled" >"$ORIGINAL_ROOT/launcher-enabled"
@@ -523,6 +620,7 @@ snapshot_transaction_paths() {
     snapshot_path "$snapshots" unit_app "$UNIT_ROOT/remagic-app@.service"
     snapshot_path "$snapshots" unit_recover "$UNIT_ROOT/remagic-recover.service"
     snapshot_path "$snapshots" unit_agent "$UNIT_ROOT/magicpaper-agent.service"
+    snapshot_path "$snapshots" unit_koreader_dropin "$KOREADER_UNIT_DROPIN"
     snapshot_path "$snapshots" unit_runtime "$UNIT_ROOT/remagic-runtime.service"
     snapshot_path "$snapshots" want_remagicd "$WANTS_ROOT/remagicd.service"
     snapshot_path "$snapshots" want_agent "$WANTS_ROOT/magicpaper-agent.service"
@@ -575,6 +673,7 @@ cleanup_transaction_backups() {
         canonical_absolute_path "$stage" && canonical_absolute_path "$backup" || return 1
         case "$name:$stage:$backup" in
             app:/home/root/apps/.remagic.stage.*:/home/root/apps/.remagic.rollback.*|\
+            adapter:/home/root/apps/.koreader-for-remagic.stage.*:/home/root/apps/.koreader-for-remagic.rollback.*|\
             adapter:/home/root/apps/.remagic-koreader.stage.*:/home/root/apps/.remagic-koreader.rollback.*|\
             koreader:/home/root/apps/.koreader.stage.*:/home/root/apps/.koreader.rollback.*) ;;
             *) echo "install-device.sh: refusing unsafe cleanup journal: $record" >&2; return 1 ;;
@@ -612,7 +711,10 @@ for transaction_name in $transaction_names; do
     abandoned=$TRANSACTION_ROOT/$transaction_name
     case "$(transaction_status "$abandoned")" in
         committed|rolled-back)
-            cleanup_finished_deployment_transaction "$abandoned"
+            cleanup_finished_deployment_transaction "$abandoned" || {
+                echo "install-device.sh: could not retire completed transaction: $abandoned" >&2
+                exit 1
+            }
             clear_deployment_guard_for_transaction "$IN_PROGRESS" "$abandoned"
             continue
             ;;
@@ -642,8 +744,8 @@ assert_optional_symlink "$WANTS_ROOT/riddle-power-launcher.service"
 
 APP_STAGE=/home/root/apps/.remagic.stage.$TXN_ID
 APP_BACKUP=/home/root/apps/.remagic.rollback.$TXN_ID
-ADAPTER_STAGE=/home/root/apps/.remagic-koreader.stage.$TXN_ID
-ADAPTER_BACKUP=/home/root/apps/.remagic-koreader.rollback.$TXN_ID
+ADAPTER_STAGE=/home/root/apps/.koreader-for-remagic.stage.$TXN_ID
+ADAPTER_BACKUP=/home/root/apps/.koreader-for-remagic.rollback.$TXN_ID
 stage_manager "$APP_STAGE"
 stage_adapter "$ADAPTER_STAGE"
 
@@ -684,24 +786,22 @@ snapshot_koreader_storage "$CURRENT_TXN"
 transactional_tree_switch "$CURRENT_TXN/switch-app" "$APP_ROOT" "$APP_STAGE" "$APP_BACKUP"
 transactional_tree_switch "$CURRENT_TXN/switch-adapter" "$ADAPTER_ROOT" "$ADAPTER_STAGE" "$ADAPTER_BACKUP"
 
-for module in remagic-lifecycle-async.lua remagic-lifecycle-protocol.lua \
-    remagic-open-path.lua; do
-    cmp -s "$SOURCE_DIR/scripts/$module" "$ADAPTER_ROOT/libexec/$module" || {
-        echo "install-device.sh: KOReader runtime module verification failed: $module" >&2
-        exit 1
-    }
-done
+koreader_release_verify "$ADAPTER_ROOT" || {
+    echo "install-device.sh: live KOReader release verification failed" >&2
+    exit 1
+}
 
 KOREADER_DIR=$KOREADER_PROGRAM_ROOT \
-KOREADER_ADAPTER_EXEC=$ADAPTER_ROOT/bin/koreader-remagic \
-    "$ADAPTER_ROOT/libexec/koreader-not-running"
+KOREADER_ADAPTER_EXEC=$KOREADER_ADAPTER_RELEASE_ROOT/bin/koreader-for-remagic \
+    "$KOREADER_ADAPTER_RELEASE_ROOT/libexec/koreader-not-running"
 legacy_sources=$KOREADER_LEGACY_ROOTS
 KOREADER_DIR=$KOREADER_PROGRAM_ROOT \
 KOREADER_DATA_DIR=$KOREADER_DATA_ROOT \
 KO_HOME=$KOREADER_DATA_ROOT \
+KOREADER_LIBEXEC_DIR=$KOREADER_ADAPTER_RELEASE_ROOT/libexec \
 KOREADER_BACKUP_ROOT=$KOREADER_BACKUP_ROOT \
 KOREADER_LEGACY_DATA_DIRS=$legacy_sources \
-    "$ADAPTER_ROOT/libexec/koreader-data-migrate"
+    "$KOREADER_ADAPTER_RELEASE_ROOT/libexec/koreader-data-migrate"
 assert_safe_koreader_storage
 if [ ! -e "$KOREADER_DATA_ROOT/settings.reader.lua" ] && \
    [ ! -L "$KOREADER_DATA_ROOT/settings.reader.lua" ] && \
@@ -715,11 +815,20 @@ if [ ! -e "$KOREADER_DATA_ROOT/settings.reader.lua" ] && \
         echo "install-device.sh: temporary KOReader settings path already exists" >&2
         exit 1
     }
-    printf '%s\n' '-- Remagic KOReader settings' 'return {' \
+    printf '%s\n' '-- ReMagic KOReader settings' 'return {' \
         '    ["language"] = "zh_CN",' '}' >"$settings_new"
     chmod 0600 "$settings_new"
     mv "$settings_new" "$KOREADER_DATA_ROOT/settings.reader.lua"
 fi
+
+# systemd establishes KOReader's read-only home namespace before runner can
+# create its XDG directories. Publish the narrow writable mount points in the
+# host namespace first; existing user data and modes are left untouched.
+koreader_runtime_prepare_writable_paths \
+    "$KOREADER_CONFIG_ROOT" "$KOREADER_CACHE_ROOT" "$KOREADER_DEPLOYMENT_LOCK" || {
+    echo "install-device.sh: could not prepare KOReader writable mount points" >&2
+    exit 1
+}
 
 publish_file 0644 "$SOURCE_DIR/manifests/magicpaper.toml" "$MANIFEST_ROOT/magicpaper.toml"
 publish_file 0644 "$SOURCE_DIR/manifests/koreader.toml" "$MANIFEST_ROOT/koreader.toml"
@@ -729,7 +838,12 @@ publish_file 0644 "$SOURCE_DIR/systemd/remagic-home.service" "$UNIT_ROOT/remagic
 publish_file 0644 "$SOURCE_DIR/systemd/remagic-app@.service" "$UNIT_ROOT/remagic-app@.service"
 publish_file 0644 "$SOURCE_DIR/systemd/remagic-recover.service" "$UNIT_ROOT/remagic-recover.service"
 publish_file 0644 "$SOURCE_DIR/systemd/magicpaper-agent.service" "$UNIT_ROOT/magicpaper-agent.service"
+publish_file 0644 "$SOURCE_DIR/systemd/$KOREADER_UNIT_DROPIN_REL" "$KOREADER_UNIT_DROPIN"
 rm -f "$UNIT_ROOT/remagic-runtime.service"
+cmp -s "$SOURCE_DIR/systemd/$KOREADER_UNIT_DROPIN_REL" "$KOREADER_UNIT_DROPIN" || {
+    echo "install-device.sh: KOReader read-only runtime policy did not publish" >&2
+    exit 1
+}
 
 "$SYSTEMCTL" daemon-reload
 restore_stock_services
@@ -750,17 +864,18 @@ fi
     echo "install-device.sh: KOReader update_once.marker survived commit preparation" >&2
     exit 1
 }
-[ ! -e "$KOREADER_PROGRAM_ROOT/plugins/terminal.koplugin" ] && \
+[ -d "$KOREADER_PROGRAM_ROOT/plugins/terminal.koplugin" ] && \
     [ ! -L "$KOREADER_PROGRAM_ROOT/plugins/terminal.koplugin" ] || {
-    echo "install-device.sh: KOReader terminal plugin survived program-tree replacement" >&2
+    echo "install-device.sh: official KOReader terminal plugin is missing" >&2
     exit 1
 }
 grep -qx 'v2026.03' "$KOREADER_PROGRAM_ROOT/git-rev" || {
     echo "install-device.sh: live KOReader git-rev does not match v2026.03" >&2
     exit 1
 }
-cmp -s "$SOURCE_DIR/opt/koreader/reader.lua" "$KOREADER_PROGRAM_ROOT/reader.lua" && \
-    cmp -s "$SOURCE_DIR/opt/koreader/luajit" "$KOREADER_PROGRAM_ROOT/luajit" || {
+cmp -s "$KOREADER_SOURCE_PROGRAM_ROOT/reader.lua" "$KOREADER_PROGRAM_ROOT/reader.lua" && \
+    cmp -s "$KOREADER_SOURCE_PROGRAM_ROOT/luajit" "$KOREADER_PROGRAM_ROOT/luajit" && \
+    koreader_release_verify "$ADAPTER_ROOT" || {
     echo "install-device.sh: KOReader v2026.03 program-tree verification failed" >&2
     exit 1
 }
@@ -779,5 +894,5 @@ restore_root_mount
 release_directory_lock "$REMAGIC_INSTALL_LOCK"
 LOCK_HELD=false
 
-echo "Remagic Manager installed transactionally. The original interface remains the boot default."
+echo "ReMagic installed transactionally. The original interface remains the boot default."
 echo "Triple-press power to open the manager."

@@ -109,6 +109,7 @@ mod tests {
         let mut manifest: remagic_core::AppManifest =
             toml::from_str(include_str!("../../../../../manifests/magicpaper.toml")).unwrap();
         manifest.readiness.timeout_ms = 20_000;
+        let background_execution = manifest.runtime.background_execution;
         LaunchContext {
             id: manifest.id.clone(),
             manifest,
@@ -118,6 +119,7 @@ mod tests {
             unit: "remagic-app@magicpaper.service".into(),
             active,
             generation: 1,
+            background_execution,
             foreground_epoch: 1,
             lease_id: 1,
             surface_key: 1,

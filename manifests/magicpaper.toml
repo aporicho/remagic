@@ -32,10 +32,15 @@ kind = "systemd"
 unit = "magicpaper-agent.service"
 
 [data_schema]
-version = 1
+version = 2
+migrator = "/home/root/apps/remagic/libexec/magicpaper-data-migrate"
 backup_paths = [
   "/home/root/riddle-data",
   "/home/root/.config/riddle",
+  "/home/root/.local/share/remagic-magicpaper",
+  "/home/root/.config/remagic-magicpaper",
+  "/home/root/.local/share/magicpaper",
+  "/home/root/.config/magicpaper",
 ]
 backup_timeout_ms = 120000
 migration_timeout_ms = 120000
@@ -46,8 +51,8 @@ required_libraries = []
 
 [runtime.directories]
 home = "/home/root"
-config_home = "/home/root/.config/riddle"
-data_home = "/home/root/riddle-data"
+config_home = "/home/root/.config/magicpaper"
+data_home = "/home/root/.local/share/magicpaper"
 state_home = "/home/root/.local/state/magicpaper"
 cache_home = "/home/root/.cache/magicpaper"
 runtime_dir = "/run/remagic/apps/magicpaper"
@@ -72,4 +77,9 @@ ca_bundle = "/etc/ssl/certs/ca-certificates.crt"
 mode = "outbound"
 
 [environment]
-RIDDLE_SYSTEMD_MANAGED = "1"
+MAGICPAPER_SYSTEMD_MANAGED = "1"
+MAGICPAPER_DATA_ROOT = "/home/root/.local/share/magicpaper"
+MAGICPAPER_CONFIG_ROOT = "/home/root/.config/magicpaper"
+MAGICPAPER_LEGACY_DATA_ROOTS = "/home/root/.local/share/remagic-magicpaper:/home/root/riddle-data"
+MAGICPAPER_LEGACY_CONFIG_ROOTS = "/home/root/.config/remagic-magicpaper:/home/root/.config/riddle"
+MAGICPAPER_LEGACY_CONFIG_FILE = "/home/root/apps/riddle/oracle.env"

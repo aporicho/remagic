@@ -16,7 +16,7 @@ REMAGIC_TEST_SYSTEMCTL=${REMAGIC_TEST_SYSTEMCTL:-systemctl}
 REMAGIC_TEST_SYSTEMD_RUNTIME_ROOT=${REMAGIC_TEST_SYSTEMD_RUNTIME_ROOT:-/run/systemd/system}
 REMAGIC_TEST_SESSION_ROOT=${REMAGIC_TEST_SESSION_ROOT:-/home/root/.local/state/remagic/sessions}
 REMAGIC_TEST_DIAGNOSTICS_ROOT=${REMAGIC_TEST_DIAGNOSTICS_ROOT:-$(dirname "$REMAGIC_TEST_ROOT")/diagnostics}
-REMAGIC_TEST_PROTECTED_PATHS=${REMAGIC_TEST_PROTECTED_PATHS:-/home/root/riddle-data:/home/root/.config/riddle:/home/root/.local/state/magicpaper:/home/root/.cache/magicpaper:/home/root/apps/koreader:/home/root/.local/share/remagic-koreader:/home/root/.local/state/remagic-koreader}
+REMAGIC_TEST_PROTECTED_PATHS=${REMAGIC_TEST_PROTECTED_PATHS:-/home/root/riddle-data:/home/root/.config/riddle:/home/root/.local/share/remagic-magicpaper:/home/root/.config/remagic-magicpaper:/home/root/.local/share/magicpaper:/home/root/.config/magicpaper:/home/root/.local/state/magicpaper:/home/root/.cache/magicpaper:/home/root/apps/koreader:/home/root/.local/share/remagic-koreader:/home/root/.local/share/koreader-for-remagic:/home/root/.local/state/koreader-for-remagic}
 REMAGIC_TEST_RECOVERY_HELPER=${REMAGIC_TEST_RECOVERY_HELPER:-/home/root/apps/remagic/libexec/device-test-recovery.sh}
 
 [ -r "$REMAGIC_TEST_RECOVERY_HELPER" ] || {

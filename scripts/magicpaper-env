@@ -4,7 +4,7 @@
 # code.  The file contains API credentials and is intentionally limited to the
 # settings consumed by the oracle; runtime ownership variables are supplied by
 # the trusted application manifest instead.
-load_riddle_env() {
+load_magicpaper_env() {
     env_file=$1
     [ -r "$env_file" ] || return 0
 
@@ -22,11 +22,20 @@ load_riddle_env() {
         key=$(printf '%s' "${line%%=*}" | sed 's/[[:space:]]*$//')
         value=${line#*=}
         value=$(printf '%s' "$value" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+        target=$key
         case "$key" in
+            MAGICPAPER_OPENAI_*|MAGICPAPER_OCR_*|MAGICPAPER_PI_*|MAGICPAPER_PAPER_REWRITE_MODEL|\
+            MAGICPAPER_WEB_SEARCH|MAGICPAPER_IMAGE_MAX_EDGE|MAGICPAPER_KEEP_PAGE|\
+            MAGICPAPER_MEMORY|MAGICPAPER_MEMORY_TURNS|MAGICPAPER_HEARTBEAT_RETRY_SECONDS|\
+            MAGICPAPER_TZ_OFFSET) ;;
             RIDDLE_OPENAI_*|RIDDLE_OCR_*|RIDDLE_PI_*|RIDDLE_PAPER_REWRITE_MODEL|\
             RIDDLE_WEB_SEARCH|RIDDLE_IMAGE_MAX_EDGE|RIDDLE_KEEP_PAGE|\
             RIDDLE_MEMORY|RIDDLE_MEMORY_TURNS|RIDDLE_HEARTBEAT_RETRY_SECONDS|\
-            RIDDLE_TZ_OFFSET) ;;
+            RIDDLE_TZ_OFFSET)
+                target=MAGICPAPER_${key#RIDDLE_}
+                eval "target_is_set=\${$target+x}"
+                [ "$target_is_set" != x ] || continue
+                ;;
             *) continue ;;
         esac
 
@@ -34,7 +43,7 @@ load_riddle_env() {
             \"*\") value=${value#\"}; value=${value%\"} ;;
             \'*\') value=${value#\'}; value=${value%\'} ;;
         esac
-        export "$key=$value"
+        export "$target=$value"
     done < "$env_file"
 }
 
@@ -42,17 +51,21 @@ load_riddle_env() {
 # the isolated config was lost or a secret leaked into the service manager's
 # inherited environment. Production retains the legacy fallback only for
 # upgrades from the standalone MagicPaper layout.
-load_riddle_config() {
+load_magicpaper_config() {
     config_file=$1
-    legacy_file=$2
-    test_mode=${3:-0}
+    legacy_config_file=$2
+    legacy_app_file=$3
+    test_mode=${4:-0}
     if [ "$test_mode" = 1 ]; then
-        unset RIDDLE_OPENAI_KEY RIDDLE_OCR_TOKEN
+        unset MAGICPAPER_OPENAI_KEY MAGICPAPER_OCR_TOKEN \
+            RIDDLE_OPENAI_KEY RIDDLE_OCR_TOKEN
         return 0
     fi
     if [ -r "$config_file" ]; then
-        load_riddle_env "$config_file"
-    elif [ -r "$legacy_file" ]; then
-        load_riddle_env "$legacy_file"
+        load_magicpaper_env "$config_file"
+    elif [ -r "$legacy_config_file" ]; then
+        load_magicpaper_env "$legacy_config_file"
+    elif [ -r "$legacy_app_file" ]; then
+        load_magicpaper_env "$legacy_app_file"
     fi
 }

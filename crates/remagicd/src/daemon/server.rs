@@ -31,7 +31,7 @@ pub(super) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     supervision::spawn(daemon.clone());
     info!(
         socket = remagic_protocol::DEFAULT_SOCKET,
-        "Remagic manager ready"
+        "ReMagic manager ready"
     );
 
     let result = event_loop(daemon, &mut event_rx).await;
@@ -61,6 +61,7 @@ fn create_daemon() -> Result<DaemonParts, Box<dyn std::error::Error>> {
         manifests: RwLock::new(manifests),
         sessions: RwLock::new(sessions),
         runtime_generations: RwLock::new(BTreeMap::new()),
+        runtime_background_execution: RwLock::new(BTreeMap::new()),
         runtime_foreground_fences: RwLock::new(BTreeMap::new()),
         runtime_input_modes: RwLock::new(BTreeMap::new()),
         runtime_exit_reports: RwLock::new(BTreeMap::new()),

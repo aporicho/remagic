@@ -62,7 +62,7 @@ fn v2_manifest(root: &Path, extra: &str) -> AppManifest {
         r#"
 schema = 2
 id = "koreader"
-name = "KOReader"
+name = "KOReader for ReMagic"
 exec = "{}"
 working_dir = "{}"
 display = "qtfb"
@@ -296,7 +296,7 @@ display = "qtfb"
 [environment]
 HOME = "/home/root"
 LD_LIBRARY_PATH = "/legacy/lib"
-RIDDLE_SYSTEMD_MANAGED = "1"
+MAGICPAPER_SYSTEMD_MANAGED = "1"
 "#,
         executable.display(),
         working_dir.display(),
@@ -313,7 +313,7 @@ RIDDLE_SYSTEMD_MANAGED = "1"
     assert_eq!(plan.generation, None);
     assert_eq!(plan.variables["HOME"], "/home/root");
     assert_eq!(plan.variables["LD_LIBRARY_PATH"], "/legacy/lib");
-    assert_eq!(plan.variables["RIDDLE_SYSTEMD_MANAGED"], "1");
+    assert_eq!(plan.variables["MAGICPAPER_SYSTEMD_MANAGED"], "1");
     assert!(!plan.variables.contains_key("XDG_DATA_HOME"));
     fs::remove_dir_all(root).unwrap();
 }

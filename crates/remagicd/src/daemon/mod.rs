@@ -189,6 +189,10 @@ pub(super) struct Daemon {
     pub(super) manifests: RwLock<BTreeMap<AppId, remagic_core::AppManifest>>,
     pub(super) sessions: RwLock<BTreeMap<AppId, AppSession>>,
     pub(super) runtime_generations: RwLock<BTreeMap<AppId, u64>>,
+    /// Scheduling policy captured for the running process generation. A
+    /// manifest reload must not change freezer semantics under a live cgroup.
+    pub(super) runtime_background_execution:
+        RwLock<BTreeMap<AppId, remagic_core::BackgroundExecution>>,
     pub(super) runtime_foreground_fences: RwLock<BTreeMap<AppId, (u64, u64)>>,
     /// The mode requested by an application for one exact foreground fence.
     /// Launching applications may publish this before the manager commits

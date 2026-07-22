@@ -146,6 +146,23 @@ main_pid() {
     systemctl show --property=MainPID --value "$1"
 }
 
+assert_freezer_state() {
+    local unit expected actual pid process_state
+    [ "$#" -eq 2 ] || return 1
+    unit=$1 expected=$2
+    actual=$(systemctl show --property=FreezerState --value "$unit" 2>/dev/null || true)
+    [ "$actual" = "$expected" ] && return 0
+    pid=$(main_pid "$unit")
+    process_state=$(sed -n 's/^State:[[:space:]]*\([^[:space:]]\).*/\1/p' \
+        "/proc/$pid/status" 2>/dev/null || true)
+    case "$expected:$actual:$process_state" in
+        frozen:running:T|frozen:running:t) return 0 ;;
+        running:running:T|running:running:t) ;;
+        running:running:?) return 0 ;;
+    esac
+    fail "$unit freezer/process state is $actual/$process_state instead of $expected"
+}
+
 unit_pids() {
     local unit group pid
     [ "$#" -eq 1 ] || return 1
@@ -221,6 +238,7 @@ assert_exact_foreground_submission_since "$cold_sequence" "$koreader_key" \
     "$(display_number generation)" "$(display_number foreground_epoch)" "KOReader cold start"
 "$CTL" park >/dev/null
 wait_domain '"domain": "manager"'
+assert_freezer_state 'remagic-app@koreader.service' frozen
 
 [ "$magic_pid" -gt 1 ] && [ "$koreader_pid" -gt 1 ] || fail "resident PID is missing"
 [ "$magic_key" != "$koreader_key" ] || fail "applications share one QTFB key"
@@ -280,6 +298,7 @@ while [ "$cycle" -le "$CYCLES" ]; do
     start=$(now_ms)
     "$CTL" launch koreader >/dev/null
     wait_domain '"foreground": "koreader"'
+    assert_freezer_state 'remagic-app@koreader.service' running
     elapsed=$(( $(now_ms) - start ))
     total_ms=$((total_ms + elapsed))
     [ "$elapsed" -le "$MAX_WARM_SWITCH_MS" ] \
@@ -295,6 +314,7 @@ while [ "$cycle" -le "$CYCLES" ]; do
         "KOReader cycle $cycle"
     "$CTL" park >/dev/null
     wait_domain '"domain": "manager"'
+    assert_freezer_state 'remagic-app@koreader.service' frozen
     wait_queue_empty
     [ "$(display_number panel_failure_count)" = 0 ] \
         || fail "panel failure recorded in cycle $cycle"

@@ -315,6 +315,12 @@ pub enum ManifestError {
     InvalidSystemdUnit(String),
     #[error("schema v2 resident conflicts with legacy park_strategy")]
     ConflictingResidentPolicy,
+    #[error("runtime.background_execution=freeze requires manifest schema v2")]
+    FreezeRequiresV2,
+    #[error("runtime.background_execution=freeze requires resident=true")]
+    FreezeRequiresResident,
+    #[error("runtime.background_execution=freeze requires capability lifecycle:v2")]
+    FreezeRequiresLifecycleV2,
     #[error("legacy field {0} is not valid in a schema v2 manifest")]
     LegacyFieldInV2(&'static str),
     #[error(

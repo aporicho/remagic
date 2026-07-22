@@ -176,6 +176,7 @@ mod tests {
         let token = token(&id);
         let dynamic_allowed = supports_dynamic_input_mode(&manifest);
         let direct_ink_allowed = has_capability(&manifest, DIRECT_INK_CAPABILITY);
+        let background_execution = manifest.runtime.background_execution;
         let root = std::env::temp_dir().join(format!(
             "remagic-input-mode-{}-{}",
             std::process::id(),
@@ -192,6 +193,10 @@ mod tests {
             manifests: RwLock::new(BTreeMap::from([(id.clone(), manifest)])),
             sessions: RwLock::new(BTreeMap::new()),
             runtime_generations: RwLock::new(BTreeMap::from([(id.clone(), 17)])),
+            runtime_background_execution: RwLock::new(BTreeMap::from([(
+                id.clone(),
+                background_execution,
+            )])),
             runtime_foreground_fences: RwLock::new(BTreeMap::from([(id.clone(), (23, 23))])),
             runtime_input_modes: RwLock::new(BTreeMap::from([(
                 id,

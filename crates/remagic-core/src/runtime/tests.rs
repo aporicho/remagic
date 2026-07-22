@@ -202,6 +202,7 @@ fn resolver_builds_complete_platform_environment_and_rejects_spoofing() {
             allowed_hosts: BTreeSet::from(["api.example.com".into()]),
             require_enforcement: false,
         },
+        background_execution: BackgroundExecution::Continue,
     };
     let app_id = AppId::new("koreader").unwrap();
     let environment = LaunchEnvironment::resolve(

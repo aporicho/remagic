@@ -5,6 +5,8 @@ use std::time::Duration;
 use tokio::process::Command;
 use tracing::warn;
 
+mod freezer;
+
 const WAKELOCK: &[u8] = b"remagic-managed\n";
 const WAKELOCK_NAME: &str = "remagic-managed";
 const AUTOSLEEP: &str = "/sys/power/autosleep";
@@ -70,7 +72,7 @@ impl SystemController {
         self.wait_active("xochitl.service").await?;
         // xochitl is already authoritative at this point.  A wake-unlock
         // permission or device error must be reported, but must not strand
-        // the power key inside Remagic after stock has taken over.
+        // the power key inside ReMagic after stock has taken over.
         self.release_wakelock_best_effort("stock-domain restore");
         self.start_paperweight_best_effort("stock-domain restore")
             .await;
@@ -225,7 +227,7 @@ impl SystemController {
         if let Err(error) = self.start_paperweight_if_installed().await {
             // Paperweight augments the stock shell but does not own its
             // display or power-key safety.  Once xochitl is proven active,
-            // an add-on failure must not trap the device in a Remagic restore
+            // an add-on failure must not trap the device in a ReMagic restore
             // loop or keep a stale wakelock alive.
             warn!(%error, %context, "Paperweight could not be started after stock recovery");
         }

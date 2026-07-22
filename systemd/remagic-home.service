@@ -1,5 +1,5 @@
 [Unit]
-Description=Remagic task manager interface
+Description=ReMagic task manager interface
 Requires=remagicd.service
 BindsTo=remagic-display-host.service
 After=remagicd.service remagic-display-host.service

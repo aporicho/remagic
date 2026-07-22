@@ -1,8 +1,8 @@
 [Unit]
-Description=Remagic application and foreground-domain manager
+Description=ReMagic application and foreground-domain manager
 After=home.mount local-fs.target xochitl.service
 Wants=xochitl.service
-Conflicts=remagic-runtime.service riddle-takeover.service riddle-power-launcher.service appload.service rm-appload.service
+Conflicts=remagic-runtime.service magicpaper-takeover.service magicpaper-power-launcher.service riddle-takeover.service riddle-power-launcher.service appload.service rm-appload.service
 OnFailure=remagic-recover.service
 RequiresMountsFor=/home/root/apps/remagic
 

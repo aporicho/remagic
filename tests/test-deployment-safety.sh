@@ -268,6 +268,33 @@ fi
     exit 1
 }
 
+# A release rename must not make a journal produced by the previous release
+# unrecoverable. This is the exact committed adapter path used by
+# remagic-koreader before it became koreader-for-remagic.
+LEGACY_FINISHED_TXN=$TMP/legacy-finished-transaction
+mkdir -p "$LEGACY_FINISHED_TXN/switch-adapter" "$LEGACY_FINISHED_TXN/snapshots"
+printf '%s\n' committed >"$LEGACY_FINISHED_TXN/status"
+printf '%s\n' install >"$LEGACY_FINISHED_TXN/kind"
+printf '%s\n' \
+    "/home/root/apps/.remagic-koreader.rollback.deployment-safety-$$" \
+    >"$LEGACY_FINISHED_TXN/switch-adapter/backup"
+: >"$LEGACY_FINISHED_TXN/snapshots/fixture"
+cleanup_finished_deployment_transaction "$LEGACY_FINISHED_TXN"
+[ ! -e "$LEGACY_FINISHED_TXN/snapshots" ] || {
+    echo "legacy committed adapter transaction was not retired" >&2
+    exit 1
+}
+
+for deployment_script in \
+    "$ROOT/scripts/install-device.sh" "$ROOT/scripts/uninstall-device.sh"; do
+    grep -Fq \
+        'adapter:/home/root/apps/remagic-koreader:/home/root/apps/.remagic-koreader.stage.*:/home/root/apps/.remagic-koreader.rollback.*' \
+        "$deployment_script"
+    grep -Fq \
+        'adapter:/home/root/apps/remagic-koreader:/home/root/apps/.remagic-koreader.uninstall.*' \
+        "$deployment_script"
+done
+
 acquire_directory_lock "$REMAGIC_INSTALL_LOCK" fixture
 [ "$(sed -n '1p' "$REMAGIC_INSTALL_LOCK/pid")" = "$$" ]
 release_directory_lock "$REMAGIC_INSTALL_LOCK"
@@ -375,13 +402,13 @@ grep -q 'scripts/lib/device-test-isolation.sh' "$ROOT/scripts/install-device.sh"
 grep -q 'scripts/lib/device-test-recovery.sh' "$ROOT/scripts/install-device.sh"
 grep -q 'testing/manifests/magicpaper.toml' "$ROOT/scripts/install-device.sh"
 grep -q 'testing/manifests/koreader.toml' "$ROOT/scripts/install-device.sh"
-grep -q 'opt/remagic-koreader/share/patches/2-remagic-runtime.lua' "$ROOT/scripts/install-device.sh"
-grep -q 'opt/remagic-koreader/share/patches/1-remagic-storage.lua' "$ROOT/scripts/install-device.sh"
-grep -q 'forbidden KOReader update_once.marker' "$ROOT/scripts/install-device.sh"
+grep -q 'share/patches/20-remagic-policy.lua' "$ROOT/scripts/install-device.sh"
+grep -q 'share/patches/10-remagic-environment.lua' "$ROOT/scripts/install-device.sh"
+grep -q 'KOReader update_once.marker was not consumed' "$ROOT/scripts/install-device.sh"
 grep -q "name '0\*-\*.lua'" "$ROOT/scripts/build-bundle.sh"
 grep -q 'plugins/terminal.koplugin' "$ROOT/scripts/build-bundle.sh"
-grep -q 'writable KOReader terminal plugin is present' "$ROOT/scripts/install-device.sh"
-grep -Fq 'KOREADER_CJK_FONT=$OUT/opt/koreader/fonts/noto/NotoSansCJKsc-Regular.otf' \
+grep -q 'official KOReader terminal plugin is missing' "$ROOT/scripts/install-device.sh"
+grep -Fq 'KOREADER_CJK_FONT=$KOREADER_PROGRAM_ROOT/fonts/noto/NotoSansCJKsc-Regular.otf' \
     "$ROOT/scripts/build-bundle.sh"
 grep -Fq '"$OUT/opt/magicpaper/fonts/CoverageFallback.ttf"' \
     "$ROOT/scripts/build-bundle.sh"
@@ -425,26 +452,43 @@ grep -Fq '安装器在停止任何服务前复验同一内容指纹和必需文�
     "$ROOT/README.md"
 ! grep -q 'ko_update_marker' "$ROOT/scripts/install-device.sh"
 ! grep -q '^KOREADER_ROOT=' "$ROOT/scripts/install-device.sh"
-grep -q 'cp -a "$SOURCE_DIR/opt/koreader" "$stage/program"' "$ROOT/scripts/install-device.sh"
+grep -q 'cp -a "$SOURCE_DIR/opt/koreader-for-remagic" "$stage"' "$ROOT/scripts/install-device.sh"
 ! grep -q 'transactional_tree_switch.*switch-koreader' "$ROOT/scripts/install-device.sh"
-grep -Fq 'KOREADER_LEGACY_ROOTS=$KOREADER_LEGACY_ROOT:/home/root/.paperweight/services/koreader/koreader:/home/root/.config/koreader' \
+grep -Fq 'KOREADER_LEGACY_ROOTS=/home/root/.local/share/remagic-koreader/data:$KOREADER_LEGACY_ROOT:/home/root/.paperweight/services/koreader/koreader:/home/root/.config/koreader' \
     "$ROOT/scripts/install-device.sh"
 grep -q 'legacy_sources=$KOREADER_LEGACY_ROOTS' "$ROOT/scripts/install-device.sh"
-grep -q 'KOREADER_PROGRAM_ROOT=$ADAPTER_ROOT/program' "$ROOT/scripts/install-device.sh"
-grep -q 'KOREADER_ADAPTER_EXEC=$ADAPTER_ROOT/bin/koreader-remagic' "$ROOT/scripts/install-device.sh"
-grep -q 'KOREADER_DATA_ROOT=/home/root/.local/share/remagic-koreader/data' "$ROOT/scripts/install-device.sh"
+grep -q 'KOREADER_PROGRAM_ROOT=$(koreader_release_vendor_root "$ADAPTER_ROOT")' "$ROOT/scripts/install-device.sh"
+grep -q 'KOREADER_ADAPTER_EXEC=$KOREADER_ADAPTER_RELEASE_ROOT/bin/koreader-for-remagic' "$ROOT/scripts/install-device.sh"
+grep -q 'KOREADER_DATA_ROOT=/home/root/.local/share/koreader-for-remagic/data' "$ROOT/scripts/install-device.sh"
 grep -q 'snapshot_path.*ko_data_root.*KOREADER_DATA_ROOT' "$ROOT/scripts/install-device.sh"
 grep -q 'snapshot_path.*ko_backup_root.*KOREADER_BACKUP_ROOT' "$ROOT/scripts/install-device.sh"
 grep -q 'KO_HOME=$KOREADER_DATA_ROOT' "$ROOT/scripts/install-device.sh"
+grep -q 'KOREADER_LIBEXEC_DIR=$KOREADER_ADAPTER_RELEASE_ROOT/libexec' \
+    "$ROOT/scripts/install-device.sh"
 ! grep -q 'publish_file.*KOREADER_PROGRAM_ROOT' "$ROOT/scripts/install-device.sh"
 grep -q 'KOReader v2026.03 program-tree verification failed' "$ROOT/scripts/install-device.sh"
-grep -q "grep -qx 'v2026.03'.*opt/koreader/git-rev" "$ROOT/scripts/install-device.sh"
+grep -q 'KOREADER_SOURCE_PROGRAM_ROOT=$(koreader_release_vendor_root' "$ROOT/scripts/install-device.sh"
 grep -q "grep -qx 'v2026.03'.*KOREADER_PROGRAM_ROOT/git-rev" "$ROOT/scripts/install-device.sh"
 grep -q 'unsafe legacy KOReader data object' "$ROOT/scripts/install-device.sh"
 grep -q 'deployment_assert_safe_storage_tree' "$ROOT/scripts/install-device.sh"
-grep -q 'working_dir = "/home/root/apps/remagic-koreader/program"' "$ROOT/testing/manifests/koreader.toml"
-grep -q 'KOREADER_DIR = "/home/root/apps/remagic-koreader/program"' "$ROOT/testing/manifests/koreader.toml"
-grep -q 'KOReader manifest does not use the managed program root' "$ROOT/scripts/install-device.sh"
+grep -q 'working_dir = "/home/root/apps/koreader-for-remagic/vendor/releases/' "$ROOT/testing/manifests/koreader.toml"
+grep -q 'KOREADER_DIR = "/home/root/apps/koreader-for-remagic/vendor/releases/' "$ROOT/testing/manifests/koreader.toml"
+grep -q 'KOReader manifest does not use the pinned releases' "$ROOT/scripts/install-device.sh"
+grep -q 'background_execution = "freeze"' "$ROOT/testing/manifests/koreader.toml"
+grep -Fq 'ReadOnlyPaths=/home/root' \
+    "$ROOT/systemd/remagic-app@koreader.service.d/10-koreader-runtime.conf"
+grep -Fq 'CapabilityBoundingSet=' \
+    "$ROOT/systemd/remagic-app@koreader.service.d/10-koreader-runtime.conf"
+grep -Fq 'ReadWritePaths=/home/root/.local/share/koreader-for-remagic' \
+    "$ROOT/systemd/remagic-app@koreader.service.d/10-koreader-runtime.conf"
+grep -Fq 'InaccessiblePaths=-/run/systemd/private' \
+    "$ROOT/systemd/remagic-app@koreader.service.d/10-koreader-runtime.conf"
+grep -Fq 'InaccessiblePaths=-/run/dbus/system_bus_socket' \
+    "$ROOT/systemd/remagic-app@koreader.service.d/10-koreader-runtime.conf"
+grep -Fq 'ProtectProc=invisible' \
+    "$ROOT/systemd/remagic-app@koreader.service.d/10-koreader-runtime.conf"
+grep -Fq 'RestrictNamespaces=yes' \
+    "$ROOT/systemd/remagic-app@koreader.service.d/10-koreader-runtime.conf"
 ! grep -Eq 'trap (finish_install|finish_uninstall|finish_recovery) EXIT HUP' \
     "$ROOT/scripts/install-device.sh" "$ROOT/scripts/uninstall-device.sh" \
     "$ROOT/scripts/remagic-recover"
@@ -543,6 +587,8 @@ if "$ROOT/scripts/remagic-schema-ready" "$SCHEMA_FENCE" magicpaper 1; then
     exit 1
 fi
 grep -q '^Conflicts=.*riddle-takeover.service' "$ROOT/systemd/remagicd.service"
+grep -q '^Conflicts=.*magicpaper-takeover.service' "$ROOT/systemd/remagicd.service"
+grep -q '^Conflicts=.*magicpaper-power-launcher.service' "$ROOT/systemd/remagicd.service"
 grep -q '^Environment=REMAGIC_PLATFORM_CAPABILITIES=.*input:mode-v2' \
     "$ROOT/systemd/remagic-app@.service" || {
     echo "application service omitted the dynamic input-mode capability" >&2

@@ -156,6 +156,31 @@ pub enum NetworkEnforcement {
     Enforced,
 }
 
+/// Controls whether a resident application's cgroup keeps executing after it
+/// has released its foreground display and input leases.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundExecution {
+    /// Keep the resident process scheduled while it is in the background.
+    #[default]
+    Continue,
+    /// Freeze the resident process cgroup until the next foreground recall.
+    Freeze,
+}
+
+impl BackgroundExecution {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Continue => "continue",
+            Self::Freeze => "freeze",
+        }
+    }
+
+    pub const fn freezes_process(self) -> bool {
+        matches!(self, Self::Freeze)
+    }
+}
+
 impl NetworkEnforcement {
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -203,6 +228,11 @@ pub struct RuntimeRequirements {
     pub certificates: CertificatePolicy,
     #[serde(default)]
     pub network: NetworkPolicy,
+    /// Scheduling policy after a resident application has completed its
+    /// semantic background transition. Defaults to continued execution for
+    /// compatibility with existing schema-v2 manifests.
+    #[serde(default)]
+    pub background_execution: BackgroundExecution,
 }
 
 impl RuntimeRequirements {

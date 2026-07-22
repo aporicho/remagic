@@ -3,7 +3,7 @@ name = "remagic-display-host"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Single-owner display and input host for the Remagic managed domain"
+description = "Single-owner display and input host for the ReMagic managed domain"
 build = "build.rs"
 
 # This host is cross-built with the reMarkable SDK independently from the

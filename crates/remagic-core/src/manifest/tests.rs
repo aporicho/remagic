@@ -89,9 +89,9 @@ fn schema_v2_manifest_round_trips_with_full_runtime_contract() {
     let text = r#"
 schema = 2
 id = "koreader"
-name = "KOReader"
+name = "KOReader for ReMagic"
 version = "2026.03"
-exec = "/opt/remagic/apps/koreader/current/bin/koreader-remagic"
+exec = "/opt/remagic/apps/koreader/current/bin/koreader-for-remagic"
 working_dir = "/opt/remagic/apps/koreader/current"
 display = "qtfb"
 resident = true
@@ -161,6 +161,79 @@ KOREADER_LANGUAGE = "zh_CN"
     let encoded = toml::to_string(&manifest).unwrap();
     let decoded: AppManifest = toml::from_str(&encoded).unwrap();
     assert_eq!(decoded, manifest);
+}
+
+#[test]
+fn background_execution_defaults_to_continue_and_round_trips_freeze() {
+    let mut app: AppManifest = toml::from_str(
+        r#"
+schema = 2
+id = "reader"
+name = "Reader"
+exec = "/opt/reader/bin/reader"
+working_dir = "/opt/reader"
+display = "qtfb"
+resident = true
+capabilities = ["display:qtfb-v1", "lifecycle:v2"]
+
+[runtime]
+profile = "qtfb_compat"
+
+[runtime.directories]
+home = "/home/root"
+config_home = "/home/root/.config/reader"
+data_home = "/home/root/.local/share/reader"
+state_home = "/home/root/.local/state/reader"
+cache_home = "/home/root/.cache/reader"
+runtime_dir = "/run/user/0/remagic/reader"
+"#,
+    )
+    .unwrap();
+    assert_eq!(
+        app.runtime.background_execution,
+        crate::BackgroundExecution::Continue
+    );
+    assert!(app.validate().is_ok());
+
+    app.runtime.background_execution = crate::BackgroundExecution::Freeze;
+    assert!(app.validate().is_ok());
+    let encoded = toml::to_string(&app).unwrap();
+    assert!(encoded.contains("background_execution = \"freeze\""));
+    assert_eq!(toml::from_str::<AppManifest>(&encoded).unwrap(), app);
+}
+
+#[test]
+fn freeze_requires_v2_residency_and_fenced_lifecycle() {
+    let mut app = legacy_manifest(BTreeMap::new());
+    app.runtime.background_execution = crate::BackgroundExecution::Freeze;
+    assert!(matches!(
+        app.validate(),
+        Err(ManifestError::FreezeRequiresV2)
+    ));
+
+    app.schema = MANIFEST_SCHEMA_V2;
+    app.runtime.profile = RuntimeProfile::Headless;
+    app.runtime.directories = Some(crate::RuntimeDirectories {
+        home: "/home/root".into(),
+        config_home: "/home/root/.config/test".into(),
+        data_home: "/home/root/.local/share/test".into(),
+        state_home: "/home/root/.local/state/test".into(),
+        cache_home: "/home/root/.cache/test".into(),
+        runtime_dir: "/run/user/0/remagic/test".into(),
+    });
+    assert!(matches!(
+        app.validate(),
+        Err(ManifestError::FreezeRequiresResident)
+    ));
+
+    app.resident = true;
+    assert!(matches!(
+        app.validate(),
+        Err(ManifestError::FreezeRequiresLifecycleV2)
+    ));
+    app.capabilities
+        .push(crate::Capability::new("lifecycle:v2").unwrap());
+    assert!(app.validate().is_ok());
 }
 
 #[test]

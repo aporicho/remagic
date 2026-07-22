@@ -69,7 +69,7 @@ fn validate_operation(operation: &PackageOperation) -> Result<(), Box<dyn std::e
             return Err("unsafe package name".into());
         }
         if normalized.contains("oxide") {
-            return Err("this package is excluded by Remagic policy".into());
+            return Err("this package is excluded by ReMagic policy".into());
         }
     }
     Ok(())
@@ -102,7 +102,7 @@ async fn bootstrap() -> Result<String, String> {
     }
     let script = Path::new("/home/root/apps/remagic/share/vellum-bootstrap.sh");
     if !script.is_file() {
-        return Err("verified Vellum bootstrap is missing from Remagic".into());
+        return Err("verified Vellum bootstrap is missing from ReMagic".into());
     }
     run(Path::new("/bin/sh"), &[script.display().to_string()]).await
 }

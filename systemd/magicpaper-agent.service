@@ -1,7 +1,7 @@
 [Unit]
 Description=MagicPaper screenless scheduled-task agent
 After=home.mount local-fs.target network.target
-RequiresMountsFor=/home/root/apps/remagic /home/root/riddle-data
+RequiresMountsFor=/home/root/apps/remagic /home/root/.local/share/magicpaper
 # A power loss after the foreground runner has published its schema journal
 # must not let the scheduled-task writer race crash recovery on the next boot.
 # The exact-version ExecCondition below also keeps a newly deployed or rolled
@@ -10,18 +10,18 @@ ConditionPathExists=!/home/root/.local/state/magicpaper/.remagic-schema/pending.
 
 [Service]
 Type=simple
-ExecCondition=/home/root/apps/remagic/libexec/remagic-schema-ready /home/root/.local/state/magicpaper/.remagic-schema/schema-ready magicpaper 1
+ExecCondition=/home/root/apps/remagic/libexec/remagic-schema-ready /home/root/.local/state/magicpaper/.remagic-schema/schema-ready magicpaper 2
 ExecStart=/home/root/apps/remagic/libexec/magicpaper-agent-remagic
 WorkingDirectory=/home/root/apps/remagic/opt/magicpaper
 Environment=HOME=/home/root
-Environment=XDG_CONFIG_HOME=/home/root/.config/riddle
-Environment=XDG_DATA_HOME=/home/root/riddle-data
+Environment=XDG_CONFIG_HOME=/home/root/.config/magicpaper
+Environment=XDG_DATA_HOME=/home/root/.local/share/magicpaper
 Environment=XDG_STATE_HOME=/home/root/.local/state/magicpaper
 Environment=XDG_CACHE_HOME=/home/root/.cache/magicpaper
 Environment=LANG=C.UTF-8
 Environment=TZ=Asia/Shanghai
 Environment=SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
-Environment=LD_LIBRARY_PATH=/home/root/apps/riddle:/home/root/apps/remagic/lib:/usr/lib/plugins/scenegraph:/usr/lib
+Environment=LD_LIBRARY_PATH=/home/root/apps/remagic/lib:/usr/lib/plugins/scenegraph:/usr/lib
 Restart=on-failure
 RestartSec=15
 TimeoutStopSec=12

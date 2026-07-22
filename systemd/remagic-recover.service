@@ -1,5 +1,5 @@
 [Unit]
-Description=Restore the reMarkable system shell after a Remagic failure
+Description=Restore the reMarkable system shell after a ReMagic failure
 After=local-fs.target
 
 [Service]

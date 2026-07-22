@@ -15,7 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     return device::run(apps).await;
     #[cfg(not(feature = "device"))]
     {
-        println!("Remagic Manager");
+        println!("ReMagic");
         for app in apps {
             println!("- {} ({})", app.name, app.id);
         }

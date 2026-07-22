@@ -375,7 +375,7 @@ fn button_at(buttons: &[Button], x: i32, y: i32) -> Option<&Button> {
 }
 
 pub(super) fn queued_magicpaper_result() -> bool {
-    fs::metadata("/home/root/riddle-data/agent/pending.tsv")
+    fs::metadata("/home/root/.local/share/magicpaper/agent/pending.tsv")
         .is_ok_and(|metadata| metadata.len() > 0)
 }
 

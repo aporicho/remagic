@@ -21,6 +21,7 @@ impl LaunchEnvironment {
             fonts: self.fonts.clone(),
             certificates: self.certificates.clone(),
             network: self.network.clone(),
+            background_execution: Default::default(),
         }
         .validate(true)
     }

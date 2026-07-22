@@ -85,12 +85,12 @@ fn parse(args: &[String]) -> Result<Request, Box<dyn std::error::Error>> {
         "system" => Request::ReturnSystem,
         "sleep" => {
             return Err(
-                "sleep must be initiated by the Remagic manager so its lock page can be proven"
+                "sleep must be initiated by the ReMagic manager so its lock page can be proven"
                     .into(),
             )
         }
         "wake" => return Err(
-            "wake must be initiated by the Remagic lock screen so its manager page can be proven"
+            "wake must be initiated by the ReMagic lock screen so its manager page can be proven"
                 .into(),
         ),
         "park" => Request::ParkCurrent,

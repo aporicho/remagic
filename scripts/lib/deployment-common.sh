@@ -96,8 +96,8 @@ list_remagic_app_units() {
 list_legacy_display_units() {
     "$SYSTEMCTL" list-units --all --plain --no-legend \
         'remagic-runtime*.service' 'riddle*.service' 'appload*.service' \
-        'rm-appload*.service' 'koreader.service' 'magicpaper.service' 2>/dev/null \
-        | awk '$1 ~ /^(remagic-runtime.*|riddle.*|appload.*|rm-appload.*|koreader|magicpaper)\.service$/ { print $1 }'
+        'rm-appload*.service' 'koreader.service' 'magicpaper*.service' 2>/dev/null \
+        | awk '$1 ~ /^(remagic-runtime.*|riddle.*|appload.*|rm-appload.*|koreader|magicpaper.*)\.service$/ { print $1 }'
 }
 
 stop_unit_confirmed() {
@@ -129,6 +129,8 @@ stop_alternative_display_owners() {
         remagic-runtime.service \
         remagic-display-host.service \
         remagic-home.service \
+        magicpaper-takeover.service \
+        magicpaper-power-launcher.service \
         riddle-takeover.service \
         riddle-power-launcher.service \
         appload.service \
@@ -150,6 +152,8 @@ known_display_owner_active() {
         remagic-runtime.service \
         remagic-display-host.service \
         remagic-home.service \
+        magicpaper-takeover.service \
+        magicpaper-power-launcher.service \
         riddle-takeover.service \
         riddle-power-launcher.service \
         appload.service \
@@ -165,7 +169,7 @@ assert_no_known_owner_processes() {
         command_line=$(tr '\000' ' ' <"$entry" 2>/dev/null || true)
         case "$command_line" in
             *remagic-display-host*|*remagic-home*|*remagic-appload-runtime*|\
-            *riddle-takeover*|*/apps/riddle/riddle*|*/riddle-qtfb*|\
+            *riddle-takeover*|*/apps/riddle/riddle*|*/magicpaper*|\
             */reader.lua*|*/appload*|*qtfb-shim*)
                 echo "deployment: unmanaged display process remains: $command_line" >&2
                 return 1
@@ -235,7 +239,7 @@ stock_handoff_is_complete() {
 }
 
 remove_display_runtime_files() {
-    # These paths are owned by Remagic services.  In particular, do not remove
+    # These paths are owned by ReMagic services.  In particular, do not remove
     # /tmp/epframebuffer.lock or wildcard /tmp/qtfb-* paths: ownership of those
     # cannot be proven from a filename.
     rm -f /tmp/qtfb.sock \
@@ -321,7 +325,7 @@ cleanup_finished_deployment_transaction() {
                     finished_path=$(sed -n '1p' "$finished_record/backup")
                     canonical_absolute_path "$finished_path" || return 1
                     case "$finished_path" in
-                        /home/root/apps/.remagic.rollback.*|/home/root/apps/.remagic-koreader.rollback.*|/home/root/apps/.koreader.rollback.*) ;;
+                        /home/root/apps/.remagic.rollback.*|/home/root/apps/.koreader-for-remagic.rollback.*|/home/root/apps/.remagic-koreader.rollback.*|/home/root/apps/.koreader.rollback.*) ;;
                         *) return 1 ;;
                     esac
                     rm -rf "$finished_path"
@@ -333,7 +337,7 @@ cleanup_finished_deployment_transaction() {
                     finished_path=$(sed -n '1p' "$finished_record/backup")
                     canonical_absolute_path "$finished_path" || return 1
                     case "$finished_path" in
-                        /home/root/apps/.remagic.uninstall.*|/home/root/apps/.remagic-koreader.uninstall.*) ;;
+                        /home/root/apps/.remagic.uninstall.*|/home/root/apps/.koreader-for-remagic.uninstall.*|/home/root/apps/.remagic-koreader.uninstall.*) ;;
                         *) return 1 ;;
                     esac
                     rm -rf "$finished_path"

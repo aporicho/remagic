@@ -276,8 +276,9 @@ assert_ink_dissolve_since() {
     generation=$5 epoch=$6 label=$7
     attempts=0
     # The idle commit starts after roughly 2.6 seconds and the dissolve then
-    # runs for about 0.7 seconds. Keep this bounded but independent of OCR: a
-    # network failure may follow the dissolve and is not display-path failure.
+    # runs for about 0.7 seconds. Standard cleanup ends in mono_quality while
+    # the user-selectable enhanced cleanup uses the content waveform. Both are
+    # bounded partial refreshes; a network failure after them is unrelated.
     while [ "$attempts" -lt 240 ]; do
         submissions=$(display_submissions)
         live_sequence=$(printf '%s\n' "$submissions" | awk -F '\t' \
@@ -306,7 +307,8 @@ assert_ink_dissolve_since() {
                 }
                 function unz(v) { return v ~ /^[0-9]+$/ && v ~ /[1-9]/ }
                 NR > 1 && ugt($1, baseline) && ueq($3, key) &&
-                    ueq($4, generation) && ueq($5, epoch) && $6 == "mono_quality" &&
+                    ueq($4, generation) && ueq($5, epoch) &&
+                    ($6 == "mono_quality" || $6 == "content") &&
                     $7 == "surface_damage" && unz($2) && unz($8) &&
                     unz($9) && $10 == "true" { print $1; exit }
             ')
@@ -359,18 +361,19 @@ assert_ink_dissolve_since() {
                     function ueq(a, b) { return ("u" canon(a)) == ("u" canon(b)) }
                     NR > 1 && ueq($1, sequence) && ueq($3, key) &&
                         ueq($4, generation) && ueq($5, epoch) &&
-                        $6 == "mono_quality" && $7 == "surface_damage" &&
+                        ($6 == "mono_quality" || $6 == "content") &&
+                        $7 == "surface_damage" &&
                         $10 == "true" { count++ }
                     END { print count + 0 }
                 ')
             [ "$terminal_valid" -eq 1 ] \
-                || fail "$label lost its terminal mono-quality dissolve evidence"
+                || fail "$label lost its terminal quality-partial dissolve evidence"
             return 0
         fi
         sleep 0.05
         attempts=$((attempts + 1))
     done
-    fail "$label did not produce live ink and a terminal mono-quality dissolve"
+    fail "$label did not produce live ink and a terminal quality-partial dissolve"
 }
 
 foreground_key() {
@@ -379,6 +382,27 @@ foreground_key() {
 
 main_pid() {
     systemctl show --property=MainPID --value "$1"
+}
+
+assert_freezer_state() {
+    local unit expected actual pid process_state
+    [ "$#" -eq 2 ] || return 1
+    unit=$1
+    expected=$2
+    actual=$(systemctl show --property=FreezerState --value "$unit" 2>/dev/null || true)
+    [ "$actual" = "$expected" ] && return 0
+    # The Move kernel/systemd combination may expose no cgroup freezer even on
+    # systemd 255. Manager then freezes the complete unit with SIGSTOP and
+    # fences it on the runner's real process state.
+    pid=$(main_pid "$unit")
+    process_state=$(sed -n 's/^State:[[:space:]]*\([^[:space:]]\).*/\1/p' \
+        "/proc/$pid/status" 2>/dev/null || true)
+    case "$expected:$actual:$process_state" in
+        frozen:running:T|frozen:running:t) return 0 ;;
+        running:running:T|running:running:t) ;;
+        running:running:?) return 0 ;;
+    esac
+    fail "$unit freezer/process state is $actual/$process_state instead of $expected"
 }
 
 surface_present() {
@@ -545,7 +569,7 @@ assert_foreground_submission_since "$before_tap_sequence" "$magic_key" "$magic_g
 assert_no_lease_success_after "$MATCHED_SUBMISSION_SEQUENCE" "$home_key" "$home_generation" \
     "$home_epoch" "Home-to-MagicPaper switch"
 
-echo "[v2-acceptance] direct ink path and monochrome idle dissolve"
+echo "[v2-acceptance] direct ink path and configured quality-partial idle dissolve"
 before_ink_full=$(full_refresh_checkpoint)
 before_ink_surface=$(surface_sequence "$magic_key")
 before_ink_sequence=$(last_submission_sequence)
@@ -579,6 +603,7 @@ before_switch_sequence=$(last_submission_sequence)
 "$CTL" launch koreader >/dev/null
 wait_domain '"foreground": "koreader"'
 wait_unit 'remagic-app@koreader.service' active
+assert_freezer_state 'remagic-app@koreader.service' running
 koreader_key=$(foreground_key)
 koreader_pid=$(main_pid 'remagic-app@koreader.service')
 [ "$koreader_pid" -gt 1 ] || fail "KOReader runner has no live PID"
@@ -602,6 +627,7 @@ before_full=$(full_refresh_checkpoint)
 before_switch_sequence=$(last_submission_sequence)
 "$CTL" park >/dev/null
 wait_domain '"domain": "manager"'
+assert_freezer_state 'remagic-app@koreader.service' frozen
 [ "$(main_pid 'remagic-app@koreader.service')" = "$koreader_pid" ] \
     || fail "KOReader was restarted while parking"
 surface_present "$koreader_key" || fail "parked KOReader surface disappeared"
@@ -618,6 +644,7 @@ before_full=$(full_refresh_checkpoint)
 before_switch_sequence=$(last_submission_sequence)
 "$CTL" launch koreader >/dev/null
 wait_domain '"foreground": "koreader"'
+assert_freezer_state 'remagic-app@koreader.service' running
 [ "$(foreground_key)" = "$koreader_key" ] || fail "KOReader recall used another surface"
 [ "$(main_pid 'remagic-app@koreader.service')" = "$koreader_pid" ] \
     || fail "KOReader recall did not resume the same process"
@@ -636,6 +663,7 @@ before_full=$(full_refresh_checkpoint)
 before_switch_sequence=$(last_submission_sequence)
 "$CTL" launch magicpaper >/dev/null
 wait_domain '"foreground": "magicpaper"'
+assert_freezer_state 'remagic-app@koreader.service' frozen
 [ "$(foreground_key)" = "$magic_key" ] || fail "MagicPaper recall surface changed"
 [ "$(main_pid 'remagic-app@magicpaper.service')" = "$magic_pid" ] \
     || fail "MagicPaper recall did not resume the same process"

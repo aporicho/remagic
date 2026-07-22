@@ -776,7 +776,7 @@ diff -ruN '--exclude=.git' a/resources/qml/appload.qml b/resources/qml/appload.q
 -                }
 +        Text {
 +            anchors.fill: parent
-+            text: "Remagic"
++            text: "ReMagic"
 +            font.pointSize: 40
 +            horizontalAlignment: Text.AlignHCenter
 +            verticalAlignment: Text.AlignVCenter

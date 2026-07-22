@@ -18,20 +18,30 @@ remagic-home.service
 remagic-app@.service
 remagic-recover.service
 magicpaper-agent.service'
+KOREADER_DROPIN=remagic-app@koreader.service.d/10-koreader-runtime.conf
 
 validate_sources() {
     printf '%s\n' "$UNITS" | while IFS= read -r unit; do
         [ -n "$unit" ] || continue
         source=$UNIT_SOURCE/$unit
         [ -f "$source" ] && [ ! -L "$source" ] && [ -s "$source" ] || {
-            echo "unsafe or missing Remagic unit: $source" >&2
+            echo "unsafe or missing ReMagic unit: $source" >&2
             exit 1
         }
         [ "$(stat -c %u "$source" 2>/dev/null || echo unknown)" = 0 ] || {
-            echo "Remagic unit is not root-owned: $source" >&2
+            echo "ReMagic unit is not root-owned: $source" >&2
             exit 1
         }
     done
+    source=$UNIT_SOURCE/$KOREADER_DROPIN
+    [ -f "$source" ] && [ ! -L "$source" ] && [ -s "$source" ] || {
+        echo "unsafe or missing KOReader runtime drop-in: $source" >&2
+        return 1
+    }
+    [ "$(stat -c %u "$source" 2>/dev/null || echo unknown)" = 0 ] || {
+        echo "KOReader runtime drop-in is not root-owned: $source" >&2
+        return 1
+    }
 }
 
 start_services() {
@@ -42,7 +52,7 @@ start_services() {
     schema_ready=$APP_ROOT/libexec/remagic-schema-ready
     schema_fence=/home/root/.local/state/magicpaper/.remagic-schema/schema-ready
     if [ -x "$schema_ready" ] && \
-       "$schema_ready" "$schema_fence" magicpaper 1; then
+       "$schema_ready" "$schema_fence" magicpaper 2; then
         "$SYSTEMCTL" start magicpaper-agent.service
     fi
     "$SYSTEMCTL" is-active --quiet remagicd.service
@@ -53,6 +63,13 @@ link_runtime() {
         [ -n "$unit" ] || continue
         "$SYSTEMCTL" --runtime --force link "$UNIT_SOURCE/$unit" >/dev/null
     done
+    runtime_dropin=/run/systemd/system/$KOREADER_DROPIN
+    mkdir -p "$(dirname "$runtime_dropin")"
+    temporary=${runtime_dropin%/*}/.remagic-register-10-koreader-runtime.conf.$$
+    cp "$UNIT_SOURCE/$KOREADER_DROPIN" "$temporary"
+    chmod 0644 "$temporary"
+    chown 0:0 "$temporary"
+    mv -Tf "$temporary" "$runtime_dropin"
 }
 
 publish_boot_link() {
@@ -71,6 +88,16 @@ publish_unit() {
     mv -Tf "$temporary" "$UNIT_ROOT/$unit"
 }
 
+publish_koreader_dropin() {
+    target=$UNIT_ROOT/$KOREADER_DROPIN
+    mkdir -p "$(dirname "$target")"
+    temporary=${target%/*}/.remagic-register-10-koreader-runtime.conf.$$
+    cp "$UNIT_SOURCE/$KOREADER_DROPIN" "$temporary"
+    chmod 0644 "$temporary"
+    chown 0:0 "$temporary"
+    mv -Tf "$temporary" "$target"
+}
+
 install_persistent() {
     root_options=$(awk '$2 == "/" { print $4; exit }' /proc/mounts)
     root_was_read_only=false
@@ -86,6 +113,9 @@ install_persistent() {
         publish_unit "$unit" || status=$?
         [ "$status" -eq 0 ] || break
     done
+    if [ "$status" -eq 0 ]; then
+        publish_koreader_dropin || status=$?
+    fi
     if [ "$status" -eq 0 ]; then
         mkdir -p "$BOOT_WANTS" || status=$?
     fi
@@ -116,4 +146,4 @@ case "$MODE" in
         ;;
 esac
 start_services
-echo "Remagic registration restored ($MODE)."
+echo "ReMagic registration restored ($MODE)."

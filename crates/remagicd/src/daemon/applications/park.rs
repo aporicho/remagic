@@ -103,6 +103,26 @@ impl Daemon {
         } else {
             display_host::clear_foreground().await?
         }
+        // The lifecycle acknowledgement and durable session must precede
+        // foreground lease revocation, and the application cgroup may only be
+        // frozen after display/input have been handed away. A frozen unit is
+        // still active and remains a resumable background task.
+        if self
+            .runtime_background_execution
+            .read()
+            .await
+            .get(id)
+            .copied()
+            .ok_or_else(|| format!("application {id} lost its scheduling policy during park"))?
+            .freezes_process()
+        {
+            self.controller
+                .freeze_and_wait(&utils::app_unit(id))
+                .await
+                .map_err(|error| {
+                    format!("could not freeze background application {id}: {error}")
+                })?;
+        }
         self.finish_park_transition(id.clone()).await
     }
 
@@ -195,7 +215,7 @@ impl Daemon {
         AppSession {
             schema: 1,
             app_id: id.clone(),
-            status: SessionStatus::Parked,
+            status: background_session_status(manifest.is_resident()),
             title,
             subtitle,
             resume_payload,
@@ -250,9 +270,28 @@ impl Daemon {
     }
 }
 
+fn background_session_status(resident: bool) -> SessionStatus {
+    if resident {
+        SessionStatus::Background
+    } else {
+        SessionStatus::Parked
+    }
+}
+
 fn supports_lifecycle_v2(manifest: &remagic_core::AppManifest) -> bool {
     manifest
         .capabilities
         .iter()
         .any(|capability| capability.as_str() == "lifecycle:v2")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_resident_process_is_reported_as_background_not_parked() {
+        assert_eq!(background_session_status(true), SessionStatus::Background);
+        assert_eq!(background_session_status(false), SessionStatus::Parked);
+    }
 }

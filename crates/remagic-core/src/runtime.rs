@@ -12,8 +12,8 @@ pub use environment::{
 };
 pub use error::RuntimeValidationError;
 pub use policy::{
-    CertificatePolicy, FontPolicy, LocalePolicy, NetworkEnforcement, NetworkMode, NetworkPolicy,
-    RuntimeDirectories, RuntimeRequirements, TimezonePolicy,
+    BackgroundExecution, CertificatePolicy, FontPolicy, LocalePolicy, NetworkEnforcement,
+    NetworkMode, NetworkPolicy, RuntimeDirectories, RuntimeRequirements, TimezonePolicy,
 };
 pub use preflight::{PreflightCheck, PreflightReport, PreflightStatus};
 
@@ -38,7 +38,7 @@ pub fn qtfb_key_for_app(app_id: &AppId) -> i32 {
     key
 }
 
-/// A capability supplied by the Remagic platform to an application.
+/// A capability supplied by the ReMagic platform to an application.
 ///
 /// Capabilities are deliberately namespaced strings rather than a closed enum:
 /// the manager must be able to reject an unknown requirement at preflight time

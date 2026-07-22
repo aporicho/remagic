@@ -22,8 +22,29 @@ impl AppManifest {
         self.runtime
             .validate(self.schema == MANIFEST_SCHEMA_V2)
             .map_err(ManifestError::Runtime)?;
+        self.validate_background_execution()?;
         if self.schema == MANIFEST_SCHEMA_V2 {
             self.validate_v2_fields()?;
+        }
+        Ok(())
+    }
+
+    fn validate_background_execution(&self) -> Result<(), ManifestError> {
+        if !self.runtime.background_execution.freezes_process() {
+            return Ok(());
+        }
+        if self.schema != MANIFEST_SCHEMA_V2 {
+            return Err(ManifestError::FreezeRequiresV2);
+        }
+        if !self.resident {
+            return Err(ManifestError::FreezeRequiresResident);
+        }
+        if !self
+            .capabilities
+            .iter()
+            .any(|capability| capability.as_str() == "lifecycle:v2")
+        {
+            return Err(ManifestError::FreezeRequiresLifecycleV2);
         }
         Ok(())
     }

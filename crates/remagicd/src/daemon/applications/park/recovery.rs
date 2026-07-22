@@ -48,6 +48,24 @@ impl Daemon {
         if !self.controller.is_active_checked(&unit).await? {
             return Err(format!("application {id} exited during park recovery"));
         }
+        // Park recovery can run after the freeze command completed but a
+        // later commit step failed. Prove the process schedulable before
+        // sending EnterForeground; otherwise the lifecycle request cannot be
+        // consumed and recovery would deterministically time out.
+        if self
+            .runtime_background_execution
+            .read()
+            .await
+            .get(id)
+            .copied()
+            .ok_or_else(|| format!("application {id} lost its scheduling policy during recovery"))?
+            .freezes_process()
+        {
+            self.controller
+                .thaw_and_wait(&unit)
+                .await
+                .map_err(|error| format!("could not thaw {id} for park recovery: {error}"))?;
+        }
         let runtime_dir = manifest
             .runtime
             .directories
@@ -160,10 +178,27 @@ impl Daemon {
     }
 
     async fn force_stop_after_failed_park(&self, id: &AppId) -> Result<(), String> {
+        if let Some(background_execution) = self
+            .runtime_background_execution
+            .read()
+            .await
+            .get(id)
+            .copied()
+        {
+            if background_execution.freezes_process()
+                && self
+                    .controller
+                    .is_active_checked(&utils::app_unit(id))
+                    .await?
+            {
+                self.controller.thaw_and_wait(&utils::app_unit(id)).await?;
+            }
+        }
         self.controller
             .stop_and_wait(&utils::app_unit(id))
             .await
             .map_err(|error| format!("could not stop {id}: {error}"))?;
+        self.mark_session_process_stopped(id).await?;
         self.clear_runtime_tracking(id).await;
         {
             let mut state = self.state.write().await;

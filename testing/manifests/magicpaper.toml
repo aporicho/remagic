@@ -27,10 +27,13 @@ term_timeout_ms = 4500
 kill_timeout_ms = 5500
 
 [data_schema]
-version = 1
+migrator = "/home/root/apps/remagic/libexec/magicpaper-data-migrate"
+version = 2
 backup_paths = [
   "/home/root/.local/state/remagic/acceptance/current/magicpaper/data",
   "/home/root/.local/state/remagic/acceptance/current/magicpaper/config",
+  "/home/root/.local/state/remagic/acceptance/current/magicpaper/legacy-data",
+  "/home/root/.local/state/remagic/acceptance/current/magicpaper/legacy-config",
 ]
 backup_timeout_ms = 30000
 migration_timeout_ms = 30000
@@ -63,16 +66,21 @@ required = false
 mode = "deny"
 
 [environment]
-RIDDLE_SYSTEMD_MANAGED = "1"
-RIDDLE_TEST_MODE = "1"
-RIDDLE_CONFIG = "/home/root/.local/state/remagic/acceptance/current/magicpaper/config/oracle.env"
-RIDDLE_DATA_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data"
-RIDDLE_AGENT_QUEUE_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/agent"
-RIDDLE_PI_DATA_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/pi"
-RIDDLE_PI_HOME = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/pi-home"
-RIDDLE_MEMORY_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/memories"
-RIDDLE_TASKS_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/tasks"
-RIDDLE_TODOS_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/todos"
-RIDDLE_PREFERENCES_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/preferences"
-RIDDLE_REMARKABLE_LIBRARY = "/home/root/.local/state/remagic/acceptance/current/magicpaper/empty-library"
-RIDDLE_KOREADER_LIBRARY = "/home/root/.local/state/remagic/acceptance/current/magicpaper/empty-library"
+MAGICPAPER_SYSTEMD_MANAGED = "1"
+MAGICPAPER_TEST_MODE = "1"
+MAGICPAPER_CONFIG = "/home/root/.local/state/remagic/acceptance/current/magicpaper/config/oracle.env"
+MAGICPAPER_DATA_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data"
+MAGICPAPER_AGENT_QUEUE_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/agent"
+MAGICPAPER_PI_DATA_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/pi"
+MAGICPAPER_PI_HOME = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/pi-home"
+MAGICPAPER_MEMORY_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/memories"
+MAGICPAPER_TASKS_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/tasks"
+MAGICPAPER_TODOS_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/todos"
+MAGICPAPER_PREFERENCES_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/preferences"
+MAGICPAPER_DATA_ROOT = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data"
+MAGICPAPER_CONFIG_ROOT = "/home/root/.local/state/remagic/acceptance/current/magicpaper/config"
+MAGICPAPER_LEGACY_DATA_ROOTS = "/home/root/.local/state/remagic/acceptance/current/magicpaper/legacy-data"
+MAGICPAPER_LEGACY_CONFIG_ROOTS = "/home/root/.local/state/remagic/acceptance/current/magicpaper/legacy-config"
+MAGICPAPER_LEGACY_CONFIG_FILE = "/home/root/.local/state/remagic/acceptance/current/magicpaper/legacy-app/oracle.env"
+MAGICPAPER_REMARKABLE_LIBRARY = "/home/root/.local/state/remagic/acceptance/current/magicpaper/empty-library"
+MAGICPAPER_KOREADER_LIBRARY = "/home/root/.local/state/remagic/acceptance/current/magicpaper/empty-library"

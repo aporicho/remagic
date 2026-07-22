@@ -1,4 +1,4 @@
-//! Shared model and persistence for Remagic Manager.
+//! Shared model and persistence for ReMagic.
 
 pub mod manifest;
 pub mod power;
@@ -12,10 +12,11 @@ pub use manifest::{
     MANIFEST_SCHEMA_V2, MAX_SHUTDOWN_KILL_TIMEOUT_MS,
 };
 pub use runtime::{
-    is_platform_reserved_environment, qtfb_key_for_app, validate_environment_pair, Capability,
-    CertificatePolicy, FontPolicy, LaunchEnvironment, LocalePolicy, NetworkMode, NetworkPolicy,
-    PreflightCheck, PreflightReport, PreflightStatus, RuntimeDirectories, RuntimeProfile,
-    RuntimeRequirements, RuntimeValidationError, TimezonePolicy, REMAGIC_HOME_QTFB_KEY,
+    is_platform_reserved_environment, qtfb_key_for_app, validate_environment_pair,
+    BackgroundExecution, Capability, CertificatePolicy, FontPolicy, LaunchEnvironment,
+    LocalePolicy, NetworkMode, NetworkPolicy, PreflightCheck, PreflightReport, PreflightStatus,
+    RuntimeDirectories, RuntimeProfile, RuntimeRequirements, RuntimeValidationError,
+    TimezonePolicy, REMAGIC_HOME_QTFB_KEY,
 };
 pub use session::{AppSession, SessionStatus, SessionStore};
 pub use state::{
