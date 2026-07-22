@@ -215,6 +215,7 @@ scripts/lib/koreader-storage.sh
 scripts/lib/koreader-release.sh
 scripts/lib/magicpaper-font-contract.sh
 scripts/lib/device-test-isolation.sh
+scripts/lib/device-test-manifests.sh
 scripts/lib/device-test-recovery.sh
 scripts/remagic-recover
 scripts/remagic-register
@@ -502,6 +503,7 @@ stage_manager() {
     done
     stage_file 0755 "$SOURCE_DIR/scripts/lib/device-test-isolation.sh" \
         "$stage/libexec/device-test-isolation.sh"
+    stage_file 0755 "$SOURCE_DIR/scripts/lib/device-test-manifests.sh" "$stage/libexec/device-test-manifests.sh"
     stage_file 0755 "$SOURCE_DIR/scripts/lib/device-test-recovery.sh" \
         "$stage/libexec/device-test-recovery.sh"
     for test_script in device-acceptance-v2.sh device-fault-acceptance-v2.sh device-stress-acceptance-v2.sh device-lock-acceptance-v2.sh; do

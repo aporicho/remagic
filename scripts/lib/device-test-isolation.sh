@@ -11,6 +11,8 @@ REMAGIC_INSTALL_LOCK=${REMAGIC_INSTALL_LOCK:-/run/remagic-install.lock}
 REMAGIC_TEST_ROOT=${REMAGIC_TEST_ROOT:-/home/root/.local/state/remagic/acceptance/current}
 REMAGIC_APP_ROOT=${REMAGIC_APP_ROOT:-/home/root/apps/remagic}
 REMAGIC_TEST_TEMPLATES=${REMAGIC_TEST_TEMPLATES:-$REMAGIC_APP_ROOT/share/testing/manifests}
+REMAGIC_TEST_PRODUCTION_MANIFEST_ROOT=${REMAGIC_TEST_PRODUCTION_MANIFEST_ROOT:-/home/root/.local/share/remagic/apps.d}
+REMAGIC_TEST_APPS_ROOT=${REMAGIC_TEST_APPS_ROOT:-/home/root/apps}
 REMAGIC_TEST_CTL=${REMAGIC_TEST_CTL:-$REMAGIC_APP_ROOT/bin/remagicctl}
 REMAGIC_TEST_SYSTEMCTL=${REMAGIC_TEST_SYSTEMCTL:-systemctl}
 REMAGIC_TEST_SYSTEMD_RUNTIME_ROOT=${REMAGIC_TEST_SYSTEMD_RUNTIME_ROOT:-/run/systemd/system}
@@ -18,12 +20,18 @@ REMAGIC_TEST_SESSION_ROOT=${REMAGIC_TEST_SESSION_ROOT:-/home/root/.local/state/r
 REMAGIC_TEST_DIAGNOSTICS_ROOT=${REMAGIC_TEST_DIAGNOSTICS_ROOT:-$(dirname "$REMAGIC_TEST_ROOT")/diagnostics}
 REMAGIC_TEST_PROTECTED_PATHS=${REMAGIC_TEST_PROTECTED_PATHS:-/home/root/riddle-data:/home/root/.config/riddle:/home/root/.local/share/remagic-magicpaper:/home/root/.config/remagic-magicpaper:/home/root/.local/share/magicpaper:/home/root/.config/magicpaper:/home/root/.local/state/magicpaper:/home/root/.cache/magicpaper:/home/root/apps/koreader:/home/root/.local/share/remagic-koreader:/home/root/.local/share/koreader-for-remagic:/home/root/.local/state/koreader-for-remagic}
 REMAGIC_TEST_RECOVERY_HELPER=${REMAGIC_TEST_RECOVERY_HELPER:-/home/root/apps/remagic/libexec/device-test-recovery.sh}
+REMAGIC_TEST_MANIFEST_HELPER=${REMAGIC_TEST_MANIFEST_HELPER:-/home/root/apps/remagic/libexec/device-test-manifests.sh}
 
 [ -r "$REMAGIC_TEST_RECOVERY_HELPER" ] || {
     echo "acceptance isolation: recovery helper is missing" >&2
     return 1 2>/dev/null || exit 1
 }
 . "$REMAGIC_TEST_RECOVERY_HELPER"
+[ -r "$REMAGIC_TEST_MANIFEST_HELPER" ] || {
+    echo "acceptance isolation: manifest helper is missing" >&2
+    return 1 2>/dev/null || exit 1
+}
+. "$REMAGIC_TEST_MANIFEST_HELPER"
 
 REMAGIC_TEST_BEGUN=false
 REMAGIC_TEST_TRANSACTION_PREPARED=false
@@ -368,7 +376,7 @@ remagic_test_fingerprint() {
 
 remagic_test_assert_override_slots() {
     local unit dropin dropin_temp
-    for unit in remagicd.service 'remagic-app@.service'; do
+    for unit in remagicd.service remagic-home.service 'remagic-app@.service'; do
         dropin=$REMAGIC_TEST_SYSTEMD_RUNTIME_ROOT/$unit.d/90-remagic-acceptance.conf
         dropin_temp=$(remagic_acceptance_override_temp_path "$unit")
         if [ -e "$dropin" ] || [ -L "$dropin" ] || \
@@ -394,27 +402,28 @@ remagic_test_publish_override() {
         echo "acceptance isolation: reserved drop-in slot changed during publication: $dropin" >&2
         return 1
     fi
-    if [ "$unit" = 'remagic-app@.service' ]; then
-        if ! (
-            set -C
-            umask 077
-            printf '%s\n' '[Service]' \
-                "Environment=REMAGIC_MANIFEST_ROOT=$manifest_root" \
-                'IPAddressDeny=any' >"$dropin_temp" || exit 1
-            chmod 0644 "$dropin_temp" || exit 1
-        ); then
-            return 1
-        fi
-    else
-        if ! (
-            set -C
-            umask 077
-            printf '%s\n' '[Service]' \
-                "Environment=REMAGIC_MANIFEST_ROOT=$manifest_root" >"$dropin_temp" || exit 1
-            chmod 0644 "$dropin_temp" || exit 1
-        ); then
-            return 1
-        fi
+    if ! (
+        set -C
+        umask 077
+        case $unit in
+            'remagic-app@.service')
+                printf '%s\n' '[Service]' \
+                    "Environment=REMAGIC_MANIFEST_ROOT=$manifest_root" \
+                    'IPAddressDeny=any' >"$dropin_temp" || exit 1
+                ;;
+            remagic-home.service)
+                printf '%s\n' '[Service]' \
+                    "Environment=REMAGIC_WELCOME_MARKER=$REMAGIC_TEST_ROOT/welcome-v1" \
+                    >"$dropin_temp" || exit 1
+                ;;
+            *)
+                printf '%s\n' '[Service]' \
+                    "Environment=REMAGIC_MANIFEST_ROOT=$manifest_root" >"$dropin_temp" || exit 1
+                ;;
+        esac
+        chmod 0644 "$dropin_temp" || exit 1
+    ); then
+        return 1
     fi
     sync || return 1
     mv "$dropin_temp" "$dropin" || return 1
@@ -422,23 +431,18 @@ remagic_test_publish_override() {
 }
 
 remagic_test_install_overrides() {
-    local manifest_root template_root unit network_deny
+    local manifest_root unit network_deny
     manifest_root=$REMAGIC_TEST_ROOT/manifests
     case $manifest_root in *[!A-Za-z0-9_./-]*) return 1 ;; esac
     mkdir -p "$manifest_root" || return 1
-    template_root=/home/root/.local/state/remagic/acceptance/current
-    sed "s|$template_root|$REMAGIC_TEST_ROOT|g" \
-        "$REMAGIC_TEST_TEMPLATES/magicpaper.toml" >"$manifest_root/magicpaper.toml" || return 1
-    sed "s|$template_root|$REMAGIC_TEST_ROOT|g" \
-        "$REMAGIC_TEST_TEMPLATES/koreader.toml" >"$manifest_root/koreader.toml" || return 1
-    chmod 0644 "$manifest_root/magicpaper.toml" "$manifest_root/koreader.toml" || return 1
+    remagic_test_materialize_manifests "$manifest_root" || return 1
 
     remagic_test_assert_override_slots || return 1
 
     # Set before the first drop-in write so caller cleanup removes a partial
     # override if storage or daemon-reload fails mid-transaction.
     REMAGIC_TEST_OVERRIDES_INSTALLED=true
-    for unit in remagicd.service 'remagic-app@.service'; do
+    for unit in remagicd.service remagic-home.service 'remagic-app@.service'; do
         remagic_test_publish_override "$unit" "$manifest_root" || return 1
     done
     "$REMAGIC_TEST_SYSTEMCTL" daemon-reload || return 1
@@ -478,6 +482,7 @@ return {
     ["language"] = "zh_CN",
 }
 EOF
+    printf '%s\n' completed >"$REMAGIC_TEST_ROOT/welcome-v1" || return 1
     chmod -R go-rwx "$REMAGIC_TEST_ROOT" || return 1
 }
 

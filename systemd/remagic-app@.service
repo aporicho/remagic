@@ -10,7 +10,7 @@ Type=simple
 ExecStart=/home/root/apps/remagic/bin/remagic-runner %i
 Environment=LD_LIBRARY_PATH=/home/root/apps/remagic/lib:/usr/lib/plugins/scenegraph:/usr/lib
 Environment=REMAGIC_QTFB_SOCKET=/tmp/qtfb.sock
-Environment=REMAGIC_PLATFORM_CAPABILITIES=display:qtfb-v1,input:touch-v1,input:pen-v1,input:mode-v2,ink:direct-v1,lifecycle:v2,network:outbound-v1
+Environment=REMAGIC_PLATFORM_CAPABILITIES=display:qtfb-v1,display:surface-v2,input:touch-v1,input:pen-v1,input:mode-v2,ink:direct-v1,lifecycle:v2,network:outbound-v1
 Restart=no
 TimeoutStopSec=8
 # The runner translates SIGTERM into the manifest lifecycle shutdown first;

@@ -145,6 +145,30 @@ pub(super) fn validate_platform_capabilities(
     }
 }
 
+pub(super) fn validate_device_compatibility(
+    manifest: &AppManifest,
+    platform: &PlatformRuntime,
+) -> Result<(), ExecutorError> {
+    if !manifest.supported_devices.is_empty()
+        && !manifest
+            .supported_devices
+            .contains(&platform.device.product)
+    {
+        return Err(ExecutorError::UnsupportedDevice(platform.device.product));
+    }
+    if !manifest.supported_os.is_empty()
+        && !manifest
+            .supported_os
+            .iter()
+            .any(|version| version == &platform.device.os_version)
+    {
+        return Err(ExecutorError::UnsupportedOs(
+            platform.device.os_version.clone(),
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn validate_platform_directory_roots(
     manifest: &AppManifest,
     platform: &PlatformRuntime,

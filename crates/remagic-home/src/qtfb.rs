@@ -12,7 +12,6 @@ const MESSAGE_TERMINATE: u8 = 3;
 const MESSAGE_USERINPUT: u8 = 4;
 const UPDATE_ALL: i32 = 0;
 const UPDATE_PARTIAL: i32 = 1;
-const FORMAT_MOVE_RGB565: u8 = 6;
 const INPUT_TOUCH_PRESS: i32 = 0x10;
 const INPUT_TOUCH_RELEASE: i32 = 0x11;
 const UPDATE_SEND_TIMEOUT: Duration = Duration::from_millis(250);
@@ -39,6 +38,7 @@ unsafe impl Send for Client {}
 
 impl Client {
     pub fn connect() -> io::Result<Self> {
+        let profile = remagic_core::DeviceProfile::detect().map_err(io::Error::other)?;
         let socket =
             std::env::var("REMAGIC_QTFB_SOCKET").unwrap_or_else(|_| "/tmp/qtfb.sock".into());
         let key = std::env::var("QTFB_KEY")
@@ -46,7 +46,7 @@ impl Client {
             .and_then(|value| value.parse::<i32>().ok())
             .unwrap_or(remagic_core::REMAGIC_HOME_QTFB_KEY);
         let fd = connect_socket(&socket)?;
-        let (raw, len) = match initialize_surface(fd, key) {
+        let (raw, len) = match initialize_surface(fd, key, &profile.display) {
             Ok(surface) => surface,
             Err(error) => {
                 unsafe { libc::close(fd) };
@@ -64,9 +64,9 @@ impl Client {
             fd,
             ptr: raw.cast(),
             len,
-            width: 954,
-            height: 1696,
-            stride: 954 * 2,
+            width: profile.display.logical_width,
+            height: profile.display.logical_height,
+            stride: profile.display.stride,
             primary_touch: None,
             last_touch: (0, 0),
             commit_sequence: AtomicU64::new(0),
@@ -229,11 +229,15 @@ fn connect_socket(socket: &str) -> io::Result<RawFd> {
     }
 }
 
-fn initialize_surface(fd: RawFd, key: i32) -> io::Result<(*mut libc::c_void, usize)> {
+fn initialize_surface(
+    fd: RawFd,
+    key: i32,
+    display: &remagic_core::DeviceDisplayProfile,
+) -> io::Result<(*mut libc::c_void, usize)> {
     let mut initialize = [0_u8; CLIENT_SIZE];
     initialize[0] = MESSAGE_INITIALIZE;
     initialize[4..8].copy_from_slice(&key.to_le_bytes());
-    initialize[8] = FORMAT_MOVE_RGB565;
+    initialize[8] = display.qtfb_format;
     send_packet(fd, &initialize)?;
 
     let mut reply = [0_u8; SERVER_SIZE];
@@ -265,7 +269,11 @@ fn initialize_surface(fd: RawFd, key: i32) -> io::Result<(*mut libc::c_void, usi
     if raw == libc::MAP_FAILED {
         return Err(io::Error::last_os_error());
     }
-    if len < 954 * 1696 * 2 {
+    let minimum = display
+        .stride
+        .checked_mul(display.logical_height as usize)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "surface size overflow"))?;
+    if len < minimum {
         unsafe { libc::munmap(raw, len) };
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,

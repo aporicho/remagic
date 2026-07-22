@@ -3,7 +3,7 @@ use super::{
     NetworkPolicy, RuntimeDirectories, RuntimeProfile, RuntimeRequirements, RuntimeValidationError,
     TimezonePolicy,
 };
-use crate::AppId;
+use crate::{AppId, DeviceProfile, DEVICE_PROFILE_ENV};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -19,6 +19,7 @@ pub use validation::{is_platform_reserved_environment, validate_environment_pair
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LaunchEnvironment {
     pub app_id: AppId,
+    pub device: DeviceProfile,
     pub profile: RuntimeProfile,
     pub directories: RuntimeDirectories,
     pub variables: BTreeMap<String, String>,
@@ -43,6 +44,7 @@ impl LaunchEnvironment {
         platform_capabilities: BTreeSet<Capability>,
         platform_path: impl Into<String>,
         network_enforcement: NetworkEnforcement,
+        device: DeviceProfile,
     ) -> Result<Self, RuntimeValidationError> {
         requirements.validate(true)?;
         let directories = requirements
@@ -59,12 +61,19 @@ impl LaunchEnvironment {
             application_environment,
             platform_path.into(),
         );
+        variables.insert(
+            DEVICE_PROFILE_ENV.into(),
+            device.to_json().map_err(|error| {
+                RuntimeValidationError::InvalidPolicyValue(DEVICE_PROFILE_ENV, error.to_string())
+            })?,
+        );
         insert_network_variables(&mut variables, requirements, network_enforcement)?;
         insert_optional_policy_variables(&mut variables, requirements)?;
         insert_loader_variables(&mut variables, &app_id, requirements, &resolved_libraries);
 
         let environment = Self {
             app_id,
+            device,
             profile: requirements.profile,
             directories,
             variables,

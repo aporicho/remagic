@@ -90,6 +90,16 @@ mod tests {
     }
 
     #[test]
+    fn bundled_store_manifest_is_a_non_removable_system_application() {
+        let manifest: remagic_core::AppManifest =
+            toml::from_str(include_str!("../../../../manifests/remagic-store.toml")).unwrap();
+        manifest.validate().unwrap();
+        assert_eq!(manifest.name, "应用商店");
+        assert_eq!(manifest.kind, remagic_core::AppKind::System);
+        assert_eq!(manifest.id.as_str(), "remagic-store");
+    }
+
+    #[test]
     fn runtime_generation_fences_replacements() {
         let app = AppId::new("koreader").unwrap();
         let generations = BTreeMap::from([(app.clone(), 8)]);

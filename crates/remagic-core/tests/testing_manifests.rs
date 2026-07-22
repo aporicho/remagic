@@ -15,6 +15,13 @@ fn isolated_device_manifests_satisfy_the_production_runtime_contract() {
         assert_eq!(manifest.schema, MANIFEST_SCHEMA_V2);
         assert_eq!(manifest.runtime.profile, RuntimeProfile::QtfbCompat);
         assert_eq!(manifest.runtime.network.mode, NetworkMode::Deny);
+        let expected_name = if name == "magicpaper" {
+            "MagicPaper"
+        } else {
+            "KOReader"
+        };
+        assert_eq!(manifest.name, expected_name);
+        assert!(!manifest.name.contains("for ReMagic"));
         let (key, expected) = if name == "magicpaper" {
             ("MAGICPAPER_TEST_MODE", "1")
         } else {

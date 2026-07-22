@@ -15,6 +15,7 @@ impl AppManifest {
         self.validate_identity_and_paths()?;
         self.validate_environment()?;
         self.validate_arguments_and_capabilities()?;
+        self.validate_compatibility()?;
         self.validate_readiness()?;
         self.validate_shutdown()?;
         self.validate_background_service()?;
@@ -102,6 +103,27 @@ impl AppManifest {
         for capability in &self.capabilities {
             if !capabilities.insert(capability) {
                 return Err(ManifestError::DuplicateCapability(capability.to_string()));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_compatibility(&self) -> Result<(), ManifestError> {
+        if !(1..=REMAGIC_APP_API_VERSION).contains(&self.required_remagic_api) {
+            return Err(ManifestError::UnsupportedRemagicApi(
+                self.required_remagic_api,
+            ));
+        }
+        let mut devices = BTreeSet::new();
+        for product in &self.supported_devices {
+            if !devices.insert(*product) {
+                return Err(ManifestError::DuplicateSupportedDevice(*product));
+            }
+        }
+        let mut versions = BTreeSet::new();
+        for version in &self.supported_os {
+            if version.trim().is_empty() || !versions.insert(version) {
+                return Err(ManifestError::InvalidSupportedOs(version.clone()));
             }
         }
         Ok(())

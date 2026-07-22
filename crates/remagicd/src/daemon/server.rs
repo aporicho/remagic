@@ -1,8 +1,9 @@
 use super::*;
 use crate::display_host;
 use remagic_core::DomainState;
+use remagic_package::PackageManager;
 use remagic_protocol::{
-    read_frame, write_frame, Request, Response, RuntimeAppCommand, RuntimeAppReply,
+    read_frame, write_frame, ControlRequest, Request, Response, RuntimeAppCommand, RuntimeAppReply,
     RuntimeAppRequest, RUNTIME_APP_PROTOCOL_V1, RUNTIME_APP_PROTOCOL_V2,
 };
 use std::fs;
@@ -25,6 +26,7 @@ pub(super) async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .initialize_system()
         .await
         .map_err(std::io::Error::other)?;
+    daemon.start_declared_background_services().await;
     spawn_control_server(listener, daemon.clone());
     spawn_app_request_server(app_listener, daemon.clone());
     spawn_signal_handler(daemon.clone());
@@ -47,6 +49,9 @@ fn bind_private_socket(path: &Path) -> std::io::Result<UnixListener> {
 }
 
 fn create_daemon() -> Result<DaemonParts, Box<dyn std::error::Error>> {
+    let package_manager = PackageManager::from_environment();
+    package_manager.recover_all()?;
+    fs::create_dir_all(&package_manager.paths().books_root)?;
     let manifest_store =
         ManifestStore::new(utils::env_path("REMAGIC_MANIFEST_ROOT", MANIFEST_ROOT));
     let session_store = SessionStore::new(utils::env_path("REMAGIC_SESSION_ROOT", SESSION_ROOT));
@@ -225,8 +230,14 @@ async fn serve_control_client(
         .await?;
         return Ok(());
     }
-    let request: Request = read_frame(&mut stream).await?;
-    write_frame(&mut stream, &daemon.request(request).await).await?;
+    let value: serde_json::Value = read_frame(&mut stream).await?;
+    if value.get("protocol").is_some() {
+        let request: ControlRequest = serde_json::from_value(value)?;
+        write_frame(&mut stream, &daemon.control_v2(request).await).await?;
+    } else {
+        let request: Request = serde_json::from_value(value)?;
+        write_frame(&mut stream, &daemon.request(request).await).await?;
+    }
     Ok(())
 }
 

@@ -106,6 +106,10 @@ fn validate_identity_variables(
         "REMAGIC_RUNTIME_PROFILE",
         environment.profile.as_str(),
     )?;
+    let device = environment.device.to_json().map_err(|error| {
+        RuntimeValidationError::InvalidPolicyValue(DEVICE_PROFILE_ENV, error.to_string())
+    })?;
+    validate_exact_variable(&environment.variables, DEVICE_PROFILE_ENV, &device)?;
     validate_platform_path(&environment.variables)?;
     let qtfb_key = environment.variables.get("QTFB_KEY");
     let expected = qtfb_key_for_app(&environment.app_id).to_string();

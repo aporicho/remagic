@@ -41,6 +41,7 @@ fn snapshot() -> SupervisorSnapshot {
             name: "KOReader".into(),
             description: "Reader".into(),
             version: "2026.03".into(),
+            kind: remagic_core::AppKind::User,
             installed: true,
             runtime_profile: RuntimeProfile::QtfbCompat,
             capabilities: vec![Capability::new("display:qtfb-v1").unwrap()],
@@ -58,6 +59,10 @@ fn snapshot() -> SupervisorSnapshot {
                 last_error: None,
             }),
             package: Some("koreader".into()),
+            supported_devices: vec![remagic_core::DeviceProduct::PaperProMove],
+            supported_os: Vec::new(),
+            required_remagic_api: 2,
+            uninstall_policy: remagic_core::UninstallPolicy::KeepData,
             preflight: None,
         }],
     }

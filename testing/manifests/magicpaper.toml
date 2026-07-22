@@ -1,10 +1,15 @@
 schema = 2
 id = "magicpaper"
-name = "MagicPaper (isolated acceptance)"
+name = "MagicPaper"
+kind = "user"
 description = "Disposable no-network acceptance instance"
 version = "0.7.0-test"
-exec = "/home/root/apps/remagic/libexec/magicpaper-qtfb"
-working_dir = "/home/root/apps/remagic/opt/magicpaper"
+package = "magicpaper"
+supported_devices = ["paper_pro", "paper_pro_move"]
+required_remagic_api = 2
+uninstall_policy = "keep_data"
+exec = "/__REMAGIC_MAGICPAPER_PAYLOAD_ROOT__/bin/magicpaper-launch"
+working_dir = "/__REMAGIC_MAGICPAPER_PAYLOAD_ROOT__"
 display = "qtfb"
 resident = true
 capabilities = [
@@ -27,7 +32,7 @@ term_timeout_ms = 4500
 kill_timeout_ms = 5500
 
 [data_schema]
-migrator = "/home/root/apps/remagic/libexec/magicpaper-data-migrate"
+migrator = "/__REMAGIC_MAGICPAPER_PAYLOAD_ROOT__/libexec/magicpaper-data-migrate"
 version = 2
 backup_paths = [
   "/home/root/.local/state/remagic/acceptance/current/magicpaper/data",
@@ -57,7 +62,7 @@ lang = "C.UTF-8"
 name = "Asia/Shanghai"
 
 [runtime.fonts]
-directories = ["/home/root/apps/remagic/opt/magicpaper/fonts"]
+directories = ["/__REMAGIC_MAGICPAPER_PAYLOAD_ROOT__/share/fonts"]
 
 [runtime.certificates]
 required = false

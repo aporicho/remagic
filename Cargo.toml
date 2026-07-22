@@ -1,7 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/remagic-device",
     "crates/remagic-core",
+    "crates/remagic-package",
     "crates/remagic-protocol",
     "crates/remagicd",
     "crates/remagic-runner",
@@ -18,10 +20,14 @@ repository = "https://github.com/aporicho/remagic"
 
 [workspace.dependencies]
 ab_glyph = "0.2"
+flate2 = "1"
+hex = "0.4"
 libc = "0.2"
 png = "0.17"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
+tar = "0.4"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "signal", "process", "time"] }
 toml = "0.9"

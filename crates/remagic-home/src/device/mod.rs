@@ -1,11 +1,14 @@
 mod display;
+mod first_run;
+mod release;
 mod settings;
 mod settings_ui;
+mod store;
 
 use crate::{domain_state, list_apps, request};
 use display::Display;
 use remagic_core::{AppId, DomainState};
-use remagic_protocol::{AppView, PackageOperation, Request};
+use remagic_protocol::{AppView, Request};
 use settings::{HomeSettings, WallpaperOption};
 use std::fs;
 use std::time::Duration;
@@ -14,7 +17,8 @@ use std::time::Duration;
 pub(super) enum Action {
     Launch(AppId),
     Close(AppId),
-    Package(PackageOperation),
+    OpenStore,
+    StoreInstall(String),
     Unavailable,
     System,
     Sleep,
@@ -31,8 +35,10 @@ pub(super) enum Action {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum UiMode {
+    Welcome,
     Manager,
     Settings,
+    Store,
     LockPreview,
     Locked,
 }
@@ -54,15 +60,26 @@ pub(super) async fn run(mut apps: Vec<AppView>) -> Result<(), Box<dyn std::error
     let font = display::load_font()?;
     let mut mode = if matches!(domain_state().await?, DomainState::Sleeping) {
         UiMode::Locked
+    } else if first_run::pending() {
+        UiMode::Welcome
     } else {
         UiMode::Manager
     };
     let mut buttons = match mode {
+        UiMode::Welcome => {
+            let device = remagic_device::DeviceProfile::detect()?;
+            let name = match device.product {
+                remagic_device::DeviceProduct::PaperPro => "reMarkable Paper Pro",
+                remagic_device::DeviceProduct::PaperProMove => "reMarkable Paper Pro Move",
+            };
+            display.render_welcome(&font, name)?
+        }
         UiMode::Manager => display.render(&font, &apps)?,
         UiMode::Locked => display.render_locked(&font, &settings, &wallpapers, false)?,
-        UiMode::Settings | UiMode::LockPreview => unreachable!(),
+        UiMode::Settings | UiMode::Store | UiMode::LockPreview => unreachable!(),
     };
     let mut pressed: Option<(Button, Vec<u32>)> = None;
+    let mut store_error: Option<String> = None;
     let mut last_lock_poll = tokio::time::Instant::now();
     loop {
         for event in display.poll_touch_events()? {
@@ -71,15 +88,18 @@ pub(super) async fn run(mut apps: Vec<AppView>) -> Result<(), Box<dyn std::error
                     handle_press(&mut display, &buttons, &mut pressed, x, y)?;
                 }
                 crate::qtfb::TouchEvent::Release { x, y } => {
-                    handle_release(
-                        &mut display,
-                        &font,
-                        &mut apps,
-                        &mut buttons,
+                    release::handle(
+                        release::Context {
+                            display: &mut display,
+                            font: &font,
+                            apps: &mut apps,
+                            buttons: &mut buttons,
+                            mode: &mut mode,
+                            settings: &mut settings,
+                            wallpapers: &mut wallpapers,
+                            store_error: &mut store_error,
+                        },
                         &mut pressed,
-                        &mut mode,
-                        &mut settings,
-                        &mut wallpapers,
                         x,
                         y,
                     )
@@ -111,91 +131,6 @@ pub(super) async fn run(mut apps: Vec<AppView>) -> Result<(), Box<dyn std::error
         };
         display.wait_for_input(wait.max(Duration::from_millis(1)))?;
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn handle_release(
-    display: &mut Display,
-    font: &ab_glyph::FontArc,
-    apps: &mut Vec<AppView>,
-    buttons: &mut Vec<Button>,
-    pressed: &mut Option<(Button, Vec<u32>)>,
-    mode: &mut UiMode,
-    settings: &mut HomeSettings,
-    wallpapers: &mut Vec<WallpaperOption>,
-    x: i32,
-    y: i32,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let Some((button, saved)) = pressed.take() else {
-        return Ok(());
-    };
-    display.release(&button, saved)?;
-    if !button_contains(&button, x, y) {
-        return Ok(());
-    }
-    if settings_ui::handle(
-        &button.action,
-        display,
-        font,
-        apps,
-        buttons,
-        mode,
-        settings,
-        wallpapers,
-    )
-    .await?
-    {
-        return Ok(());
-    }
-    match (*mode, button.action.clone()) {
-        (UiMode::Manager, Action::Sleep) => {
-            // Publish authoritative lock pixels before asking remagicd to
-            // fence the surface and release the wakelock.
-            *buttons = display.render_locked(font, settings, wallpapers, false)?;
-            *mode = UiMode::Locked;
-            let sleep_result = request(Request::Sleep {
-                lock_surface_sequence: display.commit_sequence(),
-            })
-            .await;
-            match sleep_result {
-                Ok(()) => {
-                    // The sleep request returns only after the kernel has
-                    // resumed. Replace the frozen lock with a prepared Home
-                    // frame immediately; the power key is the unlock action.
-                    unlock(display, font, apps, buttons, mode, settings, wallpapers).await?;
-                }
-                Err(error) => {
-                    eprintln!("remagic-home: sleep failed: {error}");
-                    let domain = domain_state().await.ok();
-                    if !retain_lock_after_failed_sleep(domain.as_ref()) {
-                        reconcile_mode(display, font, apps, buttons, mode, settings, wallpapers)
-                            .await?;
-                    }
-                }
-            }
-        }
-        (UiMode::Locked, Action::Wake) => {
-            unlock(display, font, apps, buttons, mode, settings, wallpapers).await?;
-        }
-        (UiMode::Manager, action) => {
-            let is_close = matches!(action, Action::Close(_));
-            if let Err(error) = execute_action(action, apps).await {
-                // Keep Home alive so the daemon can roll back a failed launch.
-                eprintln!("remagic-home: action failed: {error}");
-            }
-            if !is_close {
-                tokio::time::sleep(Duration::from_millis(250)).await;
-            }
-            // Close normally refreshes while waiting for the exact app to
-            // disappear.  Still reload here: a failed close is acknowledged
-            // only after daemon recovery, and retaining the pre-request
-            // snapshot made a stale Close button look as if it did nothing.
-            refresh_apps(apps).await;
-            *buttons = display.render(font, apps)?;
-        }
-        (UiMode::Locked | UiMode::Settings | UiMode::LockPreview, _) => {}
-    }
-    Ok(())
 }
 
 fn persist_settings(settings: &HomeSettings) {
@@ -283,7 +218,6 @@ async fn execute_action(
             .await?;
             wait_until_closed(&app_id, apps).await
         }
-        Action::Package(operation) => request(Request::Package { operation }).await,
         Action::Unavailable => Ok(()),
         Action::System => request(Request::ReturnSystem).await,
         Action::Sleep => Err("sleep must render and fence the lock page first".into()),
@@ -291,6 +225,8 @@ async fn execute_action(
         Action::OpenSettings
         | Action::BackManager
         | Action::BackSettings
+        | Action::OpenStore
+        | Action::StoreInstall(_)
         | Action::CycleWallpaper
         | Action::ToggleWallpaperFit
         | Action::ToggleLockClock

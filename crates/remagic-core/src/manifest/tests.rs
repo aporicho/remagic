@@ -5,10 +5,15 @@ fn legacy_manifest(environment: BTreeMap<String, String>) -> AppManifest {
         schema: MANIFEST_SCHEMA_V1,
         id: AppId::new("test").unwrap(),
         name: "Test".into(),
+        kind: AppKind::User,
         description: String::new(),
         version: String::new(),
         icon: None,
         package: None,
+        supported_devices: Vec::new(),
+        supported_os: Vec::new(),
+        required_remagic_api: 1,
+        uninstall_policy: UninstallPolicy::KeepData,
         exec: "/bin/true".into(),
         args: vec![],
         working_dir: "/tmp".into(),
@@ -89,7 +94,7 @@ fn schema_v2_manifest_round_trips_with_full_runtime_contract() {
     let text = r#"
 schema = 2
 id = "koreader"
-name = "KOReader for ReMagic"
+name = "KOReader"
 version = "2026.03"
 exec = "/opt/remagic/apps/koreader/current/bin/koreader-for-remagic"
 working_dir = "/opt/remagic/apps/koreader/current"

@@ -16,8 +16,7 @@ UNITS='remagicd.service
 remagic-display-host.service
 remagic-home.service
 remagic-app@.service
-remagic-recover.service
-magicpaper-agent.service'
+remagic-recover.service'
 KOREADER_DROPIN=remagic-app@koreader.service.d/10-koreader-runtime.conf
 
 validate_sources() {
@@ -46,15 +45,8 @@ validate_sources() {
 
 start_services() {
     "$SYSTEMCTL" daemon-reload
-    "$SYSTEMCTL" reset-failed remagicd.service magicpaper-agent.service \
-        >/dev/null 2>&1 || true
+    "$SYSTEMCTL" reset-failed remagicd.service >/dev/null 2>&1 || true
     "$SYSTEMCTL" start remagicd.service
-    schema_ready=$APP_ROOT/libexec/remagic-schema-ready
-    schema_fence=/home/root/.local/state/magicpaper/.remagic-schema/schema-ready
-    if [ -x "$schema_ready" ] && \
-       "$schema_ready" "$schema_fence" magicpaper 2; then
-        "$SYSTEMCTL" start magicpaper-agent.service
-    fi
     "$SYSTEMCTL" is-active --quiet remagicd.service
 }
 
@@ -121,9 +113,6 @@ install_persistent() {
     fi
     if [ "$status" -eq 0 ]; then
         publish_boot_link remagicd.service || status=$?
-    fi
-    if [ "$status" -eq 0 ]; then
-        publish_boot_link magicpaper-agent.service || status=$?
     fi
     sync
     if [ "$root_was_read_only" = true ]; then

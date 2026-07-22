@@ -12,8 +12,13 @@ fn directories() -> RuntimeDirectories {
     }
 }
 
+fn device_profile() -> crate::DeviceProfile {
+    crate::DeviceProfile::for_product(crate::DeviceProduct::PaperProMove, "test-os")
+}
+
 fn launch_environment() -> LaunchEnvironment {
     let directories = directories();
+    let device = device_profile();
     let variables = BTreeMap::from([
         ("HOME".into(), directories.home.display().to_string()),
         (
@@ -41,6 +46,7 @@ fn launch_environment() -> LaunchEnvironment {
         ("PATH".into(), "/usr/bin:/bin".into()),
         ("REMAGIC_APP_ID".into(), "test".into()),
         ("REMAGIC_RUNTIME_PROFILE".into(), "native_v2".into()),
+        (crate::DEVICE_PROFILE_ENV.into(), device.to_json().unwrap()),
         ("REMAGIC_NETWORK_POLICY_MODE".into(), "deny".into()),
         (
             "REMAGIC_NETWORK_POLICY_ENFORCEMENT".into(),
@@ -51,6 +57,7 @@ fn launch_environment() -> LaunchEnvironment {
     ]);
     LaunchEnvironment {
         app_id: AppId::new("test").unwrap(),
+        device,
         profile: RuntimeProfile::NativeV2,
         directories,
         variables,
@@ -213,6 +220,7 @@ fn resolver_builds_complete_platform_environment_and_rejects_spoofing() {
         BTreeSet::from([Capability::new("display:qtfb-v1").unwrap()]),
         "/usr/bin:/bin",
         NetworkEnforcement::MetadataOnly,
+        device_profile(),
     )
     .unwrap();
     assert_eq!(environment.variables["REMAGIC_APP_ID"], "koreader");
@@ -235,6 +243,7 @@ fn resolver_builds_complete_platform_environment_and_rejects_spoofing() {
         BTreeSet::new(),
         "/usr/bin:/bin",
         NetworkEnforcement::MetadataOnly,
+        device_profile(),
     );
     assert_eq!(
         spoofed,
@@ -258,6 +267,7 @@ fn network_policy_never_claims_isolation_without_enforcement() {
         BTreeSet::new(),
         "/usr/bin:/bin",
         NetworkEnforcement::MetadataOnly,
+        device_profile(),
     )
     .unwrap();
     assert_eq!(
@@ -276,6 +286,7 @@ fn network_policy_never_claims_isolation_without_enforcement() {
             BTreeSet::new(),
             "/usr/bin:/bin",
             NetworkEnforcement::MetadataOnly,
+            device_profile(),
         ),
         Err(RuntimeValidationError::RequiredNetworkEnforcementUnavailable)
     );

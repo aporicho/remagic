@@ -1,6 +1,7 @@
 use crate::runtime::{
     Capability, NetworkMode, RuntimeProfile, RuntimeRequirements, RuntimeValidationError,
 };
+use remagic_device::DeviceProduct;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -68,9 +69,30 @@ pub enum ParkStrategy {
     Resident,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppKind {
+    #[default]
+    User,
+    System,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UninstallPolicy {
+    #[default]
+    KeepData,
+    Purge,
+}
+
 pub const MANIFEST_SCHEMA_V1: u32 = 1;
 pub const MANIFEST_SCHEMA_V2: u32 = 2;
+pub const REMAGIC_APP_API_VERSION: u32 = 2;
 pub const MAX_STARTUP_TIMEOUT_MS: u64 = 1_450_000;
+
+fn default_required_remagic_api() -> u32 {
+    1
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -211,6 +233,8 @@ pub struct AppManifest {
     pub id: AppId,
     pub name: String,
     #[serde(default)]
+    pub kind: AppKind,
+    #[serde(default)]
     pub description: String,
     #[serde(default)]
     pub version: String,
@@ -218,6 +242,18 @@ pub struct AppManifest {
     pub icon: Option<PathBuf>,
     #[serde(default)]
     pub package: Option<String>,
+    /// Empty means compatibility is inherited from the installed ReMagic
+    /// platform. Store-delivered packages declare every supported product.
+    #[serde(default)]
+    pub supported_devices: Vec<DeviceProduct>,
+    /// Exact OS build identifiers. Empty inherits the system package's
+    /// stricter OS compatibility gate.
+    #[serde(default)]
+    pub supported_os: Vec<String>,
+    #[serde(default = "default_required_remagic_api")]
+    pub required_remagic_api: u32,
+    #[serde(default)]
+    pub uninstall_policy: UninstallPolicy,
     pub exec: PathBuf,
     #[serde(default)]
     pub args: Vec<String>,
@@ -297,6 +333,12 @@ pub enum ManifestError {
     InvalidArgument,
     #[error("duplicate platform capability: {0}")]
     DuplicateCapability(String),
+    #[error("duplicate supported device: {0:?}")]
+    DuplicateSupportedDevice(DeviceProduct),
+    #[error("duplicate or empty supported OS build: {0:?}")]
+    InvalidSupportedOs(String),
+    #[error("application requires unsupported ReMagic API {0}")]
+    UnsupportedRemagicApi(u32),
     #[error("readiness timeout must be between 100 and 120000 ms, got {0}")]
     InvalidReadinessTimeout(u64),
     #[error("file readiness requires an absolute readiness.path")]

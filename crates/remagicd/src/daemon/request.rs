@@ -152,7 +152,12 @@ impl Daemon {
             let background = manifest.effective_background_service();
             let background_active = match &background {
                 Some(BackgroundService::Systemd { unit }) => self.controller.is_active(unit).await,
-                Some(BackgroundService::Managed { .. }) | None => false,
+                Some(BackgroundService::Managed { .. }) => {
+                    self.controller
+                        .is_active(&crate::system::managed_background_unit(&manifest.id))
+                        .await
+                }
+                None => false,
             };
             views.push(AppView {
                 id: manifest.id.clone(),
@@ -162,7 +167,9 @@ impl Daemon {
                 foreground: matches!(&state.domain, DomainState::Foreground(id) if id == &manifest.id),
                 background_service: background.map(|service| match service {
                     BackgroundService::Systemd { unit } => unit,
-                    BackgroundService::Managed { .. } => "remagic-managed".into(),
+                    BackgroundService::Managed { .. } => {
+                        crate::system::managed_background_unit(&manifest.id)
+                    }
                 }),
                 background_active,
                 session: sessions.get(&manifest.id).cloned(),
@@ -268,12 +275,13 @@ impl Daemon {
         Ok(())
     }
 
-    async fn reload_manifests(&self) -> Result<(), String> {
+    pub(super) async fn reload_manifests(&self) -> Result<(), String> {
         let manifests = self
             .manifest_store
             .load_all()
             .map_err(|error| error.to_string())?;
         *self.manifests.write().await = manifests;
+        self.start_declared_background_services().await;
         if matches!(self.state.read().await.domain, DomainState::Manager) {
             if let Err(error) = self.restart_runtime_and_wait().await {
                 warn!(%error, "runtime reload failed; restoring stock interface");

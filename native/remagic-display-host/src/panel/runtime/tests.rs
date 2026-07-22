@@ -395,6 +395,9 @@ fn stale_ink_lease_is_rejected() {
 fn live_ink_draws_a_tight_dirty_rect() {
     let (_tx, rx) = mpsc::channel();
     let mut runtime = PanelRuntime::new(MockPanel::new(), rx);
+    runtime
+        .handle(PanelCommand::RegisterSurface(test_surface(1)))
+        .unwrap();
     runtime.foreground = Some(lease(1, 2, 3));
     runtime.ink = InkLease {
         key: 1,

@@ -12,10 +12,31 @@ fail() {
 
 mkdir -p "$TMP/bin" "$TMP/manifests" "$TMP/templates" "$TMP/protected-a" "$TMP/protected-b"
 mkdir -p "$TMP/sessions"
-printf 'production magicpaper\n' >"$TMP/manifests/magicpaper.toml"
-printf 'production koreader\n' >"$TMP/manifests/koreader.toml"
-printf 'test magicpaper\n' >"$TMP/templates/magicpaper.toml"
+magic_content=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+koreader_content=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+mkdir -p "$TMP/apps/magicpaper/releases/$magic_content/payload" \
+    "$TMP/apps/koreader/releases/$koreader_content/payload/adapter/releases/adapter-test" \
+    "$TMP/apps/koreader/releases/$koreader_content/payload/vendor/releases/vendor-test/koreader"
+ln -s "releases/$magic_content" "$TMP/apps/magicpaper/current"
+ln -s "releases/$koreader_content" "$TMP/apps/koreader/current"
+printf '%s\n' \
+    'name = "MagicPaper"' \
+    "working_dir = \"$TMP/apps/magicpaper/current/payload\"" \
+    >"$TMP/manifests/magicpaper.toml"
+printf '%s\n' \
+    'name = "KOReader"' \
+    "exec = \"$TMP/apps/koreader/current/payload/adapter/releases/adapter-test/bin/koreader-for-remagic\"" \
+    "working_dir = \"$TMP/apps/koreader/current/payload/vendor/releases/vendor-test/koreader\"" \
+    >"$TMP/manifests/koreader.toml"
+printf '%s\n' 'test magicpaper' \
+    'exec = "/__REMAGIC_MAGICPAPER_PAYLOAD_ROOT__/bin/magicpaper-launch"' \
+    'working_dir = "/__REMAGIC_MAGICPAPER_PAYLOAD_ROOT__"' \
+    >"$TMP/templates/magicpaper.toml"
 printf '%s\n' 'test koreader' \
+    'name = "KOReader"' \
+    'exec = "/__REMAGIC_KOREADER_ADAPTER_ROOT__/bin/koreader-for-remagic"' \
+    'working_dir = "/__REMAGIC_KOREADER_VENDOR_ROOT__"' \
+    'migrator = "/__REMAGIC_KOREADER_ADAPTER_ROOT__/libexec/koreader-data-migrate"' \
     'KOREADER_LIBRARY_STATE_ROOT = "/home/root/.local/state/remagic/acceptance/current/koreader/library-state"' \
     'KOREADER_SOURCE_LIBRARY_DIR = "/home/root/.local/state/remagic/acceptance/current/koreader/source-library"' \
     >"$TMP/templates/koreader.toml"
@@ -51,12 +72,15 @@ export REMAGIC_INSTALL_LOCK=$TMP/install.lock
 export REMAGIC_TEST_ROOT=$TMP/test-root
 export REMAGIC_APP_ROOT=$TMP/app-root
 export REMAGIC_TEST_TEMPLATES=$TMP/templates
+export REMAGIC_TEST_PRODUCTION_MANIFEST_ROOT=$TMP/manifests
+export REMAGIC_TEST_APPS_ROOT=$TMP/apps
 export REMAGIC_TEST_CTL=$TMP/bin/remagicctl
 export REMAGIC_TEST_SYSTEMCTL=$TMP/bin/systemctl
 export REMAGIC_TEST_SYSTEMD_RUNTIME_ROOT=$TMP/systemd
 export REMAGIC_TEST_SESSION_ROOT=$TMP/sessions
 export REMAGIC_TEST_PROTECTED_PATHS=$TMP/protected-a:$TMP/protected-b
 export REMAGIC_TEST_RECOVERY_HELPER=$ROOT/scripts/lib/device-test-recovery.sh
+export REMAGIC_TEST_MANIFEST_HELPER=$ROOT/scripts/lib/device-test-manifests.sh
 export REMAGIC_FIXTURE_SYSTEMCTL_LOG=$TMP/systemctl.log
 export REMAGIC_FIXTURE_IP_DENY=any
 export REMAGIC_FIXTURE_PAPERWEIGHT_LOAD=not-found
@@ -102,26 +126,45 @@ done
 
 remagic_test_begin fixture
 [ ! -e "$(remagic_acceptance_prepare_stage_path "$$")" ] || fail 'journal staging directory leaked after atomic publication'
-grep -q '^production magicpaper$' "$TMP/manifests/magicpaper.toml" || fail 'production manifest was overwritten'
+grep -q '^name = "MagicPaper"$' "$TMP/manifests/magicpaper.toml" || fail 'production manifest was overwritten'
 grep -q '^test magicpaper$' "$REMAGIC_TEST_ROOT/manifests/magicpaper.toml" || fail 'test manifest was not staged'
+grep -q "^working_dir = \"$TMP/apps/magicpaper/releases/$magic_content/payload\"$" \
+    "$REMAGIC_TEST_ROOT/manifests/magicpaper.toml" || fail 'MagicPaper release path was not materialized'
 grep -q "REMAGIC_MANIFEST_ROOT=$REMAGIC_TEST_ROOT/manifests" \
     "$TMP/systemd/remagicd.service.d/90-remagic-acceptance.conf" || fail 'daemon override was not installed'
+grep -q "REMAGIC_WELCOME_MARKER=$REMAGIC_TEST_ROOT/welcome-v1" \
+    "$TMP/systemd/remagic-home.service.d/90-remagic-acceptance.conf" || fail 'Home welcome state was not isolated'
+[ "$(cat "$REMAGIC_TEST_ROOT/welcome-v1")" = completed ] || fail 'isolated Home was not placed past first run'
 grep -q '^IPAddressDeny=any$' \
     "$TMP/systemd/remagic-app@.service.d/90-remagic-acceptance.conf" || fail 'OS network deny was not installed'
 [ "$(stat -c %a "$TMP/systemd/remagicd.service.d/90-remagic-acceptance.conf")" = 644 ] || fail 'daemon drop-in mode is not 0644'
+[ "$(stat -c %a "$TMP/systemd/remagic-home.service.d/90-remagic-acceptance.conf")" = 644 ] || fail 'Home drop-in mode is not 0644'
 [ "$(stat -c %a "$TMP/systemd/remagic-app@.service.d/90-remagic-acceptance.conf")" = 644 ] || fail 'runner drop-in mode is not 0644'
 [ ! -e "$(remagic_acceptance_override_temp_path remagicd.service)" ] || fail 'daemon drop-in staging file leaked'
+[ ! -e "$(remagic_acceptance_override_temp_path remagic-home.service)" ] || fail 'Home drop-in staging file leaked'
 [ ! -e "$(remagic_acceptance_override_temp_path 'remagic-app@.service')" ] || fail 'runner drop-in staging file leaked'
 grep -q "KOREADER_LIBRARY_STATE_ROOT = \"$REMAGIC_TEST_ROOT/koreader/library-state\"" \
     "$REMAGIC_TEST_ROOT/manifests/koreader.toml" || fail 'KOReader library state was not isolated'
 grep -q "KOREADER_SOURCE_LIBRARY_DIR = \"$REMAGIC_TEST_ROOT/koreader/source-library\"" \
     "$REMAGIC_TEST_ROOT/manifests/koreader.toml" || fail 'KOReader source library was not isolated'
+grep -q '^name = "KOReader"$' "$REMAGIC_TEST_ROOT/manifests/koreader.toml" || \
+    fail 'KOReader visible name changed during test materialization'
+grep -q "^exec = \"$TMP/apps/koreader/releases/$koreader_content/payload/adapter/releases/adapter-test/bin/koreader-for-remagic\"$" \
+    "$REMAGIC_TEST_ROOT/manifests/koreader.toml" || fail 'KOReader adapter path was not materialized'
+grep -q "^working_dir = \"$TMP/apps/koreader/releases/$koreader_content/payload/vendor/releases/vendor-test/koreader\"$" \
+    "$REMAGIC_TEST_ROOT/manifests/koreader.toml" || fail 'KOReader vendor path was not materialized'
+if grep -q '__REMAGIC_' "$REMAGIC_TEST_ROOT/manifests/koreader.toml"; then
+    fail 'KOReader materialization left a placeholder behind'
+fi
 printf 'disposable\n' >"$REMAGIC_TEST_ROOT/magicpaper/data/test-output"
 printf 'test session\n' >"$TMP/sessions/magicpaper.json"
 remagic_test_finish || fail 'clean isolated run did not finish'
-grep -q '^production magicpaper$' "$TMP/manifests/magicpaper.toml" || fail 'production manifest was not restored'
-grep -q '^production koreader$' "$TMP/manifests/koreader.toml" || fail 'second production manifest was not restored'
+grep -q '^name = "MagicPaper"$' "$TMP/manifests/magicpaper.toml" || fail 'production manifest was not restored'
+grep -q '^name = "KOReader"$' "$TMP/manifests/koreader.toml" || fail 'second production manifest was not restored'
+grep -q "^exec = \"$TMP/apps/koreader/current/payload/adapter/releases/adapter-test/bin/koreader-for-remagic\"$" \
+    "$TMP/manifests/koreader.toml" || fail 'production KOReader executable changed'
 [ ! -e "$TMP/systemd/remagicd.service.d/90-remagic-acceptance.conf" ] || fail 'daemon override leaked'
+[ ! -e "$TMP/systemd/remagic-home.service.d/90-remagic-acceptance.conf" ] || fail 'Home override leaked'
 [ ! -e "$TMP/systemd/remagic-app@.service.d/90-remagic-acceptance.conf" ] || fail 'runner override leaked'
 [ ! -e "$REMAGIC_TEST_ROOT" ] || fail 'successful disposable root was retained'
 [ ! -e "$REMAGIC_TEST_LOCK" ] || fail 'successful run leaked its lock'
@@ -208,8 +251,10 @@ simulate_interrupted_run() {
     remagic_test_lock || fail "orphan recovery failed for $phase"
     grep -q '^production session$' "$TMP/sessions/magicpaper.json" || fail "$phase lost the production session"
     [ ! -e "$TMP/systemd/remagicd.service.d/90-remagic-acceptance.conf" ] || fail "$phase leaked daemon drop-in"
+    [ ! -e "$TMP/systemd/remagic-home.service.d/90-remagic-acceptance.conf" ] || fail "$phase leaked Home drop-in"
     [ ! -e "$TMP/systemd/remagic-app@.service.d/90-remagic-acceptance.conf" ] || fail "$phase leaked runner drop-in"
     [ ! -e "$(remagic_acceptance_override_temp_path remagicd.service)" ] || fail "$phase leaked daemon drop-in staging"
+    [ ! -e "$(remagic_acceptance_override_temp_path remagic-home.service)" ] || fail "$phase leaked Home drop-in staging"
     [ ! -e "$(remagic_acceptance_override_temp_path 'remagic-app@.service')" ] || fail "$phase leaked runner drop-in staging"
     grep -q '^start magicpaper-agent.service$' "$REMAGIC_FIXTURE_SYSTEMCTL_LOG" || fail "$phase did not restore the agent"
     [ ! -e "$REMAGIC_TEST_ROOT" ] || fail "$phase retained its recovered current root"

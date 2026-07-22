@@ -124,7 +124,6 @@ mod tests {
             lease_id: 1,
             surface_key: 1,
             launch_path: "/run/remagic/launch/magicpaper.json".into(),
-            background_unit: Some("magicpaper-agent.service".into()),
             background_quiesced: !active,
         }
     }

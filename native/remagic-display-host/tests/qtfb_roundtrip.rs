@@ -112,16 +112,18 @@ fn legacy_qtfb_connect_damage_foreground_and_input_round_trip() {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 
-    state.dispatch_input(InputFrame::Pen(PenFrame {
-        sequence: 1,
-        kernel_time_ns: 12,
-        phase: PenPhase::Down,
-        tool: PenTool::Eraser,
-        x: 100,
-        y: 200,
-        pressure: 2048,
-        pressure_max: 4096,
-    }));
+    state
+        .dispatch_input(InputFrame::Pen(PenFrame {
+            sequence: 1,
+            kernel_time_ns: 12,
+            phase: PenPhase::Down,
+            tool: PenTool::Eraser,
+            x: 100,
+            y: 200,
+            pressure: 2048,
+            pressure_max: 4096,
+        }))
+        .unwrap();
     let mut input = [0_u8; QTFB_SERVER_MESSAGE_SIZE];
     recv_packet(client, &mut input).unwrap();
     assert_eq!(input[0], MESSAGE_USERINPUT);

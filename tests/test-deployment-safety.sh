@@ -391,201 +391,57 @@ if assert_aarch64_elf /bin/sh >/dev/null 2>&1; then
     exit 1
 fi
 
-! grep -E 'rm[^#\n]*/tmp/epframebuffer\.lock' \
-    "$ROOT/scripts/install-device.sh" "$ROOT/scripts/remagic-recover" \
-    "$ROOT/scripts/uninstall-device.sh"
-grep -q 'lib/libquill.so' "$ROOT/scripts/install-device.sh"
-grep -q -- '--owner=0 --group=0 --numeric-owner' "$ROOT/scripts/build-bundle.sh"
-grep -q 'scripts/lib/deployment-common.sh' "$ROOT/scripts/install-device.sh"
-grep -q 'scripts/lib/koreader-storage.sh' "$ROOT/scripts/install-device.sh"
-grep -q 'scripts/lib/device-test-isolation.sh' "$ROOT/scripts/install-device.sh"
-grep -q 'scripts/lib/device-test-recovery.sh' "$ROOT/scripts/install-device.sh"
-grep -q 'testing/manifests/magicpaper.toml' "$ROOT/scripts/install-device.sh"
-grep -q 'testing/manifests/koreader.toml' "$ROOT/scripts/install-device.sh"
-grep -q 'share/patches/20-remagic-policy.lua' "$ROOT/scripts/install-device.sh"
-grep -q 'share/patches/10-remagic-environment.lua' "$ROOT/scripts/install-device.sh"
-grep -q 'KOReader update_once.marker was not consumed' "$ROOT/scripts/install-device.sh"
-grep -q "name '0\*-\*.lua'" "$ROOT/scripts/build-bundle.sh"
-grep -q 'plugins/terminal.koplugin' "$ROOT/scripts/build-bundle.sh"
-grep -q 'official KOReader terminal plugin is missing' "$ROOT/scripts/install-device.sh"
-grep -Fq 'KOREADER_CJK_FONT=$KOREADER_PROGRAM_ROOT/fonts/noto/NotoSansCJKsc-Regular.otf' \
-    "$ROOT/scripts/build-bundle.sh"
-grep -Fq '"$OUT/opt/magicpaper/fonts/CoverageFallback.ttf"' \
-    "$ROOT/scripts/build-bundle.sh"
-grep -qx 'opt/magicpaper/fonts/CoverageFallback.ttf' "$ROOT/scripts/install-device.sh"
-grep -Fq '. "$MAGICPAPER_FONT_CONTRACT"' "$ROOT/scripts/build-bundle.sh"
-grep -Fq '. "$MAGICPAPER_FONT_CONTRACT"' "$ROOT/scripts/install-device.sh"
-grep -Fq '"$OUT/opt/magicpaper/fonts/FZPingXianYaSong.ttf"' \
-    "$ROOT/scripts/build-bundle.sh"
-grep -Fq 'magicpaper_verify_font_sha256 "$MAGICPAPER_UI_FONT_SHA256"' \
-    "$ROOT/scripts/build-bundle.sh"
-grep -Fq 'magicpaper-ui-font-sha256=%s' "$ROOT/scripts/build-bundle.sh"
-grep -Fq 'magicpaper-ui-font-sha256=$MAGICPAPER_UI_FONT_SHA256' \
-    "$ROOT/scripts/install-device.sh"
-required_files_block=$(sed -n "/^required_files='/,/^testing\/manifests\/koreader.toml'$/p" \
-    "$ROOT/scripts/install-device.sh")
-[ "$(printf '%s\n' "$required_files_block" | \
-    grep -cx 'opt/magicpaper/fonts/FZPingXianYaSong.ttf')" -eq 1 ] || {
-    echo "MagicPaper UI font is not covered exactly once by the install manifest" >&2
-    exit 1
-}
-[ "$(printf '%s\n' "$required_files_block" | \
-    grep -cx 'scripts/lib/magicpaper-font-contract.sh')" -eq 1 ] || {
-    echo "MagicPaper font contract is not covered exactly once by the install manifest" >&2
-    exit 1
-}
-stage_manager_block=$(sed -n '/^stage_manager() {/,/^stage_adapter() {/p' \
-    "$ROOT/scripts/install-device.sh")
-printf '%s\n' "$stage_manager_block" | grep -Fq \
-    'CoverageFallback.ttf FZPingXianYaSong.ttf'
-printf '%s\n' "$stage_manager_block" | grep -Fq \
-    '"$stage/opt/magicpaper/fonts/$font_name"'
-if printf '%s\n' "$stage_manager_block" | grep -Fq \
-    '"$SOURCE_DIR/opt/magicpaper/fonts/"*.ttf'; then
-    echo "MagicPaper installer still stages undeclared wildcard fonts" >&2
-    exit 1
-fi
-grep -Fq 'CoverageFallback.ttf' "$ROOT/README.md"
-grep -Fq 'FZPingXianYaSong.ttf' "$ROOT/README.md"
-grep -Fq '管理器再次用固定 SHA-256 校验' "$ROOT/README.md"
-grep -Fq '安装器在停止任何服务前复验同一内容指纹和必需文件清单' \
-    "$ROOT/README.md"
-! grep -q 'ko_update_marker' "$ROOT/scripts/install-device.sh"
-! grep -q '^KOREADER_ROOT=' "$ROOT/scripts/install-device.sh"
-grep -q 'cp -a "$SOURCE_DIR/opt/koreader-for-remagic" "$stage"' "$ROOT/scripts/install-device.sh"
-! grep -q 'transactional_tree_switch.*switch-koreader' "$ROOT/scripts/install-device.sh"
-grep -Fq 'KOREADER_LEGACY_ROOTS=/home/root/.local/share/remagic-koreader/data:$KOREADER_LEGACY_ROOT:/home/root/.paperweight/services/koreader/koreader:/home/root/.config/koreader' \
-    "$ROOT/scripts/install-device.sh"
-grep -q 'legacy_sources=$KOREADER_LEGACY_ROOTS' "$ROOT/scripts/install-device.sh"
-grep -q 'KOREADER_PROGRAM_ROOT=$(koreader_release_vendor_root "$ADAPTER_ROOT")' "$ROOT/scripts/install-device.sh"
-grep -q 'KOREADER_ADAPTER_EXEC=$KOREADER_ADAPTER_RELEASE_ROOT/bin/koreader-for-remagic' "$ROOT/scripts/install-device.sh"
-grep -q 'KOREADER_DATA_ROOT=/home/root/.local/share/koreader-for-remagic/data' "$ROOT/scripts/install-device.sh"
-grep -q 'snapshot_path.*ko_data_root.*KOREADER_DATA_ROOT' "$ROOT/scripts/install-device.sh"
-grep -q 'snapshot_path.*ko_backup_root.*KOREADER_BACKUP_ROOT' "$ROOT/scripts/install-device.sh"
-grep -q 'KO_HOME=$KOREADER_DATA_ROOT' "$ROOT/scripts/install-device.sh"
-grep -q 'KOREADER_LIBEXEC_DIR=$KOREADER_ADAPTER_RELEASE_ROOT/libexec' \
-    "$ROOT/scripts/install-device.sh"
-! grep -q 'publish_file.*KOREADER_PROGRAM_ROOT' "$ROOT/scripts/install-device.sh"
-grep -q 'KOReader v2026.03 program-tree verification failed' "$ROOT/scripts/install-device.sh"
-grep -q 'KOREADER_SOURCE_PROGRAM_ROOT=$(koreader_release_vendor_root' "$ROOT/scripts/install-device.sh"
-grep -q "grep -qx 'v2026.03'.*KOREADER_PROGRAM_ROOT/git-rev" "$ROOT/scripts/install-device.sh"
-grep -q 'unsafe legacy KOReader data object' "$ROOT/scripts/install-device.sh"
-grep -q 'deployment_assert_safe_storage_tree' "$ROOT/scripts/install-device.sh"
-grep -q 'working_dir = "/home/root/apps/koreader-for-remagic/vendor/releases/' "$ROOT/testing/manifests/koreader.toml"
-grep -q 'KOREADER_DIR = "/home/root/apps/koreader-for-remagic/vendor/releases/' "$ROOT/testing/manifests/koreader.toml"
-grep -q 'KOReader manifest does not use the pinned releases' "$ROOT/scripts/install-device.sh"
-grep -q 'background_execution = "freeze"' "$ROOT/testing/manifests/koreader.toml"
-grep -Fq 'ReadOnlyPaths=/home/root' \
-    "$ROOT/systemd/remagic-app@koreader.service.d/10-koreader-runtime.conf"
-grep -Fq 'CapabilityBoundingSet=' \
-    "$ROOT/systemd/remagic-app@koreader.service.d/10-koreader-runtime.conf"
-grep -Fq 'ReadWritePaths=/home/root/.local/share/koreader-for-remagic' \
-    "$ROOT/systemd/remagic-app@koreader.service.d/10-koreader-runtime.conf"
-grep -Fq 'InaccessiblePaths=-/run/systemd/private' \
-    "$ROOT/systemd/remagic-app@koreader.service.d/10-koreader-runtime.conf"
-grep -Fq 'InaccessiblePaths=-/run/dbus/system_bus_socket' \
-    "$ROOT/systemd/remagic-app@koreader.service.d/10-koreader-runtime.conf"
-grep -Fq 'ProtectProc=invisible' \
-    "$ROOT/systemd/remagic-app@koreader.service.d/10-koreader-runtime.conf"
-grep -Fq 'RestrictNamespaces=yes' \
-    "$ROOT/systemd/remagic-app@koreader.service.d/10-koreader-runtime.conf"
-! grep -Eq 'trap (finish_install|finish_uninstall|finish_recovery) EXIT HUP' \
-    "$ROOT/scripts/install-device.sh" "$ROOT/scripts/uninstall-device.sh" \
-    "$ROOT/scripts/remagic-recover"
-grep -q "trap 'exit 1' HUP INT TERM" "$ROOT/scripts/install-device.sh"
-grep -q 'sort -z' "$ROOT/scripts/build-bundle.sh"
-# The immutable original-state marker and the first live boot mutation each
-# have an explicit durability barrier immediately before publication/removal.
-capture_snapshot_checks=$(sed -n '/^capture_original_state() {/,/^snapshot_transaction_paths() {/p' \
-    "$ROOT/scripts/install-device.sh" | grep -c 'snapshot_record_is_complete')
-[ "$capture_snapshot_checks" -eq 2 ] || {
-    echo "original-state capture does not validate both required snapshot records" >&2
-    exit 1
-}
-awk '
-    /^capture_original_state\(\) \{/ { in_capture = 1 }
-    /^snapshot_transaction_paths\(\) \{/ { in_capture = 0 }
-    in_capture && /^    sync$/ && !barrier { barrier = NR }
-    in_capture && /^    mv "\$captured_new" "\$captured"$/ { publication = NR }
-    END { exit !(barrier && publication && barrier < publication) }
-' "$ROOT/scripts/install-device.sh" || {
-    echo "original-state authority is published before its durability barrier" >&2
-    exit 1
-}
-awk '
-    /^stage_adapter "\$ADAPTER_STAGE"$/ { staged = NR }
-    staged && !barrier && /^sync$/ { barrier = NR }
-    /^rm -f "\$WANTS_ROOT\/remagicd.service"/ { removal = NR }
-    END { exit !(staged && barrier && removal && staged < barrier && barrier < removal) }
-' "$ROOT/scripts/install-device.sh" || {
-    echo "boot activation is mutated before staged rollback data is durable" >&2
-    exit 1
-}
-preflight_line=$(grep -n '^preflight_space$' "$ROOT/scripts/install-device.sh" | head -1 | cut -d: -f1)
-stable_preflight_line=$(grep -n '^preflight_space$' "$ROOT/scripts/install-device.sh" | tail -1 | cut -d: -f1)
-bundle_validation_line=$(grep -n '^validate_bundle$' "$ROOT/scripts/install-device.sh" | head -1 | cut -d: -f1)
-mutation_line=$(grep -n 'acquire_directory_lock.*REMAGIC_INSTALL_LOCK' "$ROOT/scripts/install-device.sh" | head -1 | cut -d: -f1)
-[ "$preflight_line" -lt "$mutation_line" ]
-[ "$bundle_validation_line" -lt "$mutation_line" ]
-[ "$stable_preflight_line" -gt "$mutation_line" ]
-grep -q 'STRIP tool is undefined or not executable' "$ROOT/scripts/build-bundle.sh"
-grep -q 'find scripts native/appload-runtime -type f -print0' "$ROOT/scripts/check.sh"
-grep -q 'cp -R systemd manifests scripts testing' "$ROOT/scripts/build-bundle.sh"
-grep -q 'remagic-register' "$ROOT/scripts/install-device.sh"
-grep -q 'stage/share/systemd' "$ROOT/scripts/install-device.sh"
-grep -Fq 'publish_symlink /usr/lib/systemd/system/remagicd.service "$UNIT_ROOT/multi-user.target.wants/remagicd.service"' \
-    "$ROOT/scripts/install-device.sh"
-grep -Fq 'publish_symlink /usr/lib/systemd/system/magicpaper-agent.service "$UNIT_ROOT/multi-user.target.wants/magicpaper-agent.service"' \
-    "$ROOT/scripts/install-device.sh"
-grep -q 'list_remagic_app_units' "$ROOT/scripts/lib/deployment-common.sh"
-grep -q 'list_legacy_display_units' "$ROOT/scripts/lib/deployment-common.sh"
-grep -q 'cleanup_stale_acceptance_environment' "$ROOT/scripts/remagic-recover"
-grep -q 'wait_for_lock_barrier.*REMAGIC_RECOVERY_LOCK' "$ROOT/scripts/install-device.sh"
-grep -q 'list_deployment_transactions_newest_first.*TRANSACTION_ROOT' "$ROOT/scripts/install-device.sh"
-grep -q 'list_deployment_transactions_newest_first.*STATE_ROOT/transactions' "$ROOT/scripts/uninstall-device.sh"
-grep -Fq 'ConditionPathExists=!/home/root/.local/state/magicpaper/.remagic-schema/pending.json' \
-    "$ROOT/systemd/magicpaper-agent.service"
-grep -Fq 'scripts/remagic-schema-ready' "$ROOT/scripts/install-device.sh"
-grep -Fq 'MAGICPAPER_SCHEMA_PENDING' "$ROOT/scripts/install-device.sh"
-manifest_schema=$(awk '
-    $0 == "[data_schema]" { in_schema = 1; next }
-    in_schema && /^version = [0-9]+$/ { print $3; exit }
-' "$ROOT/manifests/magicpaper.toml")
-service_schema=$(sed -n \
-    's|^ExecCondition=.*/schema-ready magicpaper \([0-9][0-9]*\)$|\1|p' \
-    "$ROOT/systemd/magicpaper-agent.service")
-install_schema=$(sed -n 's/^MAGICPAPER_SCHEMA_VERSION=//p' \
-    "$ROOT/scripts/install-device.sh")
-[ -n "$manifest_schema" ] && [ "$manifest_schema" = "$service_schema" ] && \
-    [ "$manifest_schema" = "$install_schema" ] || {
-    echo "MagicPaper manifest, service, and installer schema gates disagree" >&2
+# The supported installer is the split system release. It verifies every file
+# before touching display ownership, snapshots all system-owned publication
+# points, atomically swaps only the ReMagic tree, then installs Store through
+# the same content-addressed package manager used for updates.
+SYSTEM_INSTALL=$ROOT/scripts/system-release/install-device.sh
+SYSTEM_BUILD=$ROOT/scripts/build-system-release.sh
+sh -n "$ROOT/install.sh"
+sh -n "$SYSTEM_INSTALL"
+sh -n "$SYSTEM_BUILD"
+grep -Fq '(cd "$SOURCE_DIR" && sha256sum -c SHA256SUMS)' "$SYSTEM_INSTALL"
+grep -Fq '(cd "$PAYLOAD" && sha256sum -c share/system-files.sha256)' "$SYSTEM_INSTALL"
+grep -Fq 'snapshot_path "$path" "$name"' "$SYSTEM_INSTALL"
+grep -Fq 'mv "$APP_ROOT" "$BACKUP"' "$SYSTEM_INSTALL"
+grep -Fq 'mv "$STAGE" "$APP_ROOT"' "$SYSTEM_INSTALL"
+grep -Fq 'remagic-package-inspect" install "$STORE_BUNDLE"' "$SYSTEM_INSTALL"
+grep -Fq 'systemctl is-active --quiet remagicd.service' "$SYSTEM_INSTALL"
+grep -Fq '"$APP_ROOT/bin/remagicctl" status' "$SYSTEM_INSTALL"
+grep -Fq 'installation failed; restoring the previous system' "$SYSTEM_INSTALL"
+grep -Fq 'restore_stock' "$SYSTEM_INSTALL"
+agent_stop_line=$(grep -n '^    systemctl stop magicpaper-agent.service' \
+    "$SYSTEM_INSTALL" | cut -d: -f1)
+core_switch_line=$(grep -n '^    mv "$APP_ROOT" "$BACKUP"' \
+    "$SYSTEM_INSTALL" | tail -1 | cut -d: -f1)
+legacy_remove_line=$(grep -n '^rm -f /run/systemd/system/magicpaper-agent.service' \
+    "$SYSTEM_INSTALL" | cut -d: -f1)
+register_line=$(grep -n '^"$APP_ROOT/libexec/remagic-register" --persistent' \
+    "$SYSTEM_INSTALL" | cut -d: -f1)
+[ "$agent_stop_line" -lt "$core_switch_line" ] && \
+    [ "$legacy_remove_line" -lt "$register_line" ] || {
+    echo "retired MagicPaper agent is not stopped and unlinked before system publication" >&2
     exit 1
 }
 
-SCHEMA_FENCE=$TMP/schema-ready
-if "$ROOT/scripts/remagic-schema-ready" "$SCHEMA_FENCE" magicpaper 1; then
-    echo "missing MagicPaper schema fence was accepted" >&2
+# User applications are separate packages. The system release must not embed
+# either payload, delete their state, or expose the adapter repository name as
+# KOReader's installed display label.
+if grep -Eq 'opt/magicpaper|opt/koreader-for-remagic|MAGICPAPER_DIR' "$SYSTEM_BUILD"; then
+    echo "system release embeds a user application payload" >&2
     exit 1
 fi
-printf '%s\n' 'magicpaper:2' >"$SCHEMA_FENCE"
-if "$ROOT/scripts/remagic-schema-ready" "$SCHEMA_FENCE" magicpaper 1; then
-    echo "wrong MagicPaper schema fence was accepted" >&2
+if grep -Eq 'rm -rf .*(/home/root/books|\.local/share/koreader-for-remagic|\.local/share/magicpaper)' \
+    "$SYSTEM_INSTALL"; then
+    echo "system installer can delete user books or application data" >&2
     exit 1
 fi
-printf '%s\n' 'magicpaper:1' >"$SCHEMA_FENCE"
-"$ROOT/scripts/remagic-schema-ready" "$SCHEMA_FENCE" magicpaper 1
-printf '%s\n%s\n' 'magicpaper:1' 'trailing-content' >"$SCHEMA_FENCE"
-if "$ROOT/scripts/remagic-schema-ready" "$SCHEMA_FENCE" magicpaper 1; then
-    echo "MagicPaper schema fence with trailing content was accepted" >&2
-    exit 1
-fi
-printf '%s\n' 'magicpaper:1' >"$SCHEMA_FENCE"
-mv "$SCHEMA_FENCE" "$SCHEMA_FENCE.real"
-ln -s "$SCHEMA_FENCE.real" "$SCHEMA_FENCE"
-if "$ROOT/scripts/remagic-schema-ready" "$SCHEMA_FENCE" magicpaper 1; then
-    echo "symlinked MagicPaper schema fence was accepted" >&2
-    exit 1
-fi
+grep -Fxq 'name = "KOReader"' "$ROOT/testing/manifests/koreader.toml"
+! grep -Eq '^name = ".*(for ReMagic|验收环境)' "$ROOT/testing/manifests/koreader.toml"
+grep -Fq 'ReadWritePaths=/home/root/.local/share/koreader-for-remagic' \
+    "$ROOT/systemd/remagic-app@koreader.service.d/10-koreader-runtime.conf"
+grep -Fq 'ReadOnlyPaths=/home/root' \
+    "$ROOT/systemd/remagic-app@koreader.service.d/10-koreader-runtime.conf"
 grep -q '^Conflicts=.*riddle-takeover.service' "$ROOT/systemd/remagicd.service"
 grep -q '^Conflicts=.*magicpaper-takeover.service' "$ROOT/systemd/remagicd.service"
 grep -q '^Conflicts=.*magicpaper-power-launcher.service' "$ROOT/systemd/remagicd.service"

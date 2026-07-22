@@ -546,8 +546,9 @@ assert_foreground_submission_since 0 "$home_key" "$home_generation" "$home_epoch
 echo "[v2-acceptance] finger-equivalent tap, press feedback, MagicPaper first frame"
 before_full=$(full_refresh_checkpoint)
 before_tap_sequence=$(last_submission_sequence)
-# Home layout is deterministic: stock, KOReader, then MagicPaper.
-"$CTL" tap 200 540 >/dev/null
+# Home layout is deterministic: stock, Store, KOReader, then MagicPaper.
+# Use the centre of the MagicPaper card, away from its optional close button.
+"$CTL" tap 200 686 >/dev/null
 wait_domain '"foreground": "magicpaper"'
 wait_unit 'remagic-app@magicpaper.service' active
 magic_key=$(foreground_key)

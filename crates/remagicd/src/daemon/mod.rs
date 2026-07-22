@@ -1,7 +1,9 @@
 mod applications;
+mod control_v2;
 mod input_mode;
 mod launch;
 mod navigation;
+mod packages;
 mod request;
 mod server;
 mod sleep;

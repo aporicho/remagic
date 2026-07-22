@@ -1,0 +1,54 @@
+schema = 2
+id = "remagic-store"
+name = "应用商店"
+kind = "system"
+description = "安装和更新 ReMagic 第一方应用"
+version = "0.1.0"
+package = "remagic-store"
+supported_devices = ["paper_pro", "paper_pro_move"]
+supported_os = []
+required_remagic_api = 2
+uninstall_policy = "keep_data"
+exec = "/home/root/apps/remagic-store/current/payload/bin/remagic-store"
+working_dir = "/home/root/apps/remagic-store/current"
+display = "none"
+resident = false
+capabilities = ["network:outbound-v1"]
+supports_open_path = false
+
+[readiness]
+mode = "process"
+timeout_ms = 15000
+
+[shutdown]
+graceful_timeout_ms = 3500
+term_timeout_ms = 4500
+kill_timeout_ms = 5500
+
+[runtime]
+profile = "headless"
+required_libraries = []
+
+[runtime.directories]
+home = "/home/root"
+config_home = "/home/root/.config/remagic-store"
+data_home = "/home/root/.local/share/remagic-store"
+state_home = "/home/root/.local/state/remagic-store"
+cache_home = "/home/root/.cache/remagic-store"
+runtime_dir = "/run/remagic/apps/remagic-store"
+
+[runtime.locale]
+lang = "C.UTF-8"
+
+[runtime.timezone]
+name = "Asia/Shanghai"
+
+[runtime.fonts]
+directories = []
+
+[runtime.certificates]
+required = true
+ca_bundle = "/etc/ssl/certs/ca-certificates.crt"
+
+[runtime.network]
+mode = "outbound"

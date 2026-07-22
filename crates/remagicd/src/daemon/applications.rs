@@ -121,10 +121,19 @@ impl Daemon {
         &self,
         manifest: Option<remagic_core::AppManifest>,
     ) -> Result<(), String> {
-        if let Some(BackgroundService::Systemd { unit }) =
-            manifest.and_then(|value| value.effective_background_service())
-        {
-            self.controller.stop_and_wait(&unit).await?;
+        let Some(manifest) = manifest else {
+            return Ok(());
+        };
+        match manifest.effective_background_service() {
+            Some(BackgroundService::Systemd { unit }) => {
+                self.controller.stop_and_wait(&unit).await?;
+            }
+            Some(BackgroundService::Managed { .. }) => {
+                self.controller
+                    .stop_and_wait(&crate::system::managed_background_unit(&manifest.id))
+                    .await?;
+            }
+            None => {}
         }
         Ok(())
     }

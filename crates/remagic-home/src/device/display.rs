@@ -1,6 +1,6 @@
 use super::{queued_magicpaper_result, Action, Button};
 use ab_glyph::{point, Font, FontArc, Glyph, PxScale, ScaleFont};
-use remagic_protocol::{AppView, PackageOperation};
+use remagic_protocol::AppView;
 use std::fs;
 use std::io;
 use std::time::Duration;
@@ -12,7 +12,9 @@ const DARK_GRAY: u32 = 0xFF73_716C;
 
 mod lock_page;
 mod settings_page;
+mod store_page;
 mod wallpaper;
+mod welcome_page;
 
 pub(super) fn load_font() -> Result<FontArc, Box<dyn std::error::Error>> {
     let paths = [
@@ -53,8 +55,8 @@ impl Display {
         let mut buttons = Vec::new();
         self.render_header(font, &mut buttons);
         let y = self.render_system_card(font, &mut buttons);
-        let y = self.render_app_cards(font, apps, &mut buttons, y);
-        self.render_package_card(font, &mut buttons, y);
+        let y = self.render_store_card(font, &mut buttons, y);
+        self.render_app_cards(font, apps, &mut buttons, y);
         self.render_sleep_button(font, &mut buttons);
         self.client.update_all()?;
         Ok(buttons)
@@ -106,7 +108,11 @@ impl Display {
         mut y: i32,
     ) -> i32 {
         let card_h = 132;
-        for app in apps.iter().take(7) {
+        for app in apps
+            .iter()
+            .filter(|app| app.id.as_str() != "remagic-store")
+            .take(7)
+        {
             if y + card_h > self.height - 210 {
                 break;
             }
@@ -144,32 +150,6 @@ impl Display {
             width: 112,
             height: 70,
             action: Action::Close(app.id.clone()),
-        });
-    }
-
-    fn render_package_card(&mut self, font: &FontArc, buttons: &mut Vec<Button>, y: i32) {
-        if y + 112 >= self.height - 170 {
-            return;
-        }
-        self.card(38, y, self.width - 76, 112);
-        self.text(font, "Vellum 软件包", 35.0, 72, y + 48, BLACK);
-        let ready = vellum_ready();
-        let status = if ready {
-            "已就绪 · 轻点更新索引"
-        } else {
-            "未安装 · 轻点安全安装"
-        };
-        self.text(font, status, 22.0, 72, y + 86, DARK_GRAY);
-        buttons.push(Button {
-            x: 38,
-            y,
-            width: self.width - 76,
-            height: 112,
-            action: Action::Package(if ready {
-                PackageOperation::Refresh
-            } else {
-                PackageOperation::Bootstrap
-            }),
         });
     }
 
@@ -363,16 +343,7 @@ fn app_status(app: &AppView) -> String {
 fn app_action(app: &AppView) -> Action {
     if app.installed {
         Action::Launch(app.id.clone())
-    } else if let Some(package) = &app.package {
-        Action::Package(PackageOperation::Install {
-            package: package.clone(),
-        })
     } else {
         Action::Unavailable
     }
-}
-
-fn vellum_ready() -> bool {
-    std::path::Path::new("/home/root/.vellum/bin/vellum").is_file()
-        || std::path::Path::new("/usr/bin/vellum").is_file()
 }

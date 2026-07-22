@@ -26,5 +26,6 @@ sh tests/test-lock-acceptance-inventory.sh
 sh tests/test-device-test-isolation.sh
 sh tests/test-magicpaper-config-isolation.sh
 sh tests/test-magicpaper-data-migrate.sh
+sh tests/test-system-release.sh
 
 echo "remagic checks passed"

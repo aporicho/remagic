@@ -1,8 +1,13 @@
 schema = 2
 id = "magicpaper"
 name = "MagicPaper"
+kind = "user"
 description = "手写 AI 魔法纸"
 version = "0.7.0"
+package = "magicpaper"
+supported_devices = ["paper_pro", "paper_pro_move"]
+required_remagic_api = 2
+uninstall_policy = "keep_data"
 exec = "/home/root/apps/remagic/libexec/magicpaper-qtfb"
 working_dir = "/home/root/apps/remagic/opt/magicpaper"
 display = "qtfb"
@@ -28,8 +33,10 @@ term_timeout_ms = 4500
 kill_timeout_ms = 5500
 
 [background_service]
-kind = "systemd"
-unit = "magicpaper-agent.service"
+kind = "managed"
+exec = "/home/root/apps/magicpaper/current/libexec/magicpaper-agent"
+working_dir = "/home/root/apps/magicpaper/current"
+restart = "on_failure"
 
 [data_schema]
 version = 2

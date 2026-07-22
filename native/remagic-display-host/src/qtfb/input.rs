@@ -12,15 +12,15 @@ use std::io;
 use std::sync::atomic::Ordering;
 
 impl HostState {
-    pub fn dispatch_input(&self, frame: InputFrame) {
+    pub fn dispatch_input(&self, frame: InputFrame) -> io::Result<()> {
         let captured = CapturedInput {
             epoch: self.input_epoch.load(Ordering::Acquire),
             frame,
         };
-        self.dispatch_captured_input(captured);
+        self.dispatch_captured_input(captured)
     }
 
-    pub fn dispatch_captured_input(&self, captured: CapturedInput) {
+    pub fn dispatch_captured_input(&self, captured: CapturedInput) -> io::Result<()> {
         // Serialize input routing with Set/ClearForeground. A committed lease
         // alone is insufficient during a transition: once a switch has been
         // requested, the previously visible client must stop receiving new
@@ -30,18 +30,22 @@ impl HostState {
         // Set-before-Pen order.
         let _operation = self.foreground_ops.lock().unwrap();
         if captured.epoch != self.input_epoch.load(Ordering::Acquire) {
-            return;
+            return Err(input_not_routed("stale input epoch"));
         }
         let frame = captured.frame;
         if self.suppress_fenced_contact(frame) {
-            return;
+            return Err(input_not_routed(
+                "contact belongs to an old foreground fence",
+            ));
         }
         if self.prepared_foreground.lock().unwrap().is_some() {
-            return;
+            return Err(input_not_routed("foreground transition is still prepared"));
         }
         let lock = *self.lock.lock().unwrap();
         if lock.is_some_and(|lock| !self.route_lock_contact(frame, lock)) {
-            return;
+            return Err(input_not_routed(
+                "contact is outside the lock-screen control",
+            ));
         }
         let requested = self
             .foreground
@@ -49,16 +53,18 @@ impl HostState {
             .unwrap()
             .map(|foreground| foreground.panel_lease());
         let Some(lease) = self.telemetry.committed_foreground() else {
-            return;
+            return Err(input_not_routed("panel has no committed foreground"));
         };
         if requested != Some(lease) {
-            return;
+            return Err(input_not_routed(
+                "requested and panel-committed foregrounds differ",
+            ));
         }
         if lock.is_none() && !self.route_foreground_touch(frame) {
-            return;
+            return Err(input_not_routed("touch sequence has no active contact"));
         }
         if !self.track_pen_contact(frame, lease) {
-            return;
+            return Err(input_not_routed("pen sequence has no active contact"));
         }
         let packet = match frame {
             InputFrame::Pen(frame) => {
@@ -68,7 +74,13 @@ impl HostState {
             }
             InputFrame::Touch(frame) => touch_packet(frame),
         };
-        self.send_to_key(lease.key, &packet);
+        self.deliver_input(lease.key, &packet)
+    }
+
+    fn deliver_input(&self, key: i32, packet: &[u8; QTFB_SERVER_MESSAGE_SIZE]) -> io::Result<()> {
+        self.send_to_key(key, packet)
+            .then_some(())
+            .ok_or_else(|| input_not_routed("foreground surface has no live input client"))
     }
 
     fn suppress_fenced_contact(&self, frame: InputFrame) -> bool {
@@ -197,7 +209,13 @@ impl HostState {
                 x,
                 y,
                 pressure,
-            }));
+            }))
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("injected touch {phase:?} was not routed: {error}"),
+                )
+            })?;
             if phase == TouchPhase::Down {
                 // The control API models a real finger tap for device
                 // acceptance. Leave the pressed frame visible long enough for
@@ -230,7 +248,7 @@ impl HostState {
         for index in 0..points {
             self.dispatch_input(InputFrame::Pen(interpolated_pen_frame(
                 base, index, points, x0, y0, x1, y1,
-            )));
+            )))?;
         }
         self.dispatch_input(InputFrame::Pen(PenFrame {
             sequence: base + u64::from(points),
@@ -241,30 +259,41 @@ impl HostState {
             y: y1,
             pressure: 0,
             pressure_max: 4096,
-        }));
+        }))?;
         Ok(())
     }
 
     fn validate_point(&self, x: i32, y: i32) -> io::Result<()> {
-        if (0..954).contains(&x) && (0..1696).contains(&y) {
+        let foreground = self.foreground.lock().unwrap().map(|lease| lease.key);
+        let surfaces = self.surfaces.lock().unwrap();
+        let (width, height) = foreground
+            .and_then(|key| surfaces.get(&key))
+            .map(|entry| (entry.surface.width, entry.surface.height))
+            .unwrap_or((self.physical_width, self.physical_height));
+        if (0..width).contains(&x) && (0..height).contains(&y) {
             Ok(())
         } else {
             Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("input point {x},{y} is outside the Move logical display"),
+                format!("input point {x},{y} is outside the {width}x{height} logical display"),
             ))
         }
     }
 
-    pub(super) fn send_to_key(&self, key: i32, packet: &[u8; QTFB_SERVER_MESSAGE_SIZE]) {
+    pub(super) fn send_to_key(&self, key: i32, packet: &[u8; QTFB_SERVER_MESSAGE_SIZE]) -> bool {
         let mut surfaces = self.surfaces.lock().unwrap();
         let Some(entry) = surfaces.get_mut(&key) else {
-            return;
+            return false;
         };
+        let mut delivered = false;
         entry.clients.retain(|sink| match sink.queue.push(*packet) {
-            InputPush::Queued => true,
+            InputPush::Queued => {
+                delivered = true;
+                true
+            }
             InputPush::Coalesced => {
                 self.input_backpressure.fetch_add(1, Ordering::Relaxed);
+                delivered = true;
                 true
             }
             InputPush::Closed => false,
@@ -273,7 +302,12 @@ impl HostState {
                 false
             }
         });
+        delivered
     }
+}
+
+fn input_not_routed(reason: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::WouldBlock, reason)
 }
 
 fn touch_packet(frame: TouchFrame) -> [u8; QTFB_SERVER_MESSAGE_SIZE] {

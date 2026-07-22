@@ -1,5 +1,8 @@
 use remagic_core::AppId;
-use remagic_protocol::{read_frame, write_frame, PackageOperation, Request, Response};
+use remagic_protocol::{
+    read_frame, write_frame, ControlIntent, ControlReply, ControlRequest, ControlResponse,
+    PackageOperation, Request, Response,
+};
 use std::path::PathBuf;
 use tokio::net::UnixStream;
 
@@ -49,6 +52,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }))
         .await;
     }
+    if let Some(intent) = parse_v2(&args)? {
+        return execute_v2(intent).await;
+    }
     let request = parse(&args)?;
     let socket =
         std::env::var("REMAGIC_SOCKET").unwrap_or_else(|_| remagic_protocol::DEFAULT_SOCKET.into());
@@ -60,6 +66,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+async fn execute_v2(intent: ControlIntent) -> Result<(), Box<dyn std::error::Error>> {
+    let socket =
+        std::env::var("REMAGIC_SOCKET").unwrap_or_else(|_| remagic_protocol::DEFAULT_SOCKET.into());
+    let mut stream = UnixStream::connect(socket).await?;
+    let request = ControlRequest::new(format!("remagicctl-{}", std::process::id()), intent);
+    write_frame(&mut stream, &request).await?;
+    let response: ControlResponse = read_frame(&mut stream).await?;
+    println!("{}", serde_json::to_string_pretty(&response)?);
+    if matches!(response.body, ControlReply::Error { .. }) {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn parse_v2(args: &[String]) -> Result<Option<ControlIntent>, Box<dyn std::error::Error>> {
+    let Some(command) = args.first().map(String::as_str) else {
+        return Ok(None);
+    };
+    let intent = match command {
+        "snapshot" => ControlIntent::Snapshot,
+        "preflight" => ControlIntent::Preflight {
+            app_id: AppId::new(args.get(1).ok_or("preflight requires an app id")?.clone())?,
+        },
+        "install-bundle" => ControlIntent::Install {
+            bundle: PathBuf::from(args.get(1).ok_or("install-bundle requires a path")?),
+        },
+        "upgrade-bundle" => ControlIntent::Upgrade {
+            app_id: AppId::new(
+                args.get(1)
+                    .ok_or("upgrade-bundle requires an app id")?
+                    .clone(),
+            )?,
+            bundle: Some(PathBuf::from(
+                args.get(2).ok_or("upgrade-bundle requires a path")?,
+            )),
+        },
+        "rollback" => ControlIntent::Rollback {
+            app_id: AppId::new(args.get(1).ok_or("rollback requires an app id")?.clone())?,
+            version: args.get(2).cloned(),
+        },
+        "uninstall" => ControlIntent::Uninstall {
+            app_id: AppId::new(args.get(1).ok_or("uninstall requires an app id")?.clone())?,
+            purge: args.iter().any(|argument| argument == "--purge"),
+        },
+        _ => return Ok(None),
+    };
+    Ok(Some(intent))
 }
 
 fn parse_coordinate(
@@ -256,5 +311,23 @@ mod tests {
         ]))
         .unwrap_err();
         assert!(error.to_string().contains("must be non-zero"));
+    }
+
+    #[test]
+    fn parses_transactional_bundle_commands_on_control_v2() {
+        let intent = parse_v2(&args(&[
+            "upgrade-bundle",
+            "koreader",
+            "/tmp/koreader.tar.gz",
+        ]))
+        .unwrap()
+        .unwrap();
+        assert!(matches!(
+            intent,
+            ControlIntent::Upgrade {
+                app_id,
+                bundle: Some(path),
+            } if app_id.as_str() == "koreader" && path == std::path::Path::new("/tmp/koreader.tar.gz")
+        ));
     }
 }

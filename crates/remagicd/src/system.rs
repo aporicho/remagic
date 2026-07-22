@@ -2,10 +2,14 @@ use std::fs;
 use std::io;
 use std::path::Path;
 use std::time::Duration;
-use tokio::process::Command;
 use tracing::warn;
 
+mod background;
 mod freezer;
+mod systemd;
+
+pub use background::managed_background_unit;
+use systemd::{command_output, parse_active_state, run};
 
 const WAKELOCK: &[u8] = b"remagic-managed\n";
 const WAKELOCK_NAME: &str = "remagic-managed";
@@ -334,44 +338,6 @@ fn interpret_wake_unlock(result: io::Result<()>) -> Result<(), String> {
     }
 }
 
-fn parse_active_state(
-    status_code: Option<i32>,
-    stdout: &str,
-    stderr: &str,
-    unit: &str,
-) -> Result<bool, String> {
-    let states: Vec<_> = stdout
-        .lines()
-        .map(str::trim)
-        .filter(|state| !state.is_empty())
-        .collect();
-    if states.is_empty() {
-        // systemctl uses 3 for inactive and 4 for unknown/no units matching a
-        // wildcard. Those both prove there is no active cgroup; transport and
-        // D-Bus failures use other statuses and remain fail-closed.
-        return match status_code {
-            Some(3 | 4) => Ok(false),
-            _ => Err(format!(
-                "systemctl could not determine whether {unit} is active: {}",
-                stderr.trim()
-            )),
-        };
-    }
-    let mut active = false;
-    for state in states {
-        match state {
-            "active" | "activating" | "reloading" | "deactivating" => active = true,
-            "inactive" | "failed" | "unknown" => {}
-            other => {
-                return Err(format!(
-                    "systemctl returned unexpected state {other:?} for {unit}"
-                ));
-            }
-        }
-    }
-    Ok(active)
-}
-
 fn remove_managed_domain_marker() -> Result<(), String> {
     match fs::remove_file(MANAGED_DOMAIN_MARKER) {
         Ok(()) => Ok(()),
@@ -382,93 +348,5 @@ fn remove_managed_domain_marker() -> Result<(), String> {
     }
 }
 
-async fn run(program: &str, arguments: &[&str]) -> Result<(), String> {
-    let output = command_output(program, arguments, Duration::from_secs(12)).await?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "{} {} failed: {}",
-            program,
-            arguments.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
-        ))
-    }
-}
-
-async fn command_output(
-    program: &str,
-    arguments: &[&str],
-    timeout: Duration,
-) -> Result<std::process::Output, String> {
-    let mut command = Command::new(program);
-    command.args(arguments).kill_on_drop(true);
-    tokio::time::timeout(timeout, command.output())
-        .await
-        .map_err(|_| format!("{program} {} timed out", arguments.join(" ")))?
-        .map_err(|error| format!("cannot execute {program}: {error}"))
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn no_matching_template_instances_are_inactive() {
-        assert_eq!(
-            parse_active_state(Some(4), "", "", "remagic-app@*.service"),
-            Ok(false)
-        );
-    }
-
-    #[test]
-    fn systemd_transport_failure_is_not_inactivity_evidence() {
-        assert!(parse_active_state(
-            Some(1),
-            "",
-            "Failed to connect to bus",
-            "remagic-display-host.service"
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn transitional_states_still_own_the_unit() {
-        for state in ["active", "activating", "reloading", "deactivating"] {
-            assert_eq!(
-                parse_active_state(Some(0), state, "", "owner.service"),
-                Ok(true)
-            );
-        }
-    }
-
-    #[test]
-    fn wake_unlock_is_idempotent_when_the_kernel_reports_absent_name() {
-        assert_eq!(
-            interpret_wake_unlock(Err(io::Error::from_raw_os_error(libc::EINVAL))),
-            Ok(())
-        );
-    }
-
-    #[test]
-    fn wake_unlock_keeps_real_kernel_failures_visible() {
-        let error = interpret_wake_unlock(Err(io::Error::from_raw_os_error(13))).unwrap_err();
-        assert!(error.contains("cannot release managed wake lock"));
-    }
-
-    #[test]
-    fn suspend_success_counter_is_strictly_numeric() {
-        assert_eq!(parse_suspend_success("42\n"), Ok(42));
-        assert!(parse_suspend_success("").is_err());
-        assert!(parse_suspend_success("41 wakeups").is_err());
-    }
-
-    #[test]
-    fn suspend_preflight_ignores_our_lock_but_reports_external_owners() {
-        assert!(external_wake_locks("remagic-managed\n").is_empty());
-        assert_eq!(
-            external_wake_locks("remagic-managed udev.charger wifi"),
-            vec!["udev.charger", "wifi"]
-        );
-    }
-}
+mod tests;

@@ -49,10 +49,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "remagic-device"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "remagic-display-host"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "remagic-device",
  "serde",
  "serde_json",
  "signal-hook",

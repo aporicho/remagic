@@ -96,7 +96,10 @@ impl<B: PanelBackend> PanelRuntime<B> {
         y1: i32,
         radius: i32,
     ) {
-        let geometry = self.geometry_for_logical(954, 1696);
+        let Some(surface) = self.surfaces.get(&self.ink.key) else {
+            return;
+        };
+        let geometry = self.geometry_for_logical(surface.width, surface.height);
         let (physical_x0, physical_y0) = geometry.logical_to_physical_point(x0, y0);
         let (physical_x1, physical_y1) = geometry.logical_to_physical_point(x1, y1);
         let color = match tool {

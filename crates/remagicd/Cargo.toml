@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 libc.workspace = true
 remagic-core = { path = "../remagic-core" }
+remagic-package = { path = "../remagic-package" }
 remagic-protocol = { path = "../remagic-protocol" }
 serde.workspace = true
 serde_json.workspace = true

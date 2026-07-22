@@ -1,3 +1,4 @@
+use remagic_device::{DeviceProduct, DeviceProfile};
 use remagic_display_host::control::ControlServer;
 use remagic_display_host::input::{CapturedInput, InputThreads};
 #[cfg(feature = "device")]
@@ -26,13 +27,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if mode == "--mock" {
-        return run(|| MemoryBackend::new(960, 1696), false).map_err(Into::into);
+        let profile = DeviceProfile::for_product(DeviceProduct::PaperProMove, "mock");
+        return run(|| MemoryBackend::new(960, 1696), false, profile).map_err(Into::into);
     }
 
     #[cfg(feature = "device")]
     {
         verify_exclusive_domain()?;
-        run(QuillBackend::open, true).map_err(Into::into)
+        let profile = DeviceProfile::detect()?;
+        run(QuillBackend::open, true, profile).map_err(Into::into)
     }
     #[cfg(not(feature = "device"))]
     {
@@ -61,12 +64,17 @@ fn verify_exclusive_domain() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn run<B, F>(backend_factory: F, claim_input: bool) -> io::Result<()>
+fn run<B, F>(backend_factory: F, claim_input: bool, profile: DeviceProfile) -> io::Result<()>
 where
     B: PanelBackend + 'static,
     F: FnOnce() -> io::Result<B> + Send + 'static,
 {
-    let panel = spawn_panel_worker(backend_factory)?;
+    profile.validate().map_err(io::Error::other)?;
+    let panel = spawn_panel_worker(
+        backend_factory,
+        profile.display.logical_width,
+        profile.display.logical_height,
+    )?;
     let health = Arc::clone(&panel.telemetry);
     let state = HostState::new_with_telemetry(
         panel.sender,
@@ -85,8 +93,8 @@ where
     let (input_tx, input_rx) = mpsc::channel::<CapturedInput>();
     let input_threads = if claim_input {
         Some(InputThreads::spawn(
-            954,
-            1696,
+            profile.display.logical_width,
+            profile.display.logical_height,
             input_tx,
             state.input_epoch_source(),
         )?)
@@ -98,7 +106,7 @@ where
         .name("remagic-input-dispatch".into())
         .spawn(move || {
             while let Ok(captured) = input_rx.recv() {
-                input_state.dispatch_captured_input(captured);
+                let _ = input_state.dispatch_captured_input(captured);
                 if input_state.is_shutdown() {
                     break;
                 }
@@ -109,8 +117,15 @@ where
     signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&terminating))?;
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&terminating))?;
     eprintln!(
-        "remagic-display-host: ready physical={}x{} stride={} qtfb={} control={}",
-        panel.width, panel.height, panel.stride, qtfb_path, control_path
+        "remagic-display-host: ready product={:?} physical={}x{} logical={}x{} stride={} qtfb={} control={}",
+        profile.product,
+        panel.width,
+        panel.height,
+        profile.display.logical_width,
+        profile.display.logical_height,
+        panel.stride,
+        qtfb_path,
+        control_path
     );
     let mut hardware_failure = None;
     while !terminating.load(Ordering::Acquire) && !state.is_shutdown() {
@@ -152,7 +167,11 @@ struct PanelWorker {
     thread: std::thread::JoinHandle<io::Result<()>>,
 }
 
-fn spawn_panel_worker<B, F>(backend_factory: F) -> io::Result<PanelWorker>
+fn spawn_panel_worker<B, F>(
+    backend_factory: F,
+    logical_width: i32,
+    logical_height: i32,
+) -> io::Result<PanelWorker>
 where
     B: PanelBackend + 'static,
     F: FnOnce() -> io::Result<B> + Send + 'static,
@@ -170,7 +189,7 @@ where
             let backend = backend_factory().inspect_err(|error| {
                 let _ = ready_tx.send(Err(error.to_string()));
             })?;
-            let dimensions = validate_backend(&backend);
+            let dimensions = validate_backend(&backend, logical_width, logical_height);
             if let Err(error) = &dimensions {
                 let _ = ready_tx.send(Err(error.to_string()));
                 panel_health.mark_failure();
@@ -199,9 +218,16 @@ where
     })
 }
 
-fn validate_backend<B: PanelBackend>(backend: &B) -> Result<(i32, i32, usize), String> {
+fn validate_backend<B: PanelBackend>(
+    backend: &B,
+    logical_width: i32,
+    logical_height: i32,
+) -> Result<(i32, i32, usize), String> {
     let dimensions = (backend.width(), backend.height(), backend.stride());
-    if dimensions.0 < 954 || dimensions.1 < 1696 || dimensions.2 < dimensions.0 as usize * 4 {
+    if dimensions.0 < logical_width
+        || dimensions.1 < logical_height
+        || dimensions.2 < dimensions.0 as usize * 4
+    {
         Err(format!(
             "unsupported physical framebuffer {}x{} stride {}",
             dimensions.0, dimensions.1, dimensions.2

@@ -1,102 +1,131 @@
 # ReMagic
 
-ReMagic 是 reMarkable Paper Pro Move 上的独立应用系统层。原版界面与镇纸共同属于“系统域”；ReMagic 只在运行第三方应用时接管显示、触摸和笔输入，并可随时把所有权完整还给原版系统。
+ReMagic 是 reMarkable Paper Pro 与 Paper Pro Move 的独立应用系统层。原版界面与
+镇纸共同属于“系统域”；ReMagic 只在管理或运行第三方应用时接管显示、触摸与笔
+输入，并能把所有权完整还给原版系统。
 
-它不使用 Oxide，也不把镇纸或 AppLoad 当作应用运行时。KOReader、MagicPaper 只依赖 ReMagic 提供的受监督环境。
+它不使用 Oxide，也不把镇纸或 AppLoad 当作运行时。系统只保留从固定源码构建的
+小型 QTFB 兼容 shim，KOReader、MagicPaper 均由 ReMagic 自己监督。
 
-## 三个项目的边界
+## 项目边界与名称
 
-- `remagic`：电源键入口、显示/输入唯一所有权、应用监督、前后台切换、任务页、运行环境和故障恢复。
-- `magicpaper`：MagicPaper 的书写、AI、任务、TODO、历史、字体与后台 agent。
-- `koreader-for-remagic`：上游 KOReader 的独立启动、书库、数据迁移、字体和生命周期适配。
+- `remagic`：系统、管理器、显示/输入唯一所有者、生命周期、安装事务与故障恢复。
+- `remagic-store`：内置系统应用“应用商店”，负责签名目录、下载、校验与安装意图。
+- `magicpaper`：设备上显示为 `MagicPaper`，负责书写、AI、任务、TODO、历史和字体。
+- `koreader-for-remagic`：KOReader 的 ReMagic 适配工程；设备、商店和任务页一律只
+  显示 `KOReader`。内部包名仍为 `koreader-for-remagic`，应用 ID 为 `koreader`。
 
-应用不能直接抓取原始输入或物理屏幕，也不能绕过管理器切换前台。所有跨项目交互都通过带版本的 manifest、lifecycle 和 display/QTFB 契约完成。
+应用不能直接取得物理屏幕或原始输入，也不能绕过管理器切换前台。跨项目交互只走
+带版本的 manifest、DeviceProfile、lifecycle、display/QTFB 和 control v2 契约。
+
+## 双设备与系统版本
+
+安装器、daemon、显示宿主、Home、runner 和 Store 使用同一份严格 DeviceProfile：
+
+- Paper Pro：`reMarkable Ferrari`，1620×2160，QTFB format 3。
+- Paper Pro Move：`reMarkable Chiappa`，954×1696，QTFB format 6。
+
+设备身份必须同时匹配 `/sys/devices/soc0/machine` 与
+`/proc/device-tree/model`，不依据分辨率猜机型。系统兼容性读取
+`/etc/os-release` 的 `IMG_VERSION`；`VERSION_ID` 只是 Codex Linux 镜像版本。
+当前构建只接受正式验证的 3.27.x 系列，其他版本 fail closed。
 
 ## 系统结构
 
-- `remagicd`：串行状态机、应用生命周期、systemd cgroup 监督和恢复策略。
-- `remagic-display-host`：唯一的 Quill、面板、触摸和压感笔所有者；同时提供隔离的稳定 QTFB surface。
-- `remagic-runner`：依据 schema-v2 manifest 创建每个应用的 HOME/XDG、字体、时区、证书、库、QTFB 和生命周期环境。
-- `remagic-home`：手指可操作的运行中任务页，负责启动、召回、关闭和休眠入口。
-- `remagicctl`：自动化、诊断和恢复使用的本机控制工具。
+- `remagicd`：串行状态机、应用生命周期、systemd cgroup 监督和恢复。
+- `remagic-display-host`：唯一 Quill、面板、触摸和压感笔所有者，并提供隔离的
+  RGB565 QTFB surface。
+- `remagic-runner`：依据 schema-v2 manifest 创建每个应用的 HOME/XDG、字体、
+  时区、证书、网络、QTFB 和生命周期环境。
+- `remagic-home`：手指可操作的任务页、应用商店、设置和锁屏。
+- `remagic-package`：验证完整文件清单，发布不可变内容寻址 release，原子切换
+  `current`，支持升级、回滚、断电恢复与保留数据卸载。
+- `remagicctl`：诊断、自动化与 control v2 管理工具。
 
-应用启动必须依次通过 manifest 预检、进程存活、生命周期 token、第一帧 surface 和实际面板提交。前台 lease 包含 app、generation、foreground epoch 和 lease ID；旧进程或迟到消息不能覆盖新实例。
+应用启动必须通过 manifest 预检、进程存活、生命周期 token、第一帧 surface 和
+实际面板提交。前台 lease 绑定 app、generation、foreground epoch 和 lease ID，
+旧进程与迟到消息不能覆盖新实例。
 
-### 应用数据 schema 契约
-
-`[data_schema]` 只允许出现在 schema-v2 manifest。冷启动在创建 lifecycle socket、control endpoint 和应用进程之前，先完成以下事务：
-
-1. 在应用已校验的 `state_home/.remagic-schema` 取得独占锁，先协调精确绑定 app、from/to、快照和路径集合的 `pending.json`；真正的在途事务会先恢复，同版本或降级判断都不能绕过它。
-2. 对每个存在的 `backup_paths` 做不跟随符号链接的完整快照，记录文件 SHA-256、链接目标、类型、权限和属主，并在校验后原子发布。相互重叠的源路径，以及与 `.remagic-schema` 任一方向重叠的路径都会被拒绝。无 journal 的旧快照不会被误重放。
-3. 若声明 `migrator`，runner 以解析完成的 schema-v2 环境、manifest `working_dir` 和空继承环境执行已经校验的同一文件描述符，不经过 shell，也不存在“校验后换文件”的路径窗口。迁移器只能是当前有效 UID 拥有、不可被 group/world 写入、无 setuid/setgid 的真实可执行文件；stdout/stderr 不进入 journal。它可读取 `REMAGIC_DATA_SCHEMA_FROM`、`REMAGIC_DATA_SCHEMA_TO` 和 `REMAGIC_DATA_SCHEMA_BACKUP`。
-4. 迁移成功后原子发布 `state.json` 并退休 pending journal；无迁移器时仍先备份再记录版本。非零退出、超时、发布中断都不会更新版本，恢复后的内容、属主和权限都经过持久化同步。
-
-runner 以 generation 绑定的 `schema-prepared`、`schema-complete` 两道原子栅栏分隔启动阶段；等待预算分别覆盖 `backup_timeout_ms`、`migration_timeout_ms + 10 秒提交余量`、应用 ready，以及 QTFB 的独立 surface/首帧时限（总上限 1450 秒），所以任何前置阶段都不会挤占后续阶段声明的时间。迁移前，管理器会先静默声明的后台写入服务，ready 后再恢复；MagicPaper 的 systemd 单元也会在重启时根据 pending journal 拒绝抢跑。新的电源键、关闭、返回或启动交互会抢占尚未完成的旧启动，客户端超时的队列事件不会迟到执行。备份与版本记录保留在应用持久 state 目录，不占用设备只读根分区。
-
-暂停先等待应用确认状态已经保存，再撤销前台输入/显示 lease。应用可在 manifest 中选择继续运行或冻结整个 systemd cgroup；KOReader 使用冻结策略，因此后台不耗 CPU，召回时先解冻同一 PID、surface 和阅读页面。关闭先解冻（若需要）、发送语义化 Shutdown，再按 manifest 的宽限期执行 TERM→KILL。返回系统域会停止全部托管 cgroup、显示宿主和共享 surface，最后恢复 xochitl 与镇纸。
+数据迁移先在应用 state 目录建立 journal 和完整快照，再以已验证的文件描述符执行
+migrator；失败、超时或断电不会提交 schema。暂停先要求应用保存状态再撤销输入与
+显示 lease。KOReader 后台冻结整个 cgroup，召回时恢复同一 PID、surface 和阅读页；
+关闭则按语义化 Shutdown → TERM → KILL 的有界流程执行。
 
 ## 交互
 
-- 原版界面三按电源键：进入 ReMagic 任务页。
+- 原版界面三按电源键：进入 ReMagic。
 - 应用内单按电源键：暂停应用并回到任务页。
 - 任务页单按电源键：召回最近应用。
 - 任务页或应用内三按电源键：返回原版/镇纸系统域。
-- 任务页“休眠”：先提交并冻结 ReMagic 锁屏，再释放 wakelock 进入系统休眠；按一次电源键唤醒后，Home 会自动准备并切回完整任务页，不需要再点屏幕，也不经过原版系统。只有自动返回暂时失败时，锁屏上的“立即返回”才作为手动恢复入口；30 秒后仍未恢复会带着同一冻结锁屏再次休眠。
+- 任务页“休眠”：提交冻结锁屏后进入 suspend；实体电源键唤醒直接回管理器。
 
-任务页右上角的“设置”进入锁屏设置。可循环选择默认白纸、原生锁屏和自定义 PNG，切换“填充裁切/完整适应”，以及开关时钟和唤醒提示；“预览锁屏”不会真的休眠。设置原子保存于 `/home/root/.config/remagic/home.toml`。自定义壁纸放入 `/home/root/.local/share/remagic/wallpapers/`，返回设置页后再次进入即可刷新列表；只读取普通 PNG 文件，损坏或过大的图片会安全回退到白底。
+首次进入显示“ReMagic 已就绪”，用户可打开应用商店或返回原版系统。商店不会
+自动安装用户应用；MagicPaper 与 KOReader 由用户分别选择。卡片按下立即反色，
+应用切换不经过空白页，每次进入新前台只做一次必要的完整刷新。
 
-USB 供电或其他内核唤醒锁可能阻止真正 suspend。此时休眠入口仍保留已经提交的锁屏和输入隔离，不再自动跳回任务页；“立即返回”是唯一的屏幕解锁入口。拔掉 USB 后可返回任务页并重新休眠，正常 suspend/resume 仍在实体电源键唤醒后直接进入管理器。
+锁屏设置可选择白纸、原生锁屏或自定义 PNG，并配置裁切、时钟和提示。设置写入
+`/home/root/.config/remagic/home.toml`，壁纸位于
+`/home/root/.local/share/remagic/wallpapers/`。
 
-锁屏期间，显示宿主持有冻结画面并吞掉笔输入，只把备用按钮范围内的一次完整手指接触交给 Home。物理唤醒后不重复刷新锁屏；Home 先在不可见的共享 surface 中准备完整任务页，显示宿主确认该序号后，以一次全屏事务替换锁屏并同时开放输入。Home 重启、提交失败或短暂背压都不会提前露出可写界面；失败事务会在冻结锁屏后自动重试，三按电源键仍可执行保底的系统域恢复。
+## 安装与更新
 
-卡片和按钮支持手指操作，按下立即反色。应用之间直接切换时不经过黑白空白页；每次进入新前台只允许一次完整刷新，普通按压、书写和返回任务页使用局部更新。
+Linux 或 macOS 通过 USB 连接设备后运行：
 
-## 与早期 ReMagic/AppLoad 方案的区别
+```sh
+curl -fsSL https://raw.githubusercontent.com/aporicho/remagic/main/install.sh | sh
+```
 
-- 删除 AppLoad 可执行文件、QML 启动器和第二套输入/显示所有权；只从固定、校验过的 `rm-appload v0.5.3` 源码构建 KOReader 所需的小型 `qtfb-shim.so`。
-- 原来的单体 daemon/runtime 被拆为状态机、监督、运行环境、协议、显示宿主和 UI 模块。
-- MagicPaper 和 KOReader 是独立 resident 应用，可暂停、直接切换、召回和完整关闭。
-- QTFB surface 使用稳定 key；显示提交带 generation/epoch fence，并记录 surface hash、实际提交序号、队列深度和完整刷新次数。
-- 显示宿主、Home、应用子进程或 daemon 异常退出均有明确恢复路径；无法维持托管域时优先恢复原版系统。
-- 安装不覆盖书籍、KOReader 阅读位置、MagicPaper 记忆、任务、TODO、字体设置或 API 配置。
-- MagicPaper 后台任务服务以持久的“应用 ID + 数据 schema 版本”栅栏启动；首装、升级、降级或断电留下迁移日志时保持停止，只有受监督的前台 runner 完成恢复/迁移后才会启动。
-- KOReader 官方包位于内容寻址的 `koreader-for-remagic/vendor/releases/<版本-归档SHA>/koreader`，除首次消费官方 `update_once.marker` 外不增删其代码、插件或字体。ReMagic wrapper、生命周期/策略 userpatch 和中文字体位于独立的 `adapter/releases/<内容SHA>`；manifest 只引用一对固定 release，安装前后复验完整文件清单和 SHA-256。
-- KOReader 进程的 systemd 私有挂载把整个 `/home/root` 默认设为只读，只开放 KOReader 自己的数据、缓存和测试目录；进程没有任何 Linux capability，systemd/系统 D-Bus 控制 socket 不可见，不能重挂文件系统或修改其他应用/书籍。所有设置、数据库、阅读位置和镜像到 `KO_HOME` 的三个最小 userpatch 都写在独立数据目录。官方 Terminal 插件仍在 vendor 中但由策略禁用，OTA 能力由管理器策略隐藏，升级不由应用自行改写程序树。为兼容当前 reMarkable/QTFB，进程仍使用 uid 0，因此这里是可信应用的故障隔离边界，不宣称能安全执行恶意插件。
-- 既有 `/home/root/apps/koreader` 只读作 legacy 数据源，安装和卸载都不替换或删除它。升级只迁移设置、阅读记录、截图、剪贴板和词典等数据，旧插件、用户补丁及其他可执行扩展不会自动迁移或激活。
+主机脚本自动识别 Paper Pro / Paper Pro Move、验证 3.27.x、下载并校验 release，
+再通过 SSH 传入设备。设备安装器会：
 
-## 构建与部署
+1. 在任何停服前复核 release 与逐文件 SHA-256。
+2. 恢复原版显示所有权，再原子替换 ReMagic 系统树。
+3. 事务安装不可普通卸载的 ReMagic Store。
+4. 保留 `/home/root/books`、应用数据、阅读位置、API 配置、原版系统和镇纸。
+5. 健康检查失败时恢复上一系统版本和已发布 manifest/unit。
 
-需要 chiappa SDK，以及同级目录中的 `magicpaper`、`koreader-for-remagic` 和 `quill-move`：
+重装镇纸不会修改 `/home/root/apps/remagic`；若第三方安装器重写 systemd 注册，重新
+运行同一条 ReMagic 安装命令即可恢复入口，不需要重装应用或数据。
+
+## 构建
+
+系统 release 只包含 ReMagic、内置 Store 和 KOReader 所需的小型 QTFB shim，不
+包含 MagicPaper 或 KOReader 的应用 payload：
 
 ```sh
 ./scripts/check.sh
-./scripts/build-bundle.sh
-./scripts/deploy-usb.sh
+./scripts/build-system-release.sh
 ```
 
-构建会交叉编译 aarch64 二进制，验证并打包不含 ReMagic 注入文件的上游 KOReader vendor release、独立 adapter release、QTFB shim、四种外置 KOReader 中文字体，以及 MagicPaper 的手写字体和完整中文字形回退。vendor 与 adapter 都以内容指纹命名，release 记录、官方文件清单、逐文件 SHA 和整个 bundle 会在停止设备服务前共同校验；安装失败会恢复 xochitl。
+默认需要当前 Paper Pro family SDK、同级 `quill-move`、`remagic-store` 和方正屏显
+雅宋字体。所有 Rust/C/C++ 设备组件强制以 baseline ARMv8-A 构建，防止 Chiappa
+SDK 的产品专用 `-mcpu` 指令进入 Ferrari 通用包。
 
-黄油拾叁体与 851 远星夜行体不从被忽略的旧 `dist` 目录取用。构建直接校验并解包原始 zip，默认位置为 `~/Downloads/黄油拾叁体.zip` 和 `~/Downloads/851远星夜行手写体.zip`；其他位置可分别用 `MAGICPAPER_BUTTER_FONT_ARCHIVE`、`MAGICPAPER_851_FONT_ARCHIVE` 指定。压缩包与解出的 TTF 都必须匹配固定 SHA-256，防止旧缓存或同名文件混入发布包。
-
-构建还会从已校验的 KOReader v2026.03 包中复制 `NotoSansCJKsc-Regular.otf`，以 `opt/magicpaper/fonts/CoverageFallback.ttf` 纳入同一 bundle 校验和安装事务。方正屏显雅宋由适配项目校验源文件后暂存，管理器再次用固定 SHA-256 校验，并只以 `opt/magicpaper/fonts/FZPingXianYaSong.ttf` 纳入 bundle；安装器在停止任何服务前复验同一内容指纹和必需文件清单。MagicPaper 的界面统一使用方正屏显雅宋；只有回答书写和字体页的预览样例使用可切换手写体，缺少的罕见字形再逐字回退到中性完整字库。
-
-## 自动化实机验收
+应用分别在自身仓库构建独立、可复现的内容寻址包：
 
 ```sh
-ssh -F /dev/null root@10.11.99.1 /home/root/apps/remagic/share/device-acceptance-v2.sh
-ssh -F /dev/null root@10.11.99.1 /home/root/apps/remagic/share/device-fault-acceptance-v2.sh
-ssh -F /dev/null root@10.11.99.1 /home/root/apps/remagic/share/device-stress-acceptance-v2.sh
-ssh -F /dev/null root@10.11.99.1 /home/root/apps/remagic/share/device-lock-acceptance-v2.sh
+(cd ../magicpaper && ./scripts/check.sh && ./scripts/make-remagic-package.sh)
+(cd ../koreader-for-remagic && ./scripts/check.sh && ./scripts/build-store-package.sh)
 ```
 
-四组测试分别覆盖：
+正式 Catalog 必须填写实际 Release URL、大小和 SHA-256，再用离线 Ed25519 私钥
+签名；fixture URL 永远不能发布成可安装目录。
 
-- 手指按压反馈、两应用真实首帧、墨迹收口、驻留/召回、直接切换、完整关闭和回到原版。
-- Home、应用子进程、整个应用 cgroup、显示宿主和 daemon 的故障注入与自动恢复。
-- 多轮 MagicPaper↔KOReader 切换、PID/surface 不变、队列排空、面板零失败、暖切换时延和每次恰好一次完整刷新。
-- 真实 suspend/resume、冻结锁屏、唤醒键防误触、按键唤醒后自动返回管理器、带页面序号的原子替换，以及“唤醒阶段不重复刷新锁屏”。测试开始后只需按一次实体电源键唤醒，其余检查自动完成。
+## 验收与恢复
 
-测试不仅检查 PID，还比对生命周期 fence、目标 surface 内容签名、最后实际提交的 key/sequence 和面板提交计数。
+设备测试脚本安装在 `/home/root/apps/remagic/share/testing/`：
+
+```sh
+ssh -F /dev/null root@10.11.99.1 /home/root/apps/remagic/share/testing/device-acceptance-v2.sh
+ssh -F /dev/null root@10.11.99.1 /home/root/apps/remagic/share/testing/device-fault-acceptance-v2.sh
+ssh -F /dev/null root@10.11.99.1 /home/root/apps/remagic/share/testing/device-stress-acceptance-v2.sh
+ssh -F /dev/null root@10.11.99.1 /home/root/apps/remagic/share/testing/device-lock-acceptance-v2.sh
+```
+
+它们覆盖真实首帧、按压反馈、暂停/召回/关闭、MagicPaper↔KOReader 暖切换、
+surface fence、完整刷新计数、进程/cgroup/显示宿主故障恢复与 suspend/resume。
+正式 stable 发布必须在 Ferrari 和 Chiappa 两台实机均通过；只有一台设备时只能发布
+预发布版本。
 
 紧急恢复：
 
@@ -104,6 +133,9 @@ ssh -F /dev/null root@10.11.99.1 /home/root/apps/remagic/share/device-lock-accep
 ssh -F /dev/null root@10.11.99.1 /home/root/apps/remagic/libexec/remagic-recover
 ```
 
-## 架构审查标准
+## 架构审查
 
-默认生产文件以 400 行为目标、500 行为门禁，函数以 60/100 行为目标/门禁；测试文件默认上限 800 行。阈值是审查预算，不是机械拆分规则。确实更适合保持内聚的文件可在 `architecture-exceptions.tsv` 中登记精确路径、单文件上限和具体理由，禁止通配符或整目录豁免。详见 `docs/ARCHITECTURE_STANDARDS.md`。
+生产文件以 400 行为目标、500 行为门禁，函数以 60/100 行为目标/门禁；测试文件
+默认上限 800 行。确实更适合保持内聚的文件可在
+`architecture-exceptions.tsv` 登记精确路径、上限与理由。详见
+`docs/ARCHITECTURE_STANDARDS.md`。

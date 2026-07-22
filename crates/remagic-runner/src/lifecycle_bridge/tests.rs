@@ -30,6 +30,10 @@ fn token() -> AppToken {
 }
 
 fn environment() -> LaunchEnvironment {
+    let device = remagic_core::DeviceProfile::for_product(
+        remagic_core::DeviceProduct::PaperProMove,
+        "test-os",
+    );
     let root = PathBuf::from("/run/remagic/apps/magicpaper");
     let mut variables = BTreeMap::new();
     for (key, value) in [
@@ -51,8 +55,13 @@ fn environment() -> LaunchEnvironment {
     ] {
         variables.insert(key.to_owned(), value.to_owned());
     }
+    variables.insert(
+        remagic_core::DEVICE_PROFILE_ENV.into(),
+        device.to_json().unwrap(),
+    );
     LaunchEnvironment {
         app_id: AppId::new("magicpaper").unwrap(),
+        device,
         profile: RuntimeProfile::QtfbCompat,
         directories: RuntimeDirectories {
             home: PathBuf::from("/home/root"),

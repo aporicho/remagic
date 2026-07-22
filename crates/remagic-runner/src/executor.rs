@@ -71,6 +71,7 @@ pub(crate) fn prepare_execution(
     let qtfb_key = resolve_qtfb_key(manifest, descriptor.source)?;
     let resolved_libraries = resolve_required_libraries(manifest, platform)?;
     validate_application_environment(manifest)?;
+    preflight::validate_device_compatibility(manifest, platform)?;
 
     if manifest.schema == MANIFEST_SCHEMA_V2 {
         prepare_v2_execution(manifest, descriptor, qtfb_key, resolved_libraries, platform)
@@ -105,6 +106,7 @@ fn prepare_v2_execution(
         platform.capabilities.clone(),
         platform.path.clone(),
         platform.network_enforcement,
+        platform.device.clone(),
     )
     .map_err(|error| ExecutorError::Policy(error.to_string()))?;
     create_runtime_directories(&environment.directories)?;
@@ -231,6 +233,10 @@ pub(crate) enum ExecutorError {
     NetworkCapabilityMismatch(&'static str),
     #[error("platform is missing required capabilities: {0}")]
     MissingCapabilities(String),
+    #[error("application does not support device {0:?}")]
+    UnsupportedDevice(remagic_core::DeviceProduct),
+    #[error("application does not support ReMagic OS build {0}")]
+    UnsupportedOs(String),
     #[error("required library is unavailable: {0}")]
     MissingLibrary(String),
     #[error("schema v2 application attempted to override reserved variable {0}")]

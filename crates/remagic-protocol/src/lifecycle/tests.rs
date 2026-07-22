@@ -1,7 +1,7 @@
 use super::*;
 use remagic_core::{
-    AppId, CertificatePolicy, FontPolicy, LocalePolicy, NetworkPolicy, RuntimeDirectories,
-    RuntimeProfile, TimezonePolicy,
+    AppId, CertificatePolicy, DeviceProduct, DeviceProfile, FontPolicy, LocalePolicy,
+    NetworkPolicy, RuntimeDirectories, RuntimeProfile, TimezonePolicy, DEVICE_PROFILE_ENV,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -15,6 +15,7 @@ fn token() -> AppToken {
 }
 
 fn environment() -> LaunchEnvironment {
+    let device = DeviceProfile::for_product(DeviceProduct::PaperProMove, "test-os");
     let directories = RuntimeDirectories {
         home: "/home/root".into(),
         config_home: "/home/root/.config/koreader".into(),
@@ -25,6 +26,7 @@ fn environment() -> LaunchEnvironment {
     };
     LaunchEnvironment {
         app_id: token().app_id,
+        device: device.clone(),
         profile: RuntimeProfile::QtfbCompat,
         variables: BTreeMap::from([
             ("HOME".into(), directories.home.display().to_string()),
@@ -53,6 +55,7 @@ fn environment() -> LaunchEnvironment {
             ("PATH".into(), "/usr/bin:/bin".into()),
             ("REMAGIC_APP_ID".into(), "koreader".into()),
             ("REMAGIC_RUNTIME_PROFILE".into(), "qtfb_compat".into()),
+            (DEVICE_PROFILE_ENV.into(), device.to_json().unwrap()),
             ("REMAGIC_NETWORK_POLICY_MODE".into(), "deny".into()),
             (
                 "REMAGIC_NETWORK_POLICY_ENFORCEMENT".into(),

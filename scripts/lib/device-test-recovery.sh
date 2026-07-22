@@ -180,7 +180,7 @@ remagic_acceptance_dropin_path() {
 remagic_acceptance_remove_owned_overrides() {
     local acceptance_expected acceptance_unit acceptance_dropin acceptance_temp acceptance_owned
     acceptance_expected="Environment=REMAGIC_MANIFEST_ROOT=$REMAGIC_TEST_ROOT/manifests"
-    for acceptance_unit in remagicd.service 'remagic-app@.service'; do
+    for acceptance_unit in remagicd.service remagic-home.service 'remagic-app@.service'; do
         acceptance_dropin=$(remagic_acceptance_dropin_path "$acceptance_unit")
         acceptance_temp=$(remagic_acceptance_override_temp_path "$acceptance_unit")
         if [ -e "$acceptance_temp" ] || [ -L "$acceptance_temp" ]; then
@@ -195,7 +195,11 @@ remagic_acceptance_remove_owned_overrides() {
                 remagicd.service)
                     acceptance_owned=$(printf '[Service]\n%s' "$acceptance_expected")
                     ;;
-                *)
+                remagic-home.service)
+                    acceptance_owned=$(printf '[Service]\nEnvironment=REMAGIC_WELCOME_MARKER=%s/welcome-v1' \
+                        "$REMAGIC_TEST_ROOT")
+                    ;;
+                'remagic-app@.service')
                     acceptance_owned=$(printf '[Service]\n%s\nIPAddressDeny=any' "$acceptance_expected")
                     ;;
             esac
@@ -327,7 +331,7 @@ remagic_acceptance_recover_orphan() {
         case "$acceptance_lock_state" in
             claimed)
                 [ ! -e "$REMAGIC_TEST_ROOT" ] && [ ! -L "$REMAGIC_TEST_ROOT" ] || return 1
-                for acceptance_unit in remagicd.service 'remagic-app@.service'; do
+                for acceptance_unit in remagicd.service remagic-home.service 'remagic-app@.service'; do
                     acceptance_dropin=$(remagic_acceptance_dropin_path "$acceptance_unit")
                     acceptance_temp=$(remagic_acceptance_override_temp_path "$acceptance_unit")
                     [ ! -e "$acceptance_dropin" ] && [ ! -L "$acceptance_dropin" ] || return 1
@@ -350,7 +354,7 @@ remagic_acceptance_recover_orphan() {
     remagic_acceptance_stop_managed || return 1
     case "$acceptance_state" in
         prepared)
-            for acceptance_unit in remagicd.service 'remagic-app@.service'; do
+            for acceptance_unit in remagicd.service remagic-home.service 'remagic-app@.service'; do
                 acceptance_dropin=$(remagic_acceptance_dropin_path "$acceptance_unit")
                 [ ! -e "$acceptance_dropin" ] && [ ! -L "$acceptance_dropin" ] || return 1
             done

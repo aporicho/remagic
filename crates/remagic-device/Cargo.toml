@@ -1,0 +1,11 @@
+[package]
+name = "remagic-device"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Authoritative Paper Pro family device profile for ReMagic"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

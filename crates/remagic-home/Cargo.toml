@@ -10,6 +10,7 @@ ab_glyph.workspace = true
 libc.workspace = true
 png.workspace = true
 remagic-core = { path = "../remagic-core" }
+remagic-device = { path = "../remagic-device" }
 remagic-protocol = { path = "../remagic-protocol" }
 serde.workspace = true
 tokio.workspace = true

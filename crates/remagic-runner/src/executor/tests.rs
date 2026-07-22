@@ -1,6 +1,8 @@
 use super::*;
 use remagic_core::runtime::NetworkEnforcement;
-use remagic_core::{qtfb_key_for_app, AppId, AppManifest, Capability};
+use remagic_core::{
+    qtfb_key_for_app, AppId, AppManifest, Capability, DeviceProduct, DeviceProfile,
+};
 use serde_json::Value;
 use std::env;
 use std::fs;
@@ -40,6 +42,7 @@ fn platform(library_dir: &Path) -> PlatformRuntime {
     fs::create_dir_all(timezone.parent().unwrap()).unwrap();
     fs::write(&timezone, b"test timezone").unwrap();
     PlatformRuntime {
+        device: DeviceProfile::for_product(DeviceProduct::PaperProMove, "test-os"),
         capabilities: DEFAULT_CAPABILITIES
             .iter()
             .map(|value| Capability::new((*value).to_owned()).unwrap())
@@ -62,7 +65,7 @@ fn v2_manifest(root: &Path, extra: &str) -> AppManifest {
         r#"
 schema = 2
 id = "koreader"
-name = "KOReader for ReMagic"
+name = "KOReader"
 exec = "{}"
 working_dir = "{}"
 display = "qtfb"

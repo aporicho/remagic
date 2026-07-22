@@ -1,10 +1,15 @@
 schema = 2
 id = "koreader"
-name = "KOReader for ReMagic (isolated acceptance)"
+name = "KOReader"
+kind = "user"
 description = "Disposable KO_HOME acceptance instance"
 version = "2026.03-test"
-exec = "/home/root/apps/koreader-for-remagic/adapter/releases/__REMAGIC_ADAPTER_RELEASE__/bin/koreader-for-remagic"
-working_dir = "/home/root/apps/koreader-for-remagic/vendor/releases/v2026.03-56621d5ee66ad94f4f3e2e6d204e8c34be730343f915edc36bb076a043a2e468/koreader"
+package = "koreader-for-remagic"
+supported_devices = ["paper_pro", "paper_pro_move"]
+required_remagic_api = 2
+uninstall_policy = "keep_data"
+exec = "/__REMAGIC_KOREADER_ADAPTER_ROOT__/bin/koreader-for-remagic"
+working_dir = "/__REMAGIC_KOREADER_VENDOR_ROOT__"
 display = "qtfb"
 resident = true
 capabilities = ["display:qtfb-v1", "input:touch-v1", "lifecycle:v2"]
@@ -25,7 +30,7 @@ kill_timeout_ms = 5500
 
 [data_schema]
 version = 2
-migrator = "/home/root/apps/koreader-for-remagic/adapter/releases/__REMAGIC_ADAPTER_RELEASE__/libexec/koreader-data-migrate"
+migrator = "/__REMAGIC_KOREADER_ADAPTER_ROOT__/libexec/koreader-data-migrate"
 backup_paths = [
   "/home/root/.local/state/remagic/acceptance/current/koreader/data",
 ]
@@ -52,7 +57,7 @@ lang = "C.UTF-8"
 name = "Asia/Shanghai"
 
 [runtime.fonts]
-directories = ["/home/root/apps/koreader-for-remagic/adapter/releases/__REMAGIC_ADAPTER_RELEASE__/share/fonts"]
+directories = ["/__REMAGIC_KOREADER_ADAPTER_ROOT__/share/fonts"]
 
 [runtime.certificates]
 required = false
@@ -61,8 +66,8 @@ required = false
 mode = "deny"
 
 [environment]
-KOREADER_DIR = "/home/root/apps/koreader-for-remagic/vendor/releases/v2026.03-56621d5ee66ad94f4f3e2e6d204e8c34be730343f915edc36bb076a043a2e468/koreader"
-KOREADER_LIBEXEC_DIR = "/home/root/apps/koreader-for-remagic/adapter/releases/__REMAGIC_ADAPTER_RELEASE__/libexec"
+KOREADER_DIR = "/__REMAGIC_KOREADER_VENDOR_ROOT__"
+KOREADER_LIBEXEC_DIR = "/__REMAGIC_KOREADER_ADAPTER_ROOT__/libexec"
 KO_HOME = "/home/root/.local/state/remagic/acceptance/current/koreader/data"
 KOREADER_DATA_DIR = "/home/root/.local/state/remagic/acceptance/current/koreader/data"
 KOREADER_SETTINGS = "/home/root/.local/state/remagic/acceptance/current/koreader/data/settings.reader.lua"

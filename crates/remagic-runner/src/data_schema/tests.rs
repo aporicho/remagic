@@ -1,6 +1,6 @@
 use super::*;
 use remagic_core::runtime::NetworkEnforcement;
-use remagic_core::{AppId, DataSchema, LaunchEnvironment};
+use remagic_core::{AppId, DataSchema, DeviceProduct, DeviceProfile, LaunchEnvironment};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -144,6 +144,7 @@ fn resolve_environment(manifest: &AppManifest) -> LaunchEnvironment {
         BTreeSet::new(),
         "/usr/bin:/bin",
         NetworkEnforcement::MetadataOnly,
+        DeviceProfile::for_product(DeviceProduct::PaperProMove, "test-os"),
     )
     .unwrap()
 }

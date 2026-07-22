@@ -1,7 +1,7 @@
 use super::input_mode;
 use super::*;
 use crate::{app_runtime, display_host};
-use remagic_core::{AppToken, BackgroundService, DomainState, ReadinessMode, Transition};
+use remagic_core::{BackgroundService, DomainState, ReadinessMode, Transition};
 use remagic_protocol::AppCommand;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,45 +9,16 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tracing::warn;
 
+mod background;
+mod context;
 mod generation;
 mod rollback;
+mod routing;
 mod schema;
 
-struct LaunchContext {
-    id: AppId,
-    manifest: remagic_core::AppManifest,
-    open_path: Option<PathBuf>,
-    resume_payload: Option<serde_json::Value>,
-    runtime_dir: PathBuf,
-    unit: String,
-    active: bool,
-    generation: u64,
-    background_execution: remagic_core::BackgroundExecution,
-    foreground_epoch: u64,
-    lease_id: u64,
-    surface_key: i32,
-    launch_path: PathBuf,
-    background_unit: Option<String>,
-    background_quiesced: bool,
-}
-
-impl LaunchContext {
-    fn token(&self) -> AppToken {
-        AppToken {
-            app_id: self.id.clone(),
-            generation: self.generation,
-            foreground_epoch: self.foreground_epoch,
-            lease_id: Some(self.lease_id),
-        }
-    }
-}
-
-#[derive(Debug, Eq, PartialEq)]
-enum LaunchRoute {
-    AlreadyForeground,
-    Park(AppId),
-    Manager,
-}
+use background::should_quiesce_background;
+use context::LaunchContext;
+use routing::{launch_route, LaunchRoute};
 
 impl Daemon {
     pub(super) async fn launch(
@@ -192,7 +163,10 @@ impl Daemon {
         let active = self.validate_existing_runtime(&id, &unit).await?;
         let background_unit = match manifest.effective_background_service() {
             Some(BackgroundService::Systemd { unit }) => Some(unit),
-            Some(BackgroundService::Managed { .. }) | None => None,
+            Some(BackgroundService::Managed { .. }) => {
+                Some(crate::system::managed_background_unit(&manifest.id))
+            }
+            None => None,
         };
         let background_quiesced = should_quiesce_background(active, &manifest);
         if background_quiesced {
@@ -251,21 +225,8 @@ impl Daemon {
             background_execution,
             foreground_epoch,
             launch_path,
-            background_unit,
             background_quiesced,
         })
-    }
-
-    async fn ensure_background_service(
-        &self,
-        manifest: &remagic_core::AppManifest,
-    ) -> Result<(), String> {
-        if let Some(BackgroundService::Systemd { unit }) = manifest.effective_background_service() {
-            if !self.controller.is_active_checked(&unit).await? {
-                self.controller.start_and_wait(&unit).await?
-            }
-        }
-        Ok(())
     }
 
     async fn validate_existing_runtime(&self, id: &AppId, unit: &str) -> Result<bool, String> {
@@ -463,15 +424,6 @@ impl Daemon {
         }
     }
 
-    async fn start_background_service(&self, context: &LaunchContext) -> Result<(), String> {
-        if let Some(unit) = &context.background_unit {
-            if !self.controller.is_active_checked(unit).await? {
-                self.controller.start_and_wait(unit).await?;
-            }
-        }
-        Ok(())
-    }
-
     async fn wait_for_runtime_failure(&self, unit: &str) -> String {
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -488,48 +440,5 @@ impl Daemon {
                 }
             }
         }
-    }
-}
-
-fn should_quiesce_background(active: bool, manifest: &remagic_core::AppManifest) -> bool {
-    !active && manifest.data_schema.is_some()
-}
-
-fn launch_route(domain: &DomainState, id: &AppId, no_path: bool) -> Result<LaunchRoute, String> {
-    match domain {
-        DomainState::Foreground(current) if current == id && no_path => {
-            Ok(LaunchRoute::AlreadyForeground)
-        }
-        DomainState::Foreground(current) => Ok(LaunchRoute::Park(current.clone())),
-        DomainState::Manager => Ok(LaunchRoute::Manager),
-        _ => Err("applications can only be launched from manager or foreground app".into()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn relaunch_of_current_app_without_path_is_idempotent() {
-        let app = AppId::new("magicpaper").unwrap();
-        assert_eq!(
-            launch_route(&DomainState::Foreground(app.clone()), &app, true).unwrap(),
-            LaunchRoute::AlreadyForeground,
-        );
-        assert_eq!(
-            launch_route(&DomainState::Foreground(app.clone()), &app, false).unwrap(),
-            LaunchRoute::Park(app),
-        );
-    }
-
-    #[test]
-    fn only_a_cold_schema_launch_quiesces_its_background_writer() {
-        let mut manifest: remagic_core::AppManifest =
-            toml::from_str(include_str!("../../../../manifests/magicpaper.toml")).unwrap();
-        assert!(should_quiesce_background(false, &manifest));
-        assert!(!should_quiesce_background(true, &manifest));
-        manifest.data_schema = None;
-        assert!(!should_quiesce_background(false, &manifest));
     }
 }

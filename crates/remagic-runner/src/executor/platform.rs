@@ -1,6 +1,6 @@
 use super::ExecutorError;
 use remagic_core::runtime::NetworkEnforcement;
-use remagic_core::Capability;
+use remagic_core::{Capability, DeviceProfile};
 use std::collections::BTreeSet;
 use std::env;
 use std::path::PathBuf;
@@ -10,6 +10,7 @@ pub(super) const DEFAULT_PATH: &str =
     "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 pub(super) const DEFAULT_CAPABILITIES: &[&str] = &[
     "display:qtfb-v1",
+    "display:surface-v2",
     "input:touch-v1",
     "input:pen-v1",
     "input:mode-v2",
@@ -26,6 +27,7 @@ pub(super) const APPROVED_LIBRARY_DIRS: &[&str] = &[
 
 #[derive(Clone, Debug)]
 pub(crate) struct PlatformRuntime {
+    pub device: DeviceProfile,
     pub capabilities: BTreeSet<Capability>,
     pub qtfb_socket: PathBuf,
     pub path: String,
@@ -45,6 +47,8 @@ impl PlatformRuntime {
             .collect::<Vec<_>>();
         deduplicate_paths(&mut library_search_dirs);
         Ok(Self {
+            device: DeviceProfile::detect()
+                .map_err(|error| ExecutorError::Policy(error.to_string()))?,
             capabilities,
             qtfb_socket: env::var_os("REMAGIC_QTFB_SOCKET")
                 .map(PathBuf::from)

@@ -3,8 +3,8 @@
 
 use crate::{Envelope, PackageOperation};
 use remagic_core::{
-    AppId, AppInstance, AppSession, Capability, PreflightReport, RuntimeProfile, SupervisorState,
-    SystemDomainState,
+    AppId, AppInstance, AppKind, AppSession, Capability, DeviceProduct, PreflightReport,
+    RuntimeProfile, SupervisorState, SystemDomainState, UninstallPolicy,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -104,6 +104,10 @@ pub enum ControlErrorCode {
     AppBusy,
     PermissionDenied,
     PreflightFailed,
+    UnsupportedDevice,
+    UnsupportedOs,
+    PackageInvalid,
+    SignatureInvalid,
     Timeout,
     Internal,
 }
@@ -176,6 +180,8 @@ pub struct AppViewV2 {
     pub description: String,
     #[serde(default)]
     pub version: String,
+    #[serde(default)]
+    pub kind: AppKind,
     pub installed: bool,
     pub runtime_profile: RuntimeProfile,
     #[serde(default)]
@@ -190,6 +196,14 @@ pub struct AppViewV2 {
     pub session: Option<AppSession>,
     #[serde(default)]
     pub package: Option<String>,
+    #[serde(default)]
+    pub supported_devices: Vec<DeviceProduct>,
+    #[serde(default)]
+    pub supported_os: Vec<String>,
+    #[serde(default)]
+    pub required_remagic_api: u32,
+    #[serde(default)]
+    pub uninstall_policy: UninstallPolicy,
     #[serde(default)]
     pub preflight: Option<PreflightReport>,
 }
