@@ -1,148 +1,16 @@
-use super::queue::InputQueue;
-use super::state::{ClientSink, ForegroundLease, HostState, SurfaceEntry};
+use super::state::{ForegroundLease, HostState};
 use crate::geometry::Rect;
 use crate::panel::{PanelCommand, PanelLease, RefreshIntent};
-use crate::protocol::{PixelFormat, REFRESH_MODE_CONTENT, REFRESH_MODE_FAST, REFRESH_MODE_UFAST};
-use crate::surface::SharedSurface;
+use crate::protocol::{input_packet, INPUT_TOUCH_RELEASE};
+use crate::protocol::{REFRESH_MODE_CONTENT, REFRESH_MODE_FAST, REFRESH_MODE_UFAST};
 use std::io;
-use std::os::fd::RawFd;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+mod lock;
+mod registration;
 
 impl HostState {
-    pub(super) fn register(
-        &self,
-        key: i32,
-        width: i32,
-        height: i32,
-        format: PixelFormat,
-    ) -> io::Result<Arc<SharedSurface>> {
-        let mut surfaces = self.surfaces.lock().unwrap();
-        if let Some(entry) = surfaces.get_mut(&key) {
-            Self::validate_surface(entry, width, height, format)?;
-            // A QTFB key is an application-owned writable framebuffer, not a
-            // broadcast channel. Sharing it between two live clients would
-            // allow a stale process to overwrite the current application's
-            // pixels and would duplicate every input frame. The runner stops
-            // the old cgroup before replacement, so a legitimate reconnect
-            // happens only after `unregister` removes the previous surface.
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("QTFB surface {key} already has a live owner"),
-            ));
-        }
-        let surface = self.create_surface(key, width, height, format)?;
-        surfaces.insert(
-            key,
-            SurfaceEntry {
-                surface: Arc::clone(&surface),
-                clients: Vec::new(),
-            },
-        );
-        self.enqueue_panel(PanelCommand::RegisterSurface(Arc::clone(&surface)))?;
-        Ok(surface)
-    }
-
-    pub(super) fn activate_client(
-        &self,
-        key: i32,
-        client: RawFd,
-        input_queue: Arc<InputQueue>,
-    ) -> io::Result<()> {
-        let mut surfaces = self.surfaces.lock().unwrap();
-        let entry = surfaces
-            .get_mut(&key)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "QTFB surface disappeared"))?;
-        if !entry.clients.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("QTFB surface {key} already has a live owner"),
-            ));
-        }
-        entry.clients.push(ClientSink {
-            id: client,
-            queue: input_queue,
-        });
-        Ok(())
-    }
-
-    pub(super) fn abort_registration(&self, key: i32) {
-        let mut surfaces = self.surfaces.lock().unwrap();
-        let can_remove = surfaces
-            .get(&key)
-            .is_some_and(|entry| entry.clients.is_empty());
-        if can_remove {
-            surfaces.remove(&key);
-            let _ = self.enqueue_panel(PanelCommand::DropSurface { key });
-        }
-    }
-
-    fn validate_surface(
-        entry: &SurfaceEntry,
-        width: i32,
-        height: i32,
-        format: PixelFormat,
-    ) -> io::Result<()> {
-        if entry.surface.width == width
-            && entry.surface.height == height
-            && entry.surface.format == format
-        {
-            return Ok(());
-        }
-        Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "QTFB key was reused with incompatible geometry or format",
-        ))
-    }
-
-    fn create_surface(
-        &self,
-        key: i32,
-        width: i32,
-        height: i32,
-        format: PixelFormat,
-    ) -> io::Result<Arc<SharedSurface>> {
-        loop {
-            let candidate =
-                (self.next_shm_key.fetch_add(1, Ordering::Relaxed) & 0x7fff_ffff).max(1) as i32;
-            match SharedSurface::create(key, width, height, format, candidate) {
-                Ok(surface) => return Ok(Arc::new(surface)),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error),
-            }
-        }
-    }
-
-    pub(super) fn unregister(&self, client: RawFd, key: Option<i32>) {
-        let Some(key) = key else { return };
-        let mut surfaces = self.surfaces.lock().unwrap();
-        let remove = if let Some(entry) = surfaces.get_mut(&key) {
-            entry.clients.retain(|candidate| candidate.id != client);
-            entry.clients.is_empty()
-        } else {
-            false
-        };
-        if !remove {
-            return;
-        }
-        let lease_to_clear = self
-            .foreground
-            .lock()
-            .unwrap()
-            .filter(|foreground| foreground.key == key)
-            .map(ForegroundLease::panel_lease);
-        surfaces.remove(&key);
-        let _ = self.enqueue_panel(PanelCommand::DropSurface { key });
-        drop(surfaces);
-        if let Some(lease) = lease_to_clear {
-            let _ = self.clear_foreground_if(lease);
-        }
-    }
-
-    pub fn surface_exists(&self, key: i32) -> bool {
-        self.surfaces.lock().unwrap().contains_key(&key)
-    }
-
     pub fn set_foreground(
         &self,
         key: i32,
@@ -151,6 +19,12 @@ impl HostState {
         full_refresh: bool,
     ) -> io::Result<()> {
         let _operation = self.foreground_ops.lock().unwrap();
+        if self.lock.lock().unwrap().is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "display is locked",
+            ));
+        }
         self.validate_foreground_fence(key, generation, epoch)?;
         let foreground = ForegroundLease {
             key,
@@ -162,7 +36,76 @@ impl HostState {
             lease: foreground.panel_lease(),
             full_refresh,
         })?;
+        self.commit_foreground_fence(key, generation, epoch);
+        self.fence_input_contacts();
+        *self.prepared_foreground.lock().unwrap() = None;
         *self.foreground.lock().unwrap() = Some(foreground);
+        Ok(())
+    }
+
+    /// Fence the old visible lease before an application is asked to present
+    /// its resume frame. Surface writes may continue, but no input or damage
+    /// crosses the prepare/activate boundary.
+    pub fn prepare_foreground(&self, key: i32, generation: u64, epoch: u64) -> io::Result<()> {
+        let _operation = self.foreground_ops.lock().unwrap();
+        if self.lock.lock().unwrap().is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "display is locked",
+            ));
+        }
+        self.validate_foreground_fence(key, generation, epoch)?;
+        let prepared = ForegroundLease {
+            key,
+            generation,
+            epoch,
+            ink_enabled: false,
+        };
+        self.commit_foreground_fence(key, generation, epoch);
+        self.fence_input_contacts();
+        *self.prepared_foreground.lock().unwrap() = Some(prepared);
+        Ok(())
+    }
+
+    /// Atomically publish a prepared foreground image and its direct-ink
+    /// policy. The panel worker configures ink before it commits the lease, so
+    /// input can never observe a visible-but-unconfigured application.
+    pub fn activate_foreground(
+        &self,
+        key: i32,
+        generation: u64,
+        epoch: u64,
+        ink_enabled: bool,
+        full_refresh: bool,
+    ) -> io::Result<()> {
+        let _operation = self.foreground_ops.lock().unwrap();
+        if self.lock.lock().unwrap().is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "display is locked",
+            ));
+        }
+        let prepared =
+            self.prepared_foreground.lock().unwrap().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::PermissionDenied, "no prepared lease")
+            })?;
+        if prepared.key != key || prepared.generation != generation || prepared.epoch != epoch {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "activation does not match the prepared foreground lease",
+            ));
+        }
+        let active = ForegroundLease {
+            ink_enabled,
+            ..prepared
+        };
+        self.enqueue_panel(PanelCommand::ActivateForeground {
+            lease: active.panel_lease(),
+            ink_enabled,
+            full_refresh,
+        })?;
+        *self.foreground.lock().unwrap() = Some(active);
+        *self.prepared_foreground.lock().unwrap() = None;
         Ok(())
     }
 
@@ -179,7 +122,7 @@ impl HostState {
                 format!("surface {key} is not connected"),
             ));
         }
-        let mut fences = self.fences.lock().unwrap();
+        let fences = self.fences.lock().unwrap();
         if let Some((previous_generation, previous_epoch)) = fences.get(&key).copied() {
             let stale = generation < previous_generation
                 || (generation == previous_generation && epoch <= previous_epoch);
@@ -192,12 +135,22 @@ impl HostState {
                 ));
             }
         }
-        fences.insert(key, (generation, epoch));
         Ok(())
+    }
+
+    fn commit_foreground_fence(&self, key: i32, generation: u64, epoch: u64) {
+        self.fences.lock().unwrap().insert(key, (generation, epoch));
     }
 
     pub fn clear_foreground(&self) -> io::Result<()> {
         let _operation = self.foreground_ops.lock().unwrap();
+        if self.lock.lock().unwrap().is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "cannot clear foreground while display is locked",
+            ));
+        }
+        *self.prepared_foreground.lock().unwrap() = None;
         let Some(lease) = self
             .foreground
             .lock()
@@ -206,11 +159,6 @@ impl HostState {
         else {
             return Ok(());
         };
-        self.clear_foreground_locked(lease)
-    }
-
-    fn clear_foreground_if(&self, lease: PanelLease) -> io::Result<()> {
-        let _operation = self.foreground_ops.lock().unwrap();
         self.clear_foreground_locked(lease)
     }
 
@@ -224,6 +172,7 @@ impl HostState {
             return Ok(());
         }
         self.enqueue_panel(PanelCommand::ClearForeground { lease })?;
+        self.fence_input_contacts();
         let mut foreground = self.foreground.lock().unwrap();
         if foreground.is_some_and(|current| current.panel_lease() == lease) {
             *foreground = None;
@@ -240,6 +189,12 @@ impl HostState {
         region: Option<Rect>,
     ) -> io::Result<()> {
         let _operation = self.foreground_ops.lock().unwrap();
+        if self.lock.lock().unwrap().is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "cannot configure direct ink while display is locked",
+            ));
+        }
         let mut foreground = self.foreground.lock().unwrap();
         let Some(lease) = foreground.as_mut() else {
             return Err(io::Error::new(
@@ -259,10 +214,32 @@ impl HostState {
             region,
         })?;
         lease.ink_enabled = enabled;
+        let panel_lease = lease.panel_lease();
+        drop(foreground);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while self.telemetry.committed_ink() != Some((panel_lease, enabled)) {
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "panel did not acknowledge the direct-ink policy",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
         Ok(())
     }
 
     pub fn request_full_refresh(&self) -> io::Result<()> {
+        let _operation = self.foreground_ops.lock().unwrap();
+        if self.prepared_foreground.lock().unwrap().is_some() {
+            return Ok(());
+        }
+        if let Some(lock) = *self.lock.lock().unwrap() {
+            return self.enqueue_panel(PanelCommand::RefreshLock {
+                lease: lock.foreground.panel_lease(),
+                sleep_epoch: lock.sleep_epoch,
+            });
+        }
         let Some(lease) = self
             .foreground
             .lock()
@@ -275,6 +252,13 @@ impl HostState {
     }
 
     pub fn request_surface_full_refresh(&self, key: i32) -> io::Result<()> {
+        let _operation = self.foreground_ops.lock().unwrap();
+        if self.prepared_foreground.lock().unwrap().is_some() {
+            return Ok(());
+        }
+        if self.lock.lock().unwrap().is_some() {
+            return Ok(());
+        }
         let foreground = self
             .foreground
             .lock()
@@ -291,6 +275,20 @@ impl HostState {
     }
 
     pub fn damage(&self, key: i32, rect: Rect, intent: RefreshIntent) -> io::Result<()> {
+        let _operation = self.foreground_ops.lock().unwrap();
+        if self.prepared_foreground.lock().unwrap().is_some() {
+            return Ok(());
+        }
+        if let Some(lock) = *self.lock.lock().unwrap() {
+            let within_unlock = key == lock.foreground.key
+                && rect.x >= lock.unlock_region.x
+                && rect.y >= lock.unlock_region.y
+                && rect.right() <= lock.unlock_region.right()
+                && rect.bottom() <= lock.unlock_region.bottom();
+            if !within_unlock {
+                return Ok(());
+            }
+        }
         let foreground = self
             .foreground
             .lock()
@@ -300,11 +298,21 @@ impl HostState {
         let Some(lease) = foreground else {
             return Ok(());
         };
-        self.enqueue_panel(PanelCommand::Damage {
+        match self.enqueue_panel(PanelCommand::Damage {
             lease,
             rect,
             intent,
-        })
+        }) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                // Damage is level-triggered canonical state, not a lifecycle
+                // edge. Coalesce it for the panel worker instead of closing
+                // the QTFB socket and killing an otherwise healthy app.
+                self.telemetry.defer_damage(lease, rect, intent);
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub fn mark_commit(&self, key: i32) -> io::Result<u64> {
@@ -340,5 +348,36 @@ impl HostState {
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "surface disconnected"))?;
         surface.surface.set_refresh_mode(mode);
         Ok(())
+    }
+
+    fn fence_input_contacts(&self) {
+        self.input_epoch.fetch_add(1, Ordering::AcqRel);
+        if let Some((lease, last)) = self.active_pen.lock().unwrap().take() {
+            let cancelled = crate::input::PenFrame {
+                phase: crate::input::PenPhase::Cancel,
+                pressure: 0,
+                ..last
+            };
+            self.send_to_key(lease.key, &self.pen_packet(cancelled));
+            let _ = self.enqueue_panel(PanelCommand::Pen {
+                lease,
+                frame: cancelled,
+            });
+            self.suppressed_pen.store(true, Ordering::Release);
+        }
+        let active = std::mem::take(&mut *self.active_touches.lock().unwrap());
+        let lock_active = std::mem::take(&mut *self.lock_touches.lock().unwrap());
+        let foreground_key = {
+            let foreground = self.foreground.lock().unwrap();
+            foreground.map(|lease| lease.key)
+        };
+        if let Some(key) = foreground_key {
+            for device_id in active.iter().chain(lock_active.iter()) {
+                self.send_to_key(key, &input_packet(INPUT_TOUCH_RELEASE, *device_id, 0, 0, 0));
+            }
+        }
+        let mut suppressed = self.suppressed_touches.lock().unwrap();
+        suppressed.extend(active);
+        suppressed.extend(lock_active);
     }
 }

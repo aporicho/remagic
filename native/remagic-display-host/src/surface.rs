@@ -128,6 +128,13 @@ impl SharedSurface {
         unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
 
+    #[cfg(test)]
+    pub(crate) fn fill_for_test(&self, value: u8) {
+        // The real QTFB client writes through this same shared mapping. Tests
+        // use the raw mapping rather than manufacturing an aliasing `&mut`.
+        unsafe { std::ptr::write_bytes(self.ptr.as_ptr(), value, self.len) };
+    }
+
     pub fn full_rect(&self) -> Rect {
         Rect::new(0, 0, self.width, self.height)
     }

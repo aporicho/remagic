@@ -8,9 +8,12 @@ build = "build.rs"
 [dependencies]
 ab_glyph.workspace = true
 libc.workspace = true
+png.workspace = true
 remagic-core = { path = "../remagic-core" }
 remagic-protocol = { path = "../remagic-protocol" }
+serde.workspace = true
 tokio.workspace = true
+toml.workspace = true
 
 [features]
 device = []

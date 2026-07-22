@@ -8,6 +8,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 mod control_v2;
 mod display;
 mod lifecycle;
+mod runtime_app;
 
 pub use control_v2::{
     AppViewV2, ControlErrorCode, ControlEvent, ControlEventEnvelope, ControlIntent, ControlReply,
@@ -23,8 +24,16 @@ pub use lifecycle::{
     LifecycleEvent, LifecycleEventBody, LifecycleEventEnvelope, LifecycleStage,
     LifecycleValidationError, ShutdownReason,
 };
+pub use runtime_app::{
+    InputMode, RuntimeAppCommand, RuntimeAppReply, RuntimeAppRequest, RUNTIME_APP_PROTOCOL_V1,
+    RUNTIME_APP_PROTOCOL_V2,
+};
 
 pub const DEFAULT_SOCKET: &str = "/run/remagic/control.sock";
+pub const LOCK_UNLOCK_X: i32 = 150;
+pub const LOCK_UNLOCK_Y: i32 = 1010;
+pub const LOCK_UNLOCK_WIDTH: i32 = 654;
+pub const LOCK_UNLOCK_HEIGHT: i32 = 126;
 pub const MAX_FRAME: usize = 64 * 1024;
 pub const PROTOCOL_V2: u16 = 2;
 
@@ -86,7 +95,16 @@ pub enum Request {
     ReloadManifests,
     OpenManager,
     ReturnSystem,
-    Sleep,
+    Sleep {
+        /// QTFB commit sequence containing the fully rendered lock page.
+        /// Zero is invalid; suspend never proceeds on unproven pixels.
+        lock_surface_sequence: u64,
+    },
+    Wake {
+        /// QTFB commit sequence containing the manager page that must replace
+        /// the lock image before input is released.
+        manager_surface_sequence: u64,
+    },
     Launch {
         app_id: AppId,
         #[serde(default)]
@@ -267,6 +285,24 @@ mod tests {
         let request: Request = read_frame(&mut right).await.unwrap();
         send.await.unwrap();
         assert!(matches!(request, Request::Status));
+    }
+
+    #[test]
+    fn sleep_and_wake_requests_carry_their_proven_surface_sequences() {
+        for request in [
+            Request::Sleep {
+                lock_surface_sequence: 27,
+            },
+            Request::Wake {
+                manager_surface_sequence: 29,
+            },
+        ] {
+            let encoded = serde_json::to_vec(&request).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<Request>(&encoded).unwrap(),
+                request
+            );
+        }
     }
 
     #[tokio::test]

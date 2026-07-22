@@ -1,6 +1,8 @@
 use std::ffi::CString;
 use std::io;
 use std::os::fd::RawFd;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 const CLIENT_SIZE: usize = 24;
 const SERVER_SIZE: usize = 32;
@@ -13,6 +15,7 @@ const UPDATE_PARTIAL: i32 = 1;
 const FORMAT_MOVE_RGB565: u8 = 6;
 const INPUT_TOUCH_PRESS: i32 = 0x10;
 const INPUT_TOUCH_RELEASE: i32 = 0x11;
+const UPDATE_SEND_TIMEOUT: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TouchEvent {
@@ -29,6 +32,7 @@ pub struct Client {
     pub stride: usize,
     primary_touch: Option<i32>,
     last_touch: (i32, i32),
+    commit_sequence: AtomicU64,
 }
 
 unsafe impl Send for Client {}
@@ -49,9 +53,12 @@ impl Client {
                 return Err(error);
             }
         };
-        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-        if flags >= 0 {
-            unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+        if let Err(error) = set_nonblocking(fd) {
+            unsafe {
+                libc::munmap(raw, len);
+                libc::close(fd);
+            }
+            return Err(error);
         }
         Ok(Self {
             fd,
@@ -62,6 +69,7 @@ impl Client {
             stride: 954 * 2,
             primary_touch: None,
             last_touch: (0, 0),
+            commit_sequence: AtomicU64::new(0),
         })
     }
 
@@ -77,7 +85,9 @@ impl Client {
         let mut packet = [0_u8; CLIENT_SIZE];
         packet[0] = MESSAGE_UPDATE;
         packet[4..8].copy_from_slice(&UPDATE_ALL.to_le_bytes());
-        send_packet(self.fd, &packet)
+        send_packet(self.fd, &packet)?;
+        self.commit_sequence.fetch_add(1, Ordering::AcqRel);
+        Ok(())
     }
 
     pub fn update(&self, x: i32, y: i32, width: i32, height: i32) -> io::Result<()> {
@@ -92,7 +102,13 @@ impl Client {
         ] {
             packet[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
         }
-        send_packet(self.fd, &packet)
+        send_packet(self.fd, &packet)?;
+        self.commit_sequence.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    pub fn commit_sequence(&self) -> u64 {
+        self.commit_sequence.load(Ordering::Acquire)
     }
 
     pub fn poll_touch_events(&mut self) -> io::Result<Vec<TouchEvent>> {
@@ -140,6 +156,44 @@ impl Client {
             }
         }
         Ok(events)
+    }
+
+    /// Sleep until input/window state is available. Unlike the old fixed 12ms
+    /// loop this consumes no CPU while Home is idle, but a finger packet wakes
+    /// the loop immediately. The timeout lets the locked UI reconcile daemon
+    /// recovery without a second polling thread.
+    pub fn wait_readable(&self, timeout: Duration) -> io::Result<()> {
+        wait_fd(self.fd, libc::POLLIN, timeout)
+    }
+}
+
+fn set_nonblocking(fd: RawFd) -> io::Result<()> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn wait_fd(fd: RawFd, events: i16, timeout: Duration) -> io::Result<()> {
+    let timeout_ms = timeout.as_millis().clamp(1, i32::MAX as u128) as i32;
+    let mut descriptor = libc::pollfd {
+        fd,
+        events: events | libc::POLLERR | libc::POLLHUP,
+        revents: 0,
+    };
+    loop {
+        let result = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
+        if result >= 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
     }
 }
 
@@ -234,10 +288,33 @@ impl Drop for Client {
 }
 
 fn send_packet(fd: RawFd, packet: &[u8; CLIENT_SIZE]) -> io::Result<()> {
-    let sent = unsafe { libc::send(fd, packet.as_ptr().cast(), packet.len(), libc::MSG_NOSIGNAL) };
-    if sent == packet.len() as isize {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
+    let deadline = Instant::now() + UPDATE_SEND_TIMEOUT;
+    loop {
+        let sent =
+            unsafe { libc::send(fd, packet.as_ptr().cast(), packet.len(), libc::MSG_NOSIGNAL) };
+        if sent == packet.len() as isize {
+            return Ok(());
+        }
+        if sent >= 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "short QTFB seqpacket send",
+            ));
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        if error.kind() != io::ErrorKind::WouldBlock {
+            return Err(error);
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "QTFB update remained backpressured for 250ms",
+            ));
+        }
+        wait_fd(fd, libc::POLLOUT, deadline.saturating_duration_since(now))?;
     }
 }

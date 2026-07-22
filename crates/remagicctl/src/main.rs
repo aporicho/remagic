@@ -83,7 +83,16 @@ fn parse(args: &[String]) -> Result<Request, Box<dyn std::error::Error>> {
         "reload" => Request::ReloadManifests,
         "manager" => Request::OpenManager,
         "system" => Request::ReturnSystem,
-        "sleep" => Request::Sleep,
+        "sleep" => {
+            return Err(
+                "sleep must be initiated by the Remagic manager so its lock page can be proven"
+                    .into(),
+            )
+        }
+        "wake" => return Err(
+            "wake must be initiated by the Remagic lock screen so its manager page can be proven"
+                .into(),
+        ),
         "park" => Request::ParkCurrent,
         "launch" => {
             let id = AppId::new(args.get(1).ok_or("launch requires an app id")?.clone())?;

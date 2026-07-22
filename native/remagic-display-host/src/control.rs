@@ -75,6 +75,14 @@ fn handle(mut stream: UnixStream, state: &HostState) -> io::Result<()> {
     BufReader::new(stream.try_clone()?).read_line(&mut line)?;
     let request: ControlEnvelope = serde_json::from_str(&line)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let reply = process_request(request, state);
+    let encoded = serde_json::to_vec(&reply).map_err(io::Error::other)?;
+    stream.write_all(&encoded)?;
+    stream.write_all(b"\n")?;
+    stream.flush()
+}
+
+fn process_request(request: ControlEnvelope, state: &HostState) -> ControlReply {
     let mut reply = ControlReply {
         protocol: 1,
         request_id: request.request_id,
@@ -91,49 +99,86 @@ fn handle(mut stream: UnixStream, state: &HostState) -> io::Result<()> {
             request.protocol
         ));
     } else {
-        let result = match request.command {
-            DisplayControl::Status => {
-                reply.snapshot = Some(state.snapshot());
-                Ok(())
-            }
-            DisplayControl::SetForeground {
-                key,
-                generation,
-                foreground_epoch,
-                full_refresh,
-            } => state.set_foreground(key, generation, foreground_epoch, full_refresh),
-            DisplayControl::ClearForeground => state.clear_foreground(),
-            DisplayControl::ConfigureInk {
-                key,
-                generation,
-                foreground_epoch,
-                enabled,
-                region,
-            } => state.configure_ink(key, generation, foreground_epoch, enabled, region),
-            DisplayControl::RequestFullRefresh => state.request_full_refresh(),
-            DisplayControl::InjectTap { x, y } => state.inject_tap(x, y),
-            DisplayControl::InjectPenLine {
-                x0,
-                y0,
-                x1,
-                y1,
-                points,
-            } => state.inject_pen_line(x0, y0, x1, y1, points),
-            DisplayControl::Shutdown => {
-                state.shutdown();
-                Ok(())
-            }
-        };
+        let result = dispatch(request.command, state, &mut reply);
         if let Err(error) = result {
             reply.ok = false;
             reply.status = "error".into();
             reply.error = Some(error.to_string());
         }
     }
-    let encoded = serde_json::to_vec(&reply).map_err(io::Error::other)?;
-    stream.write_all(&encoded)?;
-    stream.write_all(b"\n")?;
-    stream.flush()
+    reply
+}
+
+fn dispatch(
+    command: DisplayControl,
+    state: &HostState,
+    reply: &mut ControlReply,
+) -> io::Result<()> {
+    match command {
+        DisplayControl::Status => {
+            reply.snapshot = Some(state.snapshot());
+            Ok(())
+        }
+        DisplayControl::SetForeground {
+            key,
+            generation,
+            foreground_epoch,
+            full_refresh,
+        } => state.set_foreground(key, generation, foreground_epoch, full_refresh),
+        DisplayControl::PrepareForeground {
+            key,
+            generation,
+            foreground_epoch,
+        } => state.prepare_foreground(key, generation, foreground_epoch),
+        DisplayControl::ActivateForeground {
+            key,
+            generation,
+            foreground_epoch,
+            ink_enabled,
+            full_refresh,
+        } => {
+            state.activate_foreground(key, generation, foreground_epoch, ink_enabled, full_refresh)
+        }
+        DisplayControl::ClearForeground => state.clear_foreground(),
+        DisplayControl::ConfigureInk {
+            key,
+            generation,
+            foreground_epoch,
+            enabled,
+            region,
+        } => state.configure_ink(key, generation, foreground_epoch, enabled, region),
+        DisplayControl::RequestFullRefresh => state.request_full_refresh(),
+        DisplayControl::ShowLock {
+            key,
+            generation,
+            foreground_epoch,
+            sleep_epoch,
+            unlock_region,
+        } => state.show_lock(
+            key,
+            generation,
+            foreground_epoch,
+            sleep_epoch,
+            unlock_region,
+        ),
+        DisplayControl::RefreshLock { sleep_epoch } => state.refresh_lock(sleep_epoch),
+        DisplayControl::CancelLock {
+            sleep_epoch,
+            replacement_surface_sequence,
+        } => state.cancel_lock(sleep_epoch, replacement_surface_sequence),
+        DisplayControl::InjectTap { x, y } => state.inject_tap(x, y),
+        DisplayControl::InjectPenLine {
+            x0,
+            y0,
+            x1,
+            y1,
+            points,
+        } => state.inject_pen_line(x0, y0, x1, y1, points),
+        DisplayControl::Shutdown => {
+            state.shutdown();
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]

@@ -75,6 +75,21 @@ lifecycle_generation() {
         "/run/remagic/apps/$app/lifecycle-status.json" | sed -n '1p'
 }
 
+managed_wakelock_is_active() {
+    [ -r /sys/power/wake_lock ] || return 2
+    tr ' ' '\n' </sys/power/wake_lock | grep -Fxq remagic-managed
+}
+
+assert_managed_wakelock() {
+    managed_wakelock_is_active || fail "managed domain has no active remagic-managed wakelock"
+}
+
+assert_no_managed_wakelock() {
+    managed_wakelock_is_active && fail "stock domain retained remagic-managed wakelock"
+    status=$?
+    [ "$status" -eq 1 ] || fail "cannot inspect /sys/power/wake_lock"
+}
+
 diagnostics() {
     "$CTL" status >&2 || true
     "$CTL" display-status >&2 || true
@@ -108,6 +123,7 @@ echo "[v2-fault] establish managed Home"
 wait_unit xochitl.service active
 "$CTL" manager >/dev/null
 wait_domain '"domain": "manager"'
+assert_managed_wakelock
 
 echo "[v2-fault] Home process crash is restarted and rebound"
 old_home=$(main_pid remagic-home.service)
@@ -175,6 +191,7 @@ systemctl kill --kill-who=all --signal=KILL remagic-display-host.service
 wait_not_active remagic-display-host.service
 wait_unit xochitl.service active
 wait_domain '"domain": "system"'
+assert_no_managed_wakelock
 
 echo "[v2-fault] daemon crash also converges to stock"
 "$CTL" manager >/dev/null
@@ -184,5 +201,6 @@ wait_unit remagicd.service active
 wait_unit xochitl.service active
 wait_not_active remagic-display-host.service
 wait_domain '"domain": "system"'
+assert_no_managed_wakelock
 
 echo "[v2-fault] PASS"

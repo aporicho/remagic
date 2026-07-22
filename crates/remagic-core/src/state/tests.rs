@@ -32,6 +32,21 @@ fn manager_triple_returns_system() {
 }
 
 #[test]
+fn sleep_remains_locked_until_an_explicit_wake_transition() {
+    let mut state = ManagerState {
+        domain: DomainState::Manager,
+        sequence: 7,
+        ..ManagerState::default()
+    };
+    state.apply(Transition::Sleep).unwrap();
+    assert_eq!(state.domain, DomainState::Sleeping);
+    assert!(state.apply(Transition::Sleep).is_err());
+    assert_eq!(state.domain, DomainState::Sleeping);
+    state.apply(Transition::Wake).unwrap();
+    assert_eq!(state.domain, DomainState::Manager);
+}
+
+#[test]
 fn foreground_crash_returns_to_manager() {
     let app = id("magicpaper");
     let mut state = ManagerState {

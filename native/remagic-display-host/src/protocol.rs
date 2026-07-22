@@ -182,6 +182,19 @@ pub enum DisplayControl {
         #[serde(default = "default_true")]
         full_refresh: bool,
     },
+    PrepareForeground {
+        key: i32,
+        generation: u64,
+        foreground_epoch: u64,
+    },
+    ActivateForeground {
+        key: i32,
+        generation: u64,
+        foreground_epoch: u64,
+        ink_enabled: bool,
+        #[serde(default = "default_true")]
+        full_refresh: bool,
+    },
     ClearForeground,
     ConfigureInk {
         key: i32,
@@ -192,6 +205,20 @@ pub enum DisplayControl {
         region: Option<Rect>,
     },
     RequestFullRefresh,
+    ShowLock {
+        key: i32,
+        generation: u64,
+        foreground_epoch: u64,
+        sleep_epoch: u64,
+        unlock_region: Rect,
+    },
+    RefreshLock {
+        sleep_epoch: u64,
+    },
+    CancelLock {
+        sleep_epoch: u64,
+        replacement_surface_sequence: u64,
+    },
     InjectTap {
         x: i32,
         y: i32,
@@ -241,6 +268,10 @@ pub struct DisplaySnapshot {
     pub generation: u64,
     pub foreground_epoch: u64,
     pub ink_enabled: bool,
+    #[serde(default)]
+    pub lock_epoch: u64,
+    #[serde(default)]
+    pub lock_committed: bool,
     pub queue_depth: usize,
     pub input_backpressure_events: u64,
     pub panel_submission_count: u64,
@@ -328,6 +359,87 @@ mod tests {
                 key: 9,
                 generation: 3,
                 foreground_epoch: 11,
+                full_refresh: true,
+            }
+        ));
+    }
+
+    #[test]
+    fn configure_ink_control_round_trips_the_full_foreground_fence() {
+        let request = ControlEnvelope {
+            protocol: 1,
+            request_id: "ink-mode-1".into(),
+            command: DisplayControl::ConfigureInk {
+                key: 19,
+                generation: 7,
+                foreground_epoch: 13,
+                enabled: false,
+                region: None,
+            },
+        };
+        let encoded = serde_json::to_vec(&request).unwrap();
+        let decoded: ControlEnvelope = serde_json::from_slice(&encoded).unwrap();
+        assert!(matches!(
+            decoded.command,
+            DisplayControl::ConfigureInk {
+                key: 19,
+                generation: 7,
+                foreground_epoch: 13,
+                enabled: false,
+                region: None,
+            }
+        ));
+    }
+
+    #[test]
+    fn lock_control_round_trips_epoch_and_unlock_region() {
+        let request = ControlEnvelope {
+            protocol: 1,
+            request_id: "lock-1".into(),
+            command: DisplayControl::ShowLock {
+                key: 19,
+                generation: 8,
+                foreground_epoch: 14,
+                sleep_epoch: 3,
+                unlock_region: Rect::new(150, 1010, 654, 126),
+            },
+        };
+        let decoded: ControlEnvelope =
+            serde_json::from_slice(&serde_json::to_vec(&request).unwrap()).unwrap();
+        assert!(matches!(
+            decoded.command,
+            DisplayControl::ShowLock {
+                key: 19,
+                generation: 8,
+                foreground_epoch: 14,
+                sleep_epoch: 3,
+                unlock_region,
+            } if unlock_region == Rect::new(150, 1010, 654, 126)
+        ));
+    }
+
+    #[test]
+    fn atomic_foreground_activation_round_trips_ink_policy() {
+        let request = ControlEnvelope {
+            protocol: 1,
+            request_id: "activate-1".into(),
+            command: DisplayControl::ActivateForeground {
+                key: 29,
+                generation: 18,
+                foreground_epoch: 24,
+                ink_enabled: true,
+                full_refresh: true,
+            },
+        };
+        let decoded: ControlEnvelope =
+            serde_json::from_slice(&serde_json::to_vec(&request).unwrap()).unwrap();
+        assert!(matches!(
+            decoded.command,
+            DisplayControl::ActivateForeground {
+                key: 29,
+                generation: 18,
+                foreground_epoch: 24,
+                ink_enabled: true,
                 full_refresh: true,
             }
         ));

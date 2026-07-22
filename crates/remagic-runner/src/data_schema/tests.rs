@@ -517,6 +517,23 @@ fn committed_state_retires_pending_journal_without_rolling_data_back() {
 }
 
 #[test]
+fn a_transient_lock_handoff_is_retried_without_masking_real_concurrency() {
+    let fixture = Fixture::new("transient-lock-handoff");
+    let state = SchemaStateStore::open(&fixture.state_root, &fixture.manifest.id).unwrap();
+    let owner = state.try_lock().unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(5));
+        drop(owner);
+    });
+
+    let replacement = state
+        .try_lock()
+        .expect("short fork/exec-style lock handoff should be absorbed");
+    drop(replacement);
+    release.join().unwrap();
+}
+
+#[test]
 fn rolled_back_runner_keeps_new_schema_agent_blocked_after_committed_pending_recovery() {
     let fixture = Fixture::new("committed-pending-downgrade");
     let data_file = fixture.source.join("book.txt");

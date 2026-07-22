@@ -1,9 +1,16 @@
 use std::fs;
+use std::io;
 use std::path::Path;
 use std::time::Duration;
 use tokio::process::Command;
+use tracing::warn;
 
 const WAKELOCK: &[u8] = b"remagic-managed\n";
+const WAKELOCK_NAME: &str = "remagic-managed";
+const AUTOSLEEP: &str = "/sys/power/autosleep";
+const SUSPEND_SUCCESS: &str = "/sys/power/suspend_stats/success";
+const SUSPEND_START_TIMEOUT: Duration = Duration::from_secs(5);
+const SUSPEND_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const MANAGED_DOMAIN_MARKER: &str = "/run/remagic/managed-domain";
 const MANAGED_DOMAIN_UNITS: [&str; 4] = [
     "remagic-home.service",
@@ -29,7 +36,14 @@ impl SystemController {
         self.unmask_xochitl().await?;
         self.reset_failed().await?;
         self.start("xochitl.service").await?;
-        self.start_paperweight_if_installed().await
+        self.wait_active("xochitl.service").await?;
+        // A userspace wakelock is named kernel state rather than an
+        // fd-scoped lease.  If remagicd was killed while owning the managed
+        // domain, the name can survive the daemon process.  Only release it
+        // after every managed display owner is gone and stock is active.
+        self.release_wakelock_best_effort("startup recovery");
+        self.start_paperweight_best_effort("startup recovery").await;
+        Ok(())
     }
 
     pub async fn enter_managed(&self) -> Result<(), String> {
@@ -53,9 +67,13 @@ impl SystemController {
         self.unmask_xochitl().await?;
         self.reset_failed().await?;
         self.start("xochitl.service").await?;
-        self.start_paperweight_if_installed().await?;
         self.wait_active("xochitl.service").await?;
-        self.release_wakelock()?;
+        // xochitl is already authoritative at this point.  A wake-unlock
+        // permission or device error must be reported, but must not strand
+        // the power key inside Remagic after stock has taken over.
+        self.release_wakelock_best_effort("stock-domain restore");
+        self.start_paperweight_best_effort("stock-domain restore")
+            .await;
         Ok(())
     }
 
@@ -107,7 +125,51 @@ impl SystemController {
     }
 
     pub async fn suspend(&self) -> Result<(), String> {
-        fs::write("/sys/power/state", b"mem\n").map_err(|e| format!("suspend failed: {e}"))
+        let autosleep = fs::read_to_string(AUTOSLEEP)
+            .map_err(|error| format!("cannot inspect kernel autosleep mode: {error}"))?;
+        if autosleep.trim() != "mem" {
+            return Err(format!(
+                "kernel autosleep mode is {:?}, expected mem",
+                autosleep.trim()
+            ));
+        }
+        let active = fs::read_to_string("/sys/power/wake_lock")
+            .map_err(|error| format!("cannot inspect active wake locks: {error}"))?;
+        let blockers = external_wake_locks(&active);
+        if !blockers.is_empty() {
+            return Err(format!(
+                "kernel suspend is blocked by active wake locks: {}",
+                blockers.join(" ")
+            ));
+        }
+
+        // This device already runs the kernel autosleep worker. Writing
+        // /sys/power/state after releasing the final wakelock races that
+        // worker and is rejected with EBUSY. Capture a durable witness while
+        // our lock still prevents sleep, release it, then wait until the
+        // process resumes and the kernel success counter has advanced.
+        let baseline = read_suspend_success()?;
+        self.release_wakelock()?;
+        let wait_for_resume = async {
+            loop {
+                let current = read_suspend_success()?;
+                if current > baseline {
+                    return Ok(());
+                }
+                tokio::time::sleep(SUSPEND_POLL_INTERVAL).await;
+            }
+        };
+        tokio::time::timeout(SUSPEND_START_TIMEOUT, wait_for_resume)
+            .await
+            .map_err(|_| {
+                let active = fs::read_to_string("/sys/power/wake_lock")
+                    .unwrap_or_else(|_| "unavailable".into());
+                format!(
+                    "kernel autosleep did not complete within {} ms; active wake locks: {}",
+                    SUSPEND_START_TIMEOUT.as_millis(),
+                    active.trim()
+                )
+            })?
     }
 
     pub fn acquire_wakelock(&self) -> Result<(), String> {
@@ -116,8 +178,13 @@ impl SystemController {
     }
 
     pub fn release_wakelock(&self) -> Result<(), String> {
-        fs::write("/sys/power/wake_unlock", WAKELOCK)
-            .map_err(|error| format!("cannot release managed wake lock: {error}"))
+        interpret_wake_unlock(fs::write("/sys/power/wake_unlock", WAKELOCK))
+    }
+
+    fn release_wakelock_best_effort(&self, context: &str) {
+        if let Err(error) = self.release_wakelock() {
+            warn!(%error, %context, "managed wake lock cleanup failed");
+        }
     }
 
     async fn reset_failed(&self) -> Result<(), String> {
@@ -152,6 +219,16 @@ impl SystemController {
             self.start("paperweight.service").await?;
         }
         Ok(())
+    }
+
+    async fn start_paperweight_best_effort(&self, context: &str) {
+        if let Err(error) = self.start_paperweight_if_installed().await {
+            // Paperweight augments the stock shell but does not own its
+            // display or power-key safety.  Once xochitl is proven active,
+            // an add-on failure must not trap the device in a Remagic restore
+            // loop or keep a stale wakelock alive.
+            warn!(%error, %context, "Paperweight could not be started after stock recovery");
+        }
     }
 
     async fn stop_managed_domain(&self) -> Result<(), String> {
@@ -221,6 +298,37 @@ impl SystemController {
         args.extend(arguments.iter().cloned());
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
         run("systemd-run", &refs).await
+    }
+}
+
+fn read_suspend_success() -> Result<u64, String> {
+    let value = fs::read_to_string(SUSPEND_SUCCESS)
+        .map_err(|error| format!("cannot inspect kernel suspend counter: {error}"))?;
+    parse_suspend_success(&value)
+}
+
+fn parse_suspend_success(value: &str) -> Result<u64, String> {
+    value
+        .trim()
+        .parse::<u64>()
+        .map_err(|error| format!("invalid kernel suspend counter {:?}: {error}", value.trim()))
+}
+
+fn external_wake_locks(value: &str) -> Vec<&str> {
+    value
+        .split_whitespace()
+        .filter(|name| *name != WAKELOCK_NAME)
+        .collect()
+}
+
+fn interpret_wake_unlock(result: io::Result<()>) -> Result<(), String> {
+    match result {
+        Ok(()) => Ok(()),
+        // The kernel's /sys/power/wake_unlock interface reports EINVAL when
+        // this name is absent.  Releasing an already-released named lock is
+        // therefore a successful idempotent cleanup for our state machine.
+        Err(error) if error.raw_os_error() == Some(libc::EINVAL) => Ok(()),
+        Err(error) => Err(format!("cannot release managed wake lock: {error}")),
     }
 }
 
@@ -330,5 +438,35 @@ mod tests {
                 Ok(true)
             );
         }
+    }
+
+    #[test]
+    fn wake_unlock_is_idempotent_when_the_kernel_reports_absent_name() {
+        assert_eq!(
+            interpret_wake_unlock(Err(io::Error::from_raw_os_error(libc::EINVAL))),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn wake_unlock_keeps_real_kernel_failures_visible() {
+        let error = interpret_wake_unlock(Err(io::Error::from_raw_os_error(13))).unwrap_err();
+        assert!(error.contains("cannot release managed wake lock"));
+    }
+
+    #[test]
+    fn suspend_success_counter_is_strictly_numeric() {
+        assert_eq!(parse_suspend_success("42\n"), Ok(42));
+        assert!(parse_suspend_success("").is_err());
+        assert!(parse_suspend_success("41 wakeups").is_err());
+    }
+
+    #[test]
+    fn suspend_preflight_ignores_our_lock_but_reports_external_owners() {
+        assert!(external_wake_locks("remagic-managed\n").is_empty());
+        assert_eq!(
+            external_wake_locks("remagic-managed udev.charger wifi"),
+            vec!["udev.charger", "wifi"]
+        );
     }
 }

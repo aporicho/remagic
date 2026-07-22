@@ -1,10 +1,13 @@
 use super::*;
+use crate::display_host;
 use remagic_core::DomainState;
-use remagic_protocol::{read_frame, write_frame, Request, Response};
-use serde::Deserialize;
+use remagic_protocol::{
+    read_frame, write_frame, Request, Response, RuntimeAppCommand, RuntimeAppReply,
+    RuntimeAppRequest, RUNTIME_APP_PROTOCOL_V1, RUNTIME_APP_PROTOCOL_V2,
+};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -59,6 +62,7 @@ fn create_daemon() -> Result<DaemonParts, Box<dyn std::error::Error>> {
         sessions: RwLock::new(sessions),
         runtime_generations: RwLock::new(BTreeMap::new()),
         runtime_foreground_fences: RwLock::new(BTreeMap::new()),
+        runtime_input_modes: RwLock::new(BTreeMap::new()),
         runtime_exit_reports: RwLock::new(BTreeMap::new()),
         runtime_missing_observations: RwLock::new(BTreeMap::new()),
         session_store,
@@ -69,6 +73,8 @@ fn create_daemon() -> Result<DaemonParts, Box<dyn std::error::Error>> {
         power_control,
         next_generation: AtomicU64::new(1),
         next_foreground_epoch: AtomicU64::new(1),
+        next_sleep_epoch: AtomicU64::new(1),
+        sleep_transaction: sleep::SleepTransaction::default(),
         launch_interrupt_epoch,
         manager_repair_pending: AtomicBool::new(false),
         domain_recovery_pending: AtomicBool::new(false),
@@ -179,6 +185,12 @@ async fn recover_after_failure(
     match domain {
         DomainState::System | DomainState::Foreground(_) => Ok(()),
         DomainState::Manager => daemon.ensure_manager_or_restore().await,
+        DomainState::Sleeping
+            if sleep::is_retained_lock_error(error)
+                && retained_sleep_lock_is_healthy(daemon).await =>
+        {
+            Ok(())
+        }
         DomainState::EnteringManaged
         | DomainState::Launching(_)
         | DomainState::Parking(_)
@@ -186,6 +198,16 @@ async fn recover_after_failure(
         | DomainState::Sleeping
         | DomainState::Recovering => daemon.restore_system().await,
     }
+}
+
+async fn retained_sleep_lock_is_healthy(daemon: &Daemon) -> bool {
+    let transaction = daemon.sleep_transaction.snapshot();
+    if transaction.epoch == 0 || transaction.phase != sleep::SleepPhase::Locked {
+        return false;
+    }
+    display_host::status()
+        .await
+        .is_ok_and(|display| display.lock_committed && display.lock_epoch == transaction.epoch)
 }
 
 async fn serve_control_client(
@@ -207,18 +229,6 @@ async fn serve_control_client(
     Ok(())
 }
 
-#[derive(Deserialize)]
-struct LegacyAppRequest {
-    #[serde(default)]
-    version: u8,
-    #[serde(default)]
-    request_id: String,
-    command: String,
-    app: String,
-    #[serde(default)]
-    open_path: Option<PathBuf>,
-}
-
 async fn serve_app_request(
     mut stream: UnixStream,
     daemon: Arc<Daemon>,
@@ -231,49 +241,97 @@ async fn serve_app_request(
     }
     let mut line = String::new();
     let count = BufReader::new(&mut stream).read_line(&mut line).await?;
-    let response = parse_app_request(count, &line, &daemon).await;
-    let reply = response_to_json(response);
+    let reply = parse_app_request(count, &line, &daemon).await;
     stream.write_all(&serde_json::to_vec(&reply)?).await?;
     stream.write_all(b"\n").await?;
     Ok(())
 }
 
-async fn parse_app_request(count: usize, line: &str, daemon: &Daemon) -> Response {
+async fn parse_app_request(count: usize, line: &str, daemon: &Daemon) -> RuntimeAppReply {
+    let request_id_hint = runtime_request_id(line);
     if count == 0 || !line.ends_with('\n') || line.len() > 64 * 1024 {
-        return Response::Error {
-            message: "incomplete application request".into(),
-        };
+        return RuntimeAppReply::error(request_id_hint, "incomplete application request");
     }
-    match serde_json::from_str::<LegacyAppRequest>(line) {
-        Ok(request)
-            if request.version == 1
-                && !request.request_id.is_empty()
-                && request.command == "open_app" =>
-        {
-            match AppId::new(request.app) {
-                Ok(app_id) => {
-                    daemon
-                        .enqueue(Event::Launch(app_id, request.open_path))
-                        .await
-                }
-                Err(error) => Response::Error {
-                    message: error.to_string(),
-                },
+    let request = match serde_json::from_str::<RuntimeAppRequest>(line) {
+        Ok(request) => request,
+        Err(error) => {
+            return RuntimeAppReply::error(
+                request_id_hint,
+                format!("invalid application request: {error}"),
+            )
+        }
+    };
+    if request.request_id.is_empty() {
+        return RuntimeAppReply::error(
+            (!request.request_id.is_empty()).then_some(request.request_id),
+            "unsupported application request",
+        );
+    }
+    let version = request.version;
+    let request_id = request.request_id;
+    match request.command {
+        RuntimeAppCommand::OpenApp { app, open_path } => {
+            if version != RUNTIME_APP_PROTOCOL_V1 {
+                return RuntimeAppReply::error(
+                    Some(request_id),
+                    "open_app requires runtime protocol version 1",
+                );
+            }
+            match daemon.enqueue(Event::Launch(app, open_path)).await {
+                Response::Ok => RuntimeAppReply::open_accepted(),
+                Response::Error { message } => RuntimeAppReply::error(Some(request_id), message),
+                _ => RuntimeAppReply::error(Some(request_id), "unexpected manager reply"),
             }
         }
-        Ok(_) => Response::Error {
-            message: "unsupported application request".into(),
-        },
-        Err(error) => Response::Error {
-            message: format!("invalid application request: {error}"),
-        },
+        RuntimeAppCommand::SetInputMode { token, mode } => {
+            if version != RUNTIME_APP_PROTOCOL_V2 {
+                return RuntimeAppReply::error(
+                    Some(request_id),
+                    "set_input_mode requires runtime protocol version 2",
+                );
+            }
+            match daemon.set_input_mode(&token, mode).await {
+                Ok(ink_enabled) => {
+                    RuntimeAppReply::input_mode_accepted(request_id, token, mode, ink_enabled)
+                }
+                Err(error) => RuntimeAppReply::error(Some(request_id), error),
+            }
+        }
     }
 }
 
-fn response_to_json(response: Response) -> serde_json::Value {
-    match response {
-        Response::Ok => serde_json::json!({"ok": true, "status": "accepted"}),
-        Response::Error { message } => serde_json::json!({"ok": false, "error": message}),
-        _ => serde_json::json!({"ok": false, "error": "unexpected manager reply"}),
+fn runtime_request_id(line: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(line)
+        .ok()?
+        .get("request_id")?
+        .as_str()
+        .filter(|request_id| !request_id.is_empty())
+        .map(str::to_owned)
+}
+
+#[cfg(test)]
+mod runtime_request_tests {
+    use super::*;
+
+    #[test]
+    fn request_identity_is_recovered_from_a_structurally_invalid_request() {
+        let line = r#"{"version":1,"request_id":"mode-bad","command":"set_input_mode","app":"magicpaper","mode":"unknown"}"#;
+        assert_eq!(runtime_request_id(line).as_deref(), Some("mode-bad"));
+        let error = serde_json::from_str::<RuntimeAppRequest>(line).unwrap_err();
+        let reply = RuntimeAppReply::error(runtime_request_id(line), error.to_string());
+        assert_eq!(reply.request_id.as_deref(), Some("mode-bad"));
+        assert!(!reply.ok);
+    }
+
+    #[test]
+    fn empty_or_non_string_request_identity_is_not_echoed() {
+        for line in [
+            r#"{"request_id":""}"#,
+            r#"{"request_id":17}"#,
+            r#"{"version":1}"#,
+            "not-json",
+        ] {
+            assert_eq!(runtime_request_id(line), None);
+        }
     }
 }

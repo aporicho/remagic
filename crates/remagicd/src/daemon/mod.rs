@@ -1,8 +1,10 @@
 mod applications;
+mod input_mode;
 mod launch;
 mod navigation;
 mod request;
 mod server;
+mod sleep;
 mod supervision;
 mod utils;
 
@@ -32,7 +34,13 @@ pub(super) enum Event {
     OpenManager,
     EnsureManager,
     ReturnSystem,
-    Sleep,
+    Sleep(u64),
+    Wake(u64),
+    Resuspend {
+        sleep_epoch: u64,
+        sleep_revision: u64,
+        interaction_epoch: u64,
+    },
     Close(AppId, bool),
     RuntimeExited {
         app_id: AppId,
@@ -41,7 +49,10 @@ pub(super) enum Event {
         crashed: bool,
         source: ExitReportSource,
     },
-    DisplayHostExited,
+    DisplayHostExited {
+        state_sequence: u64,
+        sleep_revision: u64,
+    },
     AppReady(AppId),
     AppParked(AppSession),
     Package(PackageOperation),
@@ -61,9 +72,10 @@ impl Event {
                 | Self::Launch(_, _)
                 | Self::OpenManager
                 | Self::ReturnSystem
-                | Self::Sleep
+                | Self::Sleep(_)
+                | Self::Wake(_)
                 | Self::Close(_, _)
-                | Self::DisplayHostExited
+                | Self::DisplayHostExited { .. }
         )
     }
 }
@@ -178,6 +190,10 @@ pub(super) struct Daemon {
     pub(super) sessions: RwLock<BTreeMap<AppId, AppSession>>,
     pub(super) runtime_generations: RwLock<BTreeMap<AppId, u64>>,
     pub(super) runtime_foreground_fences: RwLock<BTreeMap<AppId, (u64, u64)>>,
+    /// The mode requested by an application for one exact foreground fence.
+    /// Launching applications may publish this before the manager commits
+    /// their surface, avoiding a ready/input-mode handshake cycle.
+    pub(super) runtime_input_modes: RwLock<BTreeMap<AppId, input_mode::RuntimeInputState>>,
     pub(super) runtime_exit_reports: RwLock<BTreeMap<AppId, PendingExit>>,
     pub(super) runtime_missing_observations: RwLock<BTreeMap<AppId, (u64, u8)>>,
     pub(super) session_store: SessionStore,
@@ -188,6 +204,10 @@ pub(super) struct Daemon {
     pub(super) power_control: std::sync::mpsc::Sender<power_device::Control>,
     pub(super) next_generation: AtomicU64,
     pub(super) next_foreground_epoch: AtomicU64,
+    /// Monotonic identity for display/power sleep transactions. Zero is
+    /// reserved for "not locked" in both daemon and display telemetry.
+    pub(super) next_sleep_epoch: AtomicU64,
+    sleep_transaction: sleep::SleepTransaction,
     pub(super) launch_interrupt_epoch: Arc<AtomicU64>,
     pub(super) manager_repair_pending: AtomicBool,
     pub(super) domain_recovery_pending: AtomicBool,

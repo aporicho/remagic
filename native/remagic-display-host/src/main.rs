@@ -1,5 +1,5 @@
 use remagic_display_host::control::ControlServer;
-use remagic_display_host::input::{InputFrame, InputThreads};
+use remagic_display_host::input::{CapturedInput, InputThreads};
 #[cfg(feature = "device")]
 use remagic_display_host::panel::QuillBackend;
 use remagic_display_host::panel::{
@@ -82,9 +82,14 @@ where
     let qtfb = QtfbServer::start(Arc::clone(&state), &qtfb_path)?;
     let control = ControlServer::start(Arc::clone(&state), control_path.clone())?;
 
-    let (input_tx, input_rx) = mpsc::channel::<InputFrame>();
+    let (input_tx, input_rx) = mpsc::channel::<CapturedInput>();
     let input_threads = if claim_input {
-        Some(InputThreads::spawn(954, 1696, input_tx)?)
+        Some(InputThreads::spawn(
+            954,
+            1696,
+            input_tx,
+            state.input_epoch_source(),
+        )?)
     } else {
         None
     };
@@ -92,8 +97,8 @@ where
     let input_dispatch = std::thread::Builder::new()
         .name("remagic-input-dispatch".into())
         .spawn(move || {
-            while let Ok(frame) = input_rx.recv() {
-                input_state.dispatch_input(frame);
+            while let Ok(captured) = input_rx.recv() {
+                input_state.dispatch_captured_input(captured);
                 if input_state.is_shutdown() {
                     break;
                 }

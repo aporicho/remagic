@@ -1,13 +1,13 @@
 use super::{
-    AxisRange, InputFrame, MarkerDecoder, RawEvent, TouchDecoder, EVIOCGABS_MT_PRESSURE,
-    EVIOCGABS_MT_SLOT, EVIOCGABS_MT_X, EVIOCGABS_MT_Y, EVIOCGABS_PRESSURE, EVIOCGABS_X,
-    EVIOCGABS_Y, EVIOCGRAB,
+    AxisRange, CapturedInput, InputFrame, MarkerDecoder, RawEvent, TouchDecoder,
+    EVIOCGABS_MT_PRESSURE, EVIOCGABS_MT_SLOT, EVIOCGABS_MT_X, EVIOCGABS_MT_Y, EVIOCGABS_PRESSURE,
+    EVIOCGABS_X, EVIOCGABS_Y, EVIOCGRAB,
 };
 use std::fs;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::Duration;
@@ -42,7 +42,8 @@ impl InputThreads {
     pub fn spawn(
         logical_width: i32,
         logical_height: i32,
-        tx: Sender<InputFrame>,
+        tx: Sender<CapturedInput>,
+        input_epoch: Arc<AtomicU64>,
     ) -> io::Result<Self> {
         let marker = find_input_device("Elan marker input")?;
         let touch = find_input_device("Elan touch input")?;
@@ -52,6 +53,7 @@ impl InputThreads {
         let marker_failed = Arc::clone(&failed);
         let marker_health_stop = Arc::clone(&stop);
         let marker_tx = tx.clone();
+        let marker_epoch = Arc::clone(&input_epoch);
         let marker_handle = std::thread::Builder::new()
             .name("remagic-marker".into())
             .spawn(move || {
@@ -61,6 +63,7 @@ impl InputThreads {
                     logical_height,
                     marker_stop,
                     marker_tx,
+                    marker_epoch,
                 ) {
                     eprintln!("remagic-display-host: marker input stopped: {error}");
                     if !marker_health_stop.load(Ordering::Acquire) {
@@ -74,8 +77,14 @@ impl InputThreads {
         let touch_handle = std::thread::Builder::new()
             .name("remagic-touch".into())
             .spawn(move || {
-                if let Err(error) = run_touch(&touch, logical_width, logical_height, touch_stop, tx)
-                {
+                if let Err(error) = run_touch(
+                    &touch,
+                    logical_width,
+                    logical_height,
+                    touch_stop,
+                    tx,
+                    input_epoch,
+                ) {
                     eprintln!("remagic-display-host: touch input stopped: {error}");
                     if !touch_health_stop.load(Ordering::Acquire) {
                         touch_failed.store(true, Ordering::Release);
@@ -134,7 +143,8 @@ fn run_marker(
     logical_width: i32,
     logical_height: i32,
     stop: Arc<AtomicBool>,
-    tx: Sender<InputFrame>,
+    tx: Sender<CapturedInput>,
+    input_epoch: Arc<AtomicU64>,
 ) -> io::Result<()> {
     let fd = open_grabbed(path)?;
     let mut decoder = MarkerDecoder::new(
@@ -146,7 +156,7 @@ fn run_marker(
     );
     read_events(fd.as_raw_fd(), stop, |event| {
         if let Some(frame) = decoder.consume(event) {
-            let _ = tx.send(InputFrame::Pen(frame));
+            let _ = tx.send(CapturedInput::capture(&input_epoch, InputFrame::Pen(frame)));
         }
     })
 }
@@ -156,7 +166,8 @@ fn run_touch(
     logical_width: i32,
     logical_height: i32,
     stop: Arc<AtomicBool>,
-    tx: Sender<InputFrame>,
+    tx: Sender<CapturedInput>,
+    input_epoch: Arc<AtomicU64>,
 ) -> io::Result<()> {
     let fd = open_grabbed(path)?;
     let slot_range = query_axis(fd.as_raw_fd(), EVIOCGABS_MT_SLOT, 0, 9);
@@ -169,8 +180,13 @@ fn run_touch(
         (slot_range.maximum - slot_range.minimum + 1).max(1) as usize,
     );
     read_events(fd.as_raw_fd(), stop, |event| {
-        for frame in decoder.consume(event) {
-            let _ = tx.send(InputFrame::Touch(frame));
+        let frames = decoder.consume(event);
+        let epoch = input_epoch.load(Ordering::Acquire);
+        for frame in frames {
+            let _ = tx.send(CapturedInput {
+                epoch,
+                frame: InputFrame::Touch(frame),
+            });
         }
     })
 }

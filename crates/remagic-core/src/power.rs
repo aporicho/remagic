@@ -30,11 +30,13 @@ impl ClickTracker {
             self.down_since = None;
             return PowerAction::None;
         }
-        if self
-            .down_since
-            .take()
-            .is_some_and(|start| now.duration_since(start) >= LONG_PRESS)
-        {
+        let Some(start) = self.down_since.take() else {
+            // EVIOCGRAB changes, suspend/resume and input-device reopen can
+            // expose a release without the corresponding press.  It is not a
+            // user click and must never recall an application.
+            return PowerAction::None;
+        };
+        if now.duration_since(start) >= LONG_PRESS {
             self.clear();
             return PowerAction::Long;
         }
@@ -77,6 +79,7 @@ impl ClickTracker {
         self.clicks = 0;
         self.deadline = None;
         self.down_since = None;
+        self.suppress_release = false;
     }
 }
 
@@ -144,6 +147,31 @@ mod tests {
         assert_eq!(
             tracker.poll(t + LONG_PRESS + MULTI_CLICK_GAP),
             PowerAction::None
+        );
+    }
+
+    #[test]
+    fn orphan_release_is_not_a_click() {
+        let t = Instant::now();
+        let mut tracker = ClickTracker::default();
+        assert_eq!(tracker.release(t), PowerAction::None);
+        assert_eq!(tracker.poll(t + MULTI_CLICK_GAP), PowerAction::None);
+    }
+
+    #[test]
+    fn clear_removes_a_polled_long_press_release_suppression() {
+        let t = Instant::now();
+        let mut tracker = ClickTracker::default();
+        tracker.press(t);
+        assert_eq!(tracker.poll(t + LONG_PRESS), PowerAction::Long);
+        tracker.clear();
+        assert_eq!(tracker.release(t + LONG_PRESS), PowerAction::None);
+
+        let next = t + LONG_PRESS + Duration::from_secs(1);
+        assert_eq!(click(&mut tracker, next), PowerAction::None);
+        assert_eq!(
+            tracker.poll(next + Duration::from_millis(861)),
+            PowerAction::Single
         );
     }
 }

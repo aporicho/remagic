@@ -5,6 +5,8 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tracing::warn;
 
+mod suspend;
+
 impl Daemon {
     pub(super) async fn single_power(
         &self,
@@ -23,6 +25,14 @@ impl Daemon {
                 }
             }
             DomainState::Foreground(app) => self.park(app, false, true).await,
+            // The physical wake press is consumed by the wake guard. A later
+            // deliberate single press while the lock page is awake puts the
+            // same frozen lock transaction back to sleep.
+            DomainState::Sleeping => {
+                let sleep = self.sleep_transaction.snapshot();
+                self.resuspend_locked(sleep.epoch, sleep.revision, interrupt_epoch)
+                    .await
+            }
             _ => Ok(()),
         }
     }
@@ -36,6 +46,7 @@ impl Daemon {
                 self.restore_system().await
             }
             DomainState::Manager => self.restore_system().await,
+            DomainState::Sleeping => self.restore_system().await,
             _ => Ok(()),
         }
     }
@@ -72,32 +83,16 @@ impl Daemon {
         }
     }
 
-    pub(super) async fn sleep(&self) -> Result<(), String> {
-        if !matches!(self.state.read().await.domain, DomainState::Manager) {
-            return Err("sleep button is only available in the manager".into());
-        }
-        self.state
-            .write()
-            .await
-            .apply(Transition::Sleep)
-            .map_err(|e| e.to_string())?;
-        self.controller.release_wakelock()?;
-        self.controller.suspend().await?;
-        self.controller.acquire_wakelock()?;
-        display_host::full_refresh().await?;
-        self.state
-            .write()
-            .await
-            .apply(Transition::Wake)
-            .map_err(|e| e.to_string())
-    }
-
     pub(super) async fn restore_system(&self) -> Result<(), String> {
         let _guard = self.transition_lock.lock().await;
         if matches!(self.state.read().await.domain, DomainState::System) {
             return Ok(());
         }
         self.state.write().await.domain = DomainState::RestoringSystem;
+        self.sleep_transaction.reset()?;
+        if let Err(error) = self.cancel_wake_guard().await {
+            warn!(%error, "could not cancel wake guard during system restore");
+        }
         let _ = display_host::clear_foreground().await;
         self.controller.stop_and_wait(HOME_UNIT).await?;
         self.stop_managed_apps().await?;
@@ -110,13 +105,15 @@ impl Daemon {
         self.controller.stop_and_wait(DISPLAY_UNIT).await?;
         self.runtime_generations.write().await.clear();
         self.runtime_foreground_fences.write().await.clear();
+        self.runtime_input_modes.write().await.clear();
         if let Err(error) = utils::set_foreground_marker(None) {
             warn!(%error, "could not clear foreground marker during system restore");
         }
-        if let Err(error) = self.set_power_grab(false).await {
-            warn!(%error, "could not confirm power-key release during system restore");
-        }
         self.controller.restore_system().await?;
+        // Keep the power key grabbed until xochitl is active. Releasing it
+        // earlier creates an interval in which no foreground owner can handle
+        // the user's key gesture.
+        self.set_power_grab(false).await?;
         self.state
             .write()
             .await
@@ -135,12 +132,32 @@ impl Daemon {
     }
 
     async fn set_power_grab(&self, grab: bool) -> Result<(), String> {
+        self.send_power_control(|reply| power_device::Control::Grab { grab, reply })
+            .await
+    }
+
+    async fn arm_wake_guard(&self) -> Result<(), String> {
+        self.send_power_control(|reply| power_device::Control::ArmWakeGuard { reply })
+            .await
+    }
+
+    async fn resume_wake_guard(&self) -> Result<(), String> {
+        self.send_power_control(|reply| power_device::Control::ResumeWakeGuard { reply })
+            .await
+    }
+
+    async fn cancel_wake_guard(&self) -> Result<(), String> {
+        self.send_power_control(|reply| power_device::Control::CancelWakeGuard { reply })
+            .await
+    }
+
+    async fn send_power_control(
+        &self,
+        command: impl FnOnce(tokio::sync::oneshot::Sender<Result<(), String>>) -> power_device::Control,
+    ) -> Result<(), String> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.power_control
-            .send(power_device::Control::Grab {
-                grab,
-                reply: reply_tx,
-            })
+            .send(command(reply_tx))
             .map_err(|error| format!("power input thread is unavailable: {error}"))?;
         tokio::time::timeout(Duration::from_secs(1), reply_rx)
             .await
@@ -203,5 +220,9 @@ impl Daemon {
         self.next_foreground_epoch
             .fetch_add(1, Ordering::Relaxed)
             .max(1)
+    }
+
+    pub(super) fn allocate_sleep_epoch(&self) -> u64 {
+        self.next_sleep_epoch.fetch_add(1, Ordering::Relaxed).max(1)
     }
 }

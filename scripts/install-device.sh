@@ -6,16 +6,19 @@ set -eu
 SOURCE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 COMMON=$SOURCE_DIR/scripts/lib/deployment-common.sh
 KOREADER_STORAGE_LIB=$SOURCE_DIR/scripts/lib/koreader-storage.sh
+KOREADER_ADAPTER_STAGE_LIB=$SOURCE_DIR/scripts/lib/koreader-adapter-stage.sh
 REMAGIC_ACCEPTANCE_RECOVERY_LIB=$SOURCE_DIR/scripts/lib/device-test-recovery.sh
 MAGICPAPER_FONT_CONTRACT=$SOURCE_DIR/scripts/lib/magicpaper-font-contract.sh
 [ -r "$COMMON" ] || { echo "install-device.sh: deployment helper is missing" >&2; exit 1; }
 [ -r "$KOREADER_STORAGE_LIB" ] || { echo "install-device.sh: KOReader storage helper is missing" >&2; exit 1; }
+[ -r "$KOREADER_ADAPTER_STAGE_LIB" ] || { echo "install-device.sh: KOReader adapter staging helper is missing" >&2; exit 1; }
 [ -r "$MAGICPAPER_FONT_CONTRACT" ] || {
     echo "install-device.sh: MagicPaper font contract is missing" >&2
     exit 1
 }
 . "$COMMON"
 . "$KOREADER_STORAGE_LIB"
+. "$KOREADER_ADAPTER_STAGE_LIB"
 # shellcheck source=scripts/lib/magicpaper-font-contract.sh
 . "$MAGICPAPER_FONT_CONTRACT"
 umask 077
@@ -210,10 +213,12 @@ opt/remagic-koreader/share/patches/1-remagic-storage.lua
 opt/remagic-koreader/share/patches/2-remagic-runtime.lua
 scripts/lib/deployment-common.sh
 scripts/lib/koreader-storage.sh
+scripts/lib/koreader-adapter-stage.sh
 scripts/lib/magicpaper-font-contract.sh
 scripts/lib/device-test-isolation.sh
 scripts/lib/device-test-recovery.sh
 scripts/remagic-recover
+scripts/remagic-register
 scripts/koreader-remagic
 scripts/koreader-lifecycle
 scripts/koreader-data-migrate
@@ -222,6 +227,9 @@ scripts/koreader-db-inspect.lua
 scripts/koreader-library-sync
 scripts/koreader-library-index.lua
 scripts/koreader-not-running
+scripts/remagic-lifecycle-async.lua
+scripts/remagic-lifecycle-protocol.lua
+scripts/remagic-open-path.lua
 scripts/magicpaper-remagic
 scripts/magicpaper-agent-remagic
 scripts/magicpaper-qtfb
@@ -231,6 +239,7 @@ scripts/uninstall-device.sh
 scripts/device-acceptance-v2.sh
 scripts/device-fault-acceptance-v2.sh
 scripts/device-stress-acceptance-v2.sh
+scripts/device-lock-acceptance-v2.sh
 manifests/magicpaper.toml
 manifests/koreader.toml
 systemd/remagicd.service
@@ -318,6 +327,7 @@ validate_bundle() {
         bin/remagic-vellum-worker bin/remagic-display-host \
         opt/magicpaper/riddle-qtfb opt/koreader/reader.lua opt/koreader/luajit \
         scripts/remagic-recover scripts/koreader-remagic scripts/koreader-lifecycle \
+        scripts/remagic-register \
         scripts/koreader-data-migrate scripts/koreader-db-inspect \
         scripts/koreader-library-sync scripts/koreader-not-running \
         scripts/magicpaper-remagic scripts/magicpaper-agent-remagic \
@@ -419,7 +429,7 @@ stage_manager() {
     stage_file 0755 "$SOURCE_DIR/lib/libquill.so" "$stage/lib/libquill.so"
     stage_file 0755 "$SOURCE_DIR/shims/qtfb-shim.so" "$stage/shims/qtfb-shim.so"
     stage_file 0644 "$SOURCE_DIR/shims/LICENSE.qtfb-shim" "$stage/share/LICENSE.qtfb-shim"
-    for helper in deployment-common.sh remagic-recover magicpaper-remagic \
+    for helper in deployment-common.sh remagic-recover remagic-register magicpaper-remagic \
         magicpaper-agent-remagic magicpaper-qtfb remagic-schema-ready \
         uninstall-device.sh riddle-env; do
         source=$SOURCE_DIR/scripts/$helper
@@ -432,12 +442,16 @@ stage_manager() {
         "$stage/libexec/device-test-isolation.sh"
     stage_file 0755 "$SOURCE_DIR/scripts/lib/device-test-recovery.sh" \
         "$stage/libexec/device-test-recovery.sh"
-    for test_script in device-acceptance-v2.sh device-fault-acceptance-v2.sh device-stress-acceptance-v2.sh; do
+    for test_script in device-acceptance-v2.sh device-fault-acceptance-v2.sh device-stress-acceptance-v2.sh device-lock-acceptance-v2.sh; do
         stage_file 0755 "$SOURCE_DIR/scripts/$test_script" "$stage/share/$test_script"
     done
     stage_file 0644 "$SOURCE_DIR/share/build-info.txt" "$stage/share/build-info.txt"
     stage_file 0644 "$SOURCE_DIR/share/bundle.sha256" "$stage/share/bundle.sha256"
     stage_file 0644 "$SOURCE_DIR/share/vellum-bootstrap.sh" "$stage/share/vellum-bootstrap.sh"
+    for unit in remagicd.service remagic-display-host.service remagic-home.service \
+        remagic-app@.service remagic-recover.service magicpaper-agent.service; do
+        stage_file 0644 "$SOURCE_DIR/systemd/$unit" "$stage/share/systemd/$unit"
+    done
     for manifest in magicpaper.toml koreader.toml; do
         stage_file 0644 "$SOURCE_DIR/testing/manifests/$manifest" \
             "$stage/share/testing/manifests/$manifest"
@@ -454,19 +468,7 @@ stage_manager() {
 
 stage_adapter() {
     stage=$1
-    rm -rf "$stage"
-    mkdir -p "$stage/bin" "$stage/libexec"
-    stage_file 0755 "$SOURCE_DIR/scripts/koreader-remagic" "$stage/bin/koreader-remagic"
-    for helper in koreader-lifecycle koreader-data-migrate koreader-db-inspect \
-        koreader-library-sync koreader-not-running; do
-        stage_file 0755 "$SOURCE_DIR/scripts/$helper" "$stage/libexec/$helper"
-    done
-    stage_file 0644 "$SOURCE_DIR/scripts/koreader-db-inspect.lua" "$stage/libexec/koreader-db-inspect.lua"
-    stage_file 0644 "$SOURCE_DIR/scripts/koreader-library-index.lua" "$stage/libexec/koreader-library-index.lua"
-    for platform_patch in 1-remagic-storage.lua 2-remagic-runtime.lua; do
-        stage_file 0644 "$SOURCE_DIR/opt/remagic-koreader/share/patches/$platform_patch" \
-            "$stage/share/patches/$platform_patch"
-    done
+    deployment_stage_koreader_adapter_files "$stage" "$SOURCE_DIR"
     cp -a "$SOURCE_DIR/opt/koreader" "$stage/program"
     chown -R 0:0 "$stage"
 }
@@ -682,6 +684,14 @@ snapshot_koreader_storage "$CURRENT_TXN"
 transactional_tree_switch "$CURRENT_TXN/switch-app" "$APP_ROOT" "$APP_STAGE" "$APP_BACKUP"
 transactional_tree_switch "$CURRENT_TXN/switch-adapter" "$ADAPTER_ROOT" "$ADAPTER_STAGE" "$ADAPTER_BACKUP"
 
+for module in remagic-lifecycle-async.lua remagic-lifecycle-protocol.lua \
+    remagic-open-path.lua; do
+    cmp -s "$SOURCE_DIR/scripts/$module" "$ADAPTER_ROOT/libexec/$module" || {
+        echo "install-device.sh: KOReader runtime module verification failed: $module" >&2
+        exit 1
+    }
+done
+
 KOREADER_DIR=$KOREADER_PROGRAM_ROOT \
 KOREADER_ADAPTER_EXEC=$ADAPTER_ROOT/bin/koreader-remagic \
     "$ADAPTER_ROOT/libexec/koreader-not-running"
@@ -755,8 +765,10 @@ cmp -s "$SOURCE_DIR/opt/koreader/reader.lua" "$KOREADER_PROGRAM_ROOT/reader.lua"
     exit 1
 }
 
-publish_symlink /usr/lib/systemd/system/remagicd.service "$WANTS_ROOT/remagicd.service"
-publish_symlink /usr/lib/systemd/system/magicpaper-agent.service "$WANTS_ROOT/magicpaper-agent.service"
+# /etc is a volatile overlay on reMarkable OS.  Publish boot wants alongside
+# the immutable unit files so a normal reboot cannot silently discard them.
+publish_symlink /usr/lib/systemd/system/remagicd.service "$UNIT_ROOT/multi-user.target.wants/remagicd.service"
+publish_symlink /usr/lib/systemd/system/magicpaper-agent.service "$UNIT_ROOT/multi-user.target.wants/magicpaper-agent.service"
 sync
 printf '%s\n' committed >"$CURRENT_TXN/status"
 sync

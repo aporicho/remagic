@@ -1,6 +1,7 @@
+use super::input_mode;
 use super::*;
 use crate::{app_runtime, display_host};
-use remagic_core::{BackgroundService, DomainState, ReadinessMode, Transition};
+use remagic_core::{AppToken, BackgroundService, DomainState, ReadinessMode, Transition};
 use remagic_protocol::AppCommand;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -25,6 +26,17 @@ struct LaunchContext {
     launch_path: PathBuf,
     background_unit: Option<String>,
     background_quiesced: bool,
+}
+
+impl LaunchContext {
+    fn token(&self) -> AppToken {
+        AppToken {
+            app_id: self.id.clone(),
+            generation: self.generation,
+            foreground_epoch: self.foreground_epoch,
+            lease_id: Some(self.lease_id),
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -100,7 +112,6 @@ impl Daemon {
         interrupt_epoch: u64,
         request_fence: &RequestFence,
     ) -> Result<(), String> {
-        let mut state = self.state.write().await;
         self.ensure_launch_current(interrupt_epoch, request_fence)?;
         if !request_fence.begin_commit() {
             return Err("application launch was cancelled before foreground commit".into());
@@ -108,9 +119,41 @@ impl Daemon {
         if self.launch_interrupt_epoch.load(Ordering::Acquire) != interrupt_epoch {
             return Err("application launch was superseded at foreground commit".into());
         }
+        // Keep the desired-mode record locked from the last read through panel
+        // configuration and state publication. A concurrent startup request is
+        // therefore either included in this commit or observes Foreground and
+        // applies itself to the already-committed lease; it can never be ACKed
+        // into the gap between those outcomes.
+        let mut input_modes = self.runtime_input_modes.write().await;
+        let input = input_modes
+            .get_mut(&context.id)
+            .ok_or_else(|| format!("application {} lost its pending input fence", context.id))?;
+        let token = context.token();
+        if !input.matches(&token) || !input.pending {
+            return Err(format!(
+                "application {} input fence changed before foreground commit",
+                context.id
+            ));
+        }
+        display_host::prepare_foreground(
+            context.surface_key,
+            context.generation,
+            context.foreground_epoch,
+        )
+        .await?;
+        display_host::activate_foreground(
+            context.surface_key,
+            context.generation,
+            context.foreground_epoch,
+            input.mode.ink_enabled(),
+            true,
+        )
+        .await?;
+        let mut state = self.state.write().await;
         state
             .apply(Transition::AppReady(context.id.clone()))
             .map_err(|error| error.to_string())?;
+        input.pending = false;
         utils::set_foreground_marker(Some(&context.id))
     }
 
@@ -231,8 +274,10 @@ impl Daemon {
     ) -> Result<(), String> {
         self.ensure_launch_current(interrupt_epoch, request_fence)?;
         self.publish_launch_descriptor(context)?;
+        // Publish the runtime fence before starting or resuming the process so
+        // its startup input-mode request cannot race registration.
+        self.register_runtime(context).await?;
         if context.active {
-            self.register_runtime(context).await;
             app_runtime::command(
                 &context.runtime_dir,
                 &AppCommand::EnterForeground {
@@ -246,7 +291,6 @@ impl Daemon {
         } else {
             schema::clear_phase_markers(context)?;
             self.controller.start(&context.unit).await?;
-            self.register_runtime(context).await;
         }
         self.wait_for_application(context, interrupt_epoch, request_fence)
             .await?;
@@ -256,25 +300,6 @@ impl Daemon {
         }
         self.start_background_service(context).await?;
         self.ensure_launch_current(interrupt_epoch, request_fence)?;
-        display_host::set_foreground(
-            context.surface_key,
-            context.generation,
-            context.foreground_epoch,
-            true,
-        )
-        .await?;
-        self.ensure_launch_current(interrupt_epoch, request_fence)?;
-        display_host::configure_ink(
-            context.surface_key,
-            context.generation,
-            context.foreground_epoch,
-            context
-                .manifest
-                .capabilities
-                .iter()
-                .any(|cap| cap.as_str() == "ink:direct-v1"),
-        )
-        .await?;
         self.ensure_launch_current(interrupt_epoch, request_fence)
     }
 
@@ -310,7 +335,7 @@ impl Daemon {
         )
     }
 
-    async fn register_runtime(&self, context: &LaunchContext) {
+    async fn register_runtime(&self, context: &LaunchContext) -> Result<(), String> {
         self.runtime_generations
             .write()
             .await
@@ -319,6 +344,11 @@ impl Daemon {
             context.id.clone(),
             (context.foreground_epoch, context.lease_id),
         );
+        self.runtime_input_modes.write().await.insert(
+            context.id.clone(),
+            input_mode::RuntimeInputState::pending(&context.token(), &context.manifest)?,
+        );
+        Ok(())
     }
 
     async fn wait_for_application(
@@ -440,6 +470,7 @@ impl Daemon {
             .write()
             .await
             .remove(&context.id);
+        self.runtime_input_modes.write().await.remove(&context.id);
         self.runtime_exit_reports.write().await.remove(&context.id);
         self.runtime_missing_observations
             .write()

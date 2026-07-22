@@ -1,4 +1,6 @@
 use super::*;
+use crate::daemon::input_mode;
+use remagic_core::AppToken;
 
 impl Daemon {
     pub(super) async fn recover_failed_park(
@@ -54,6 +56,32 @@ impl Daemon {
             .ok_or_else(|| format!("application {id} has no runtime directory"))?;
         let foreground_epoch = self.allocate_foreground_epoch();
         let lease_id = foreground_epoch;
+        let token = AppToken {
+            app_id: id.clone(),
+            generation: old_fence.generation,
+            foreground_epoch,
+            lease_id: Some(lease_id),
+        };
+        // Publish the exact pending fence before asking the application to
+        // return. MagicPaper negotiates its mode before reporting ready; that
+        // request must not wait on the transition lock held by park recovery.
+        self.runtime_foreground_fences
+            .write()
+            .await
+            .insert(id.clone(), (foreground_epoch, lease_id));
+        self.runtime_input_modes.write().await.insert(
+            id.clone(),
+            input_mode::RuntimeInputState::pending(&token, manifest)?,
+        );
+        // Revoke the old display/input lease before the same process draws
+        // its recovery frame. Without this prepare barrier, same-key damage
+        // and pen events can still flow under the old foreground epoch.
+        display_host::prepare_foreground(
+            display_host::app_surface_key(id),
+            old_fence.generation,
+            foreground_epoch,
+        )
+        .await?;
         app_runtime::command(
             runtime_dir,
             &AppCommand::EnterForeground {
@@ -79,14 +107,7 @@ impl Daemon {
                 "application {id} exited before foreground recovery commit"
             ));
         }
-        self.commit_restored_foreground(
-            id,
-            manifest,
-            old_fence.generation,
-            foreground_epoch,
-            lease_id,
-        )
-        .await
+        self.commit_restored_foreground(&token).await
     }
 
     async fn validate_recovery_fence(
@@ -109,35 +130,32 @@ impl Daemon {
         Ok(())
     }
 
-    async fn commit_restored_foreground(
-        &self,
-        id: &AppId,
-        manifest: &remagic_core::AppManifest,
-        generation: u64,
-        foreground_epoch: u64,
-        lease_id: u64,
-    ) -> Result<(), String> {
+    async fn commit_restored_foreground(&self, token: &AppToken) -> Result<(), String> {
+        let id = &token.app_id;
+        let mut input_modes = self.runtime_input_modes.write().await;
+        let input = input_modes
+            .get_mut(id)
+            .ok_or_else(|| format!("application {id} lost its recovery input fence"))?;
+        if !input.matches(token) || !input.pending {
+            return Err(format!(
+                "application {id} input fence changed during park recovery"
+            ));
+        }
         let surface_key = display_host::app_surface_key(id);
-        display_host::set_foreground(surface_key, generation, foreground_epoch, true).await?;
-        display_host::configure_ink(
+        display_host::activate_foreground(
             surface_key,
-            generation,
-            foreground_epoch,
-            manifest
-                .capabilities
-                .iter()
-                .any(|capability| capability.as_str() == "ink:direct-v1"),
+            token.generation,
+            token.foreground_epoch,
+            input.mode.ink_enabled(),
+            true,
         )
         .await?;
-        self.runtime_foreground_fences
-            .write()
-            .await
-            .insert(id.clone(), (foreground_epoch, lease_id));
         self.state
             .write()
             .await
             .apply(Transition::AppRestored(id.clone()))
             .map_err(|error| error.to_string())?;
+        input.pending = false;
         utils::set_foreground_marker(Some(id))
     }
 

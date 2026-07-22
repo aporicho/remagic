@@ -16,7 +16,12 @@ impl Daemon {
             Request::ReloadManifests => self.enqueue(Event::ReloadManifests).await,
             Request::OpenManager => self.enqueue(Event::OpenManager).await,
             Request::ReturnSystem => self.enqueue(Event::ReturnSystem).await,
-            Request::Sleep => self.enqueue(Event::Sleep).await,
+            Request::Sleep {
+                lock_surface_sequence,
+            } => self.enqueue(Event::Sleep(lock_surface_sequence)).await,
+            Request::Wake {
+                manager_surface_sequence,
+            } => self.enqueue(Event::Wake(manager_surface_sequence)).await,
             Request::Launch { app_id, open_path } => {
                 self.enqueue(Event::Launch(app_id, open_path)).await
             }
@@ -184,7 +189,20 @@ impl Daemon {
             Event::OpenManager => self.open_manager().await,
             Event::EnsureManager => self.handle_ensure_manager().await,
             Event::ReturnSystem => self.restore_system().await,
-            Event::Sleep => self.sleep().await,
+            Event::Sleep(lock_surface_sequence) => {
+                self.sleep(lock_surface_sequence, &request_fence).await
+            }
+            Event::Wake(manager_surface_sequence) => {
+                self.wake(manager_surface_sequence, &request_fence).await
+            }
+            Event::Resuspend {
+                sleep_epoch,
+                sleep_revision,
+                interaction_epoch,
+            } => {
+                self.resuspend_locked(sleep_epoch, sleep_revision, interaction_epoch)
+                    .await
+            }
             Event::Close(id, complete) => self.close(id, complete).await,
             Event::RuntimeExited {
                 app_id,
@@ -196,7 +214,28 @@ impl Daemon {
                 self.record_runtime_exit(app_id, generation, exit_code, crashed, source)
                     .await
             }
-            Event::DisplayHostExited => {
+            Event::DisplayHostExited {
+                state_sequence,
+                sleep_revision,
+            } => {
+                let current_sequence = self.state.read().await.sequence;
+                let current_sleep_revision = self.sleep_transaction.snapshot().revision;
+                if !sleep::recovery_fence_matches(
+                    current_sequence,
+                    current_sleep_revision,
+                    state_sequence,
+                    sleep_revision,
+                ) {
+                    self.domain_recovery_pending.store(false, Ordering::Release);
+                    warn!(
+                        state_sequence,
+                        current_sequence,
+                        sleep_revision,
+                        current_sleep_revision,
+                        "ignored stale display recovery event"
+                    );
+                    return Ok(());
+                }
                 let result = self.restore_system().await;
                 self.domain_recovery_pending.store(false, Ordering::Release);
                 result

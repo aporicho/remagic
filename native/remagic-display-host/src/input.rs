@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 mod decoder;
 mod device;
@@ -84,6 +85,24 @@ pub struct TouchFrame {
 pub enum InputFrame {
     Pen(PenFrame),
     Touch(TouchFrame),
+}
+
+/// An input frame stamped at the device-reader boundary. Foreground and lock
+/// transitions advance the shared epoch, so frames already waiting in the
+/// cross-thread queue can never leak into the next UI domain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CapturedInput {
+    pub epoch: u64,
+    pub frame: InputFrame,
+}
+
+impl CapturedInput {
+    pub(super) fn capture(epoch: &AtomicU64, frame: InputFrame) -> Self {
+        Self {
+            epoch: epoch.load(Ordering::Acquire),
+            frame,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

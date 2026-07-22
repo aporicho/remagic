@@ -2,7 +2,7 @@ use crate::geometry::Rect;
 use crate::input::PenFrame;
 use crate::surface::SharedSurface;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -19,7 +19,7 @@ pub use backend::QuillBackend;
 pub use backend::{MemoryBackend, MemorySubmission};
 pub use runtime::PanelRuntime;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct PanelLease {
     pub key: i32,
     pub generation: u64,
@@ -32,6 +32,9 @@ pub enum SubmissionReason {
     ForegroundSwitch,
     SurfaceDamage,
     FullRefresh,
+    LockScreen,
+    LockRefresh,
+    UnlockScreen,
     LiveInk,
     CanonicalSettle,
 }
@@ -61,8 +64,18 @@ pub struct PanelTelemetry {
     queue_depth: AtomicUsize,
     last_presented: Mutex<Option<(i32, u64)>>,
     committed_foreground: Mutex<Option<PanelLease>>,
+    committed_ink: Mutex<Option<(PanelLease, bool)>>,
+    committed_lock_epoch: AtomicU64,
+    cancelled_lock_epoch: AtomicU64,
     next_submission_sequence: AtomicU64,
     recent_submissions: Mutex<VecDeque<SubmissionRecord>>,
+    deferred_damage: Mutex<HashMap<PanelLease, DeferredDamage>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DeferredDamage {
+    pub(crate) rect: Rect,
+    pub(crate) intent: RefreshIntent,
 }
 
 impl PanelTelemetry {
@@ -116,6 +129,44 @@ impl PanelTelemetry {
         *self.committed_foreground.lock().unwrap()
     }
 
+    pub fn committed_lock_epoch(&self) -> u64 {
+        self.committed_lock_epoch.load(Ordering::Acquire)
+    }
+
+    pub fn cancelled_lock_epoch(&self) -> u64 {
+        self.cancelled_lock_epoch.load(Ordering::Acquire)
+    }
+
+    pub fn committed_ink(&self) -> Option<(PanelLease, bool)> {
+        *self.committed_ink.lock().unwrap()
+    }
+
+    pub(crate) fn defer_damage(&self, lease: PanelLease, rect: Rect, intent: RefreshIntent) {
+        let mut pending = self.deferred_damage.lock().unwrap();
+        pending
+            .entry(lease)
+            .and_modify(|damage| {
+                damage.rect = damage.rect.union(rect);
+                damage.intent = stronger_intent(damage.intent, intent);
+            })
+            .or_insert(DeferredDamage { rect, intent });
+    }
+
+    pub(crate) fn take_deferred_damage(&self, lease: PanelLease) -> Option<DeferredDamage> {
+        self.deferred_damage.lock().unwrap().remove(&lease)
+    }
+
+    pub(crate) fn discard_deferred_damage(&self, lease: PanelLease) {
+        self.deferred_damage.lock().unwrap().remove(&lease);
+    }
+
+    pub(crate) fn discard_deferred_damage_for_key(&self, key: i32) {
+        self.deferred_damage
+            .lock()
+            .unwrap()
+            .retain(|lease, _| lease.key != key);
+    }
+
     fn mark_presented(&self, key: i32, sequence: u64) {
         *self.last_presented.lock().unwrap() = Some((key, sequence));
     }
@@ -124,11 +175,38 @@ impl PanelTelemetry {
         *self.committed_foreground.lock().unwrap() = Some(lease);
     }
 
+    pub(crate) fn commit_ink(&self, lease: PanelLease, enabled: bool) {
+        *self.committed_ink.lock().unwrap() = Some((lease, enabled));
+    }
+
     pub(crate) fn clear_committed_foreground(&self, lease: PanelLease) {
         let mut committed = self.committed_foreground.lock().unwrap();
         if committed.as_ref() == Some(&lease) {
             *committed = None;
         }
+        let mut ink = self.committed_ink.lock().unwrap();
+        if ink.is_some_and(|(ink_lease, _)| ink_lease == lease) {
+            *ink = None;
+        }
+    }
+
+    pub(crate) fn commit_lock(&self, sleep_epoch: u64) {
+        self.committed_lock_epoch
+            .store(sleep_epoch, Ordering::Release);
+    }
+
+    pub(crate) fn clear_committed_lock(&self, sleep_epoch: u64) {
+        let _ = self.committed_lock_epoch.compare_exchange(
+            sleep_epoch,
+            0,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
+    pub(crate) fn record_lock_cancelled(&self, sleep_epoch: u64) {
+        self.cancelled_lock_epoch
+            .store(sleep_epoch, Ordering::Release);
     }
 
     fn mark_full_refresh(&self) {
@@ -146,6 +224,23 @@ impl PanelTelemetry {
             history.pop_front();
         }
         history.push_back(record);
+    }
+}
+
+fn stronger_intent(left: RefreshIntent, right: RefreshIntent) -> RefreshIntent {
+    fn rank(intent: RefreshIntent) -> u8 {
+        match intent {
+            RefreshIntent::Ink => 0,
+            RefreshIntent::MonoQuality => 1,
+            RefreshIntent::Ui => 2,
+            RefreshIntent::Content => 3,
+            RefreshIntent::Full => 4,
+        }
+    }
+    if rank(right) > rank(left) {
+        right
+    } else {
+        left
     }
 }
 
@@ -174,6 +269,11 @@ pub enum PanelCommand {
         lease: PanelLease,
         full_refresh: bool,
     },
+    ActivateForeground {
+        lease: PanelLease,
+        ink_enabled: bool,
+        full_refresh: bool,
+    },
     ClearForeground {
         lease: PanelLease,
     },
@@ -188,6 +288,19 @@ pub enum PanelCommand {
     },
     FullRefresh {
         lease: PanelLease,
+    },
+    ShowLock {
+        lease: PanelLease,
+        sleep_epoch: u64,
+    },
+    RefreshLock {
+        lease: PanelLease,
+        sleep_epoch: u64,
+    },
+    CancelLock {
+        lease: PanelLease,
+        sleep_epoch: u64,
+        replacement_surface_sequence: u64,
     },
     Shutdown,
 }

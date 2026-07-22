@@ -3,11 +3,16 @@ use ab_glyph::{point, Font, FontArc, Glyph, PxScale, ScaleFont};
 use remagic_protocol::{AppView, PackageOperation};
 use std::fs;
 use std::io;
+use std::time::Duration;
 
 const WHITE: u32 = 0xFFFF_FFFF;
 const BLACK: u32 = 0xFF18_1818;
 const GRAY: u32 = 0xFFE8_E6E1;
 const DARK_GRAY: u32 = 0xFF73_716C;
+
+mod lock_page;
+mod settings_page;
+mod wallpaper;
 
 pub(super) fn load_font() -> Result<FontArc, Box<dyn std::error::Error>> {
     let paths = [
@@ -45,8 +50,8 @@ impl Display {
 
     pub(super) fn render(&mut self, font: &FontArc, apps: &[AppView]) -> io::Result<Vec<Button>> {
         self.fill(WHITE);
-        self.render_header(font);
         let mut buttons = Vec::new();
+        self.render_header(font, &mut buttons);
         let y = self.render_system_card(font, &mut buttons);
         let y = self.render_app_cards(font, apps, &mut buttons, y);
         self.render_package_card(font, &mut buttons, y);
@@ -55,7 +60,7 @@ impl Display {
         Ok(buttons)
     }
 
-    fn render_header(&mut self, font: &FontArc) {
+    fn render_header(&mut self, font: &FontArc, buttons: &mut Vec<Button>) {
         self.text(font, "应用与任务", 54.0, 48, 82, BLACK);
         self.text(
             font,
@@ -65,6 +70,16 @@ impl Display {
             128,
             DARK_GRAY,
         );
+        let x = self.width - 190;
+        self.round_rect(x, 38, 142, 72, GRAY);
+        self.text(font, "设置", 28.0, x + 42, 84, BLACK);
+        buttons.push(Button {
+            x,
+            y: 38,
+            width: 142,
+            height: 72,
+            action: Action::OpenSettings,
+        });
     }
 
     fn render_system_card(&mut self, font: &FontArc, buttons: &mut Vec<Button>) -> i32 {
@@ -206,6 +221,14 @@ impl Display {
         self.client.poll_touch_events()
     }
 
+    pub(super) fn wait_for_input(&self, timeout: Duration) -> io::Result<()> {
+        self.client.wait_readable(timeout)
+    }
+
+    pub(super) fn commit_sequence(&self) -> u64 {
+        self.client.commit_sequence()
+    }
+
     fn fill(&mut self, color: u32) {
         for y in 0..self.height {
             for x in 0..self.width {
@@ -272,6 +295,12 @@ impl Display {
         }
     }
 
+    fn centered_text(&mut self, font: &FontArc, text: &str, size: f32, baseline: i32, color: u32) {
+        let width = text_width(font, text, size);
+        let x = ((self.width as f32 - width) / 2.0).round() as i32;
+        self.text(font, text, size, x.max(0), baseline, color);
+    }
+
     fn pixel(&mut self, x: i32, y: i32, color: u32) {
         if x < 0 || y < 0 || x >= self.width || y >= self.height {
             return;
@@ -296,6 +325,21 @@ impl Display {
         let blue = (value & 0x1f) as u32 * 255 / 31;
         0xff00_0000 | (red << 16) | (green << 8) | blue
     }
+}
+
+fn text_width(font: &FontArc, text: &str, size: f32) -> f32 {
+    let scaled = font.as_scaled(PxScale::from(size));
+    let mut width = 0.0;
+    let mut previous = None;
+    for ch in text.chars() {
+        let id = scaled.glyph_id(ch);
+        if let Some(previous) = previous {
+            width += scaled.kern(previous, id);
+        }
+        width += scaled.h_advance(id);
+        previous = Some(id);
+    }
+    width
 }
 
 fn app_status(app: &AppView) -> String {

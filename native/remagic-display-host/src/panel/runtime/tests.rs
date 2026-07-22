@@ -1,4 +1,5 @@
 use super::*;
+use crate::geometry::Geometry;
 use crate::input::{PenFrame, PenPhase, PenTool};
 use crate::panel::render::{live_brush_radius, live_segment_radius, LivePenPoint};
 use crate::panel::{MemoryBackend, PanelBackend, PanelCommand, PanelLease, RefreshIntent};
@@ -19,6 +20,48 @@ fn lease(key: i32, generation: u64, foreground_epoch: u64) -> PanelLease {
 struct MockPanel {
     pixels: Vec<u8>,
     submissions: Vec<(Rect, RefreshIntent)>,
+}
+
+struct FailOncePanel {
+    pixels: Vec<u8>,
+    fail_next: bool,
+    submissions: usize,
+}
+
+impl FailOncePanel {
+    fn new() -> Self {
+        Self {
+            pixels: vec![0xff; 960 * 1696 * 4],
+            fail_next: false,
+            submissions: 0,
+        }
+    }
+}
+
+impl PanelBackend for FailOncePanel {
+    fn width(&self) -> i32 {
+        960
+    }
+
+    fn height(&self) -> i32 {
+        1696
+    }
+
+    fn stride(&self) -> usize {
+        960 * 4
+    }
+
+    fn pixels_mut(&mut self) -> &mut [u8] {
+        &mut self.pixels
+    }
+
+    fn submit(&mut self, _rect: Rect, _intent: RefreshIntent) -> io::Result<u64> {
+        if std::mem::take(&mut self.fail_next) {
+            return Err(io::Error::other("injected unlock failure"));
+        }
+        self.submissions += 1;
+        Ok(self.submissions as u64)
+    }
 }
 
 impl MockPanel {
@@ -116,6 +159,221 @@ fn physical_pixel(runtime: &PanelRuntime<MemoryBackend>, x: i32, y: i32) -> [u8;
     runtime.backend.pixels()[index..index + 4]
         .try_into()
         .unwrap()
+}
+
+#[test]
+fn foreground_activation_commits_pixels_and_ink_as_one_panel_operation() {
+    let (_tx, rx) = mpsc::channel();
+    let telemetry = Arc::new(PanelTelemetry::default());
+    let mut runtime = PanelRuntime::with_telemetry(
+        MemoryBackend::new(960, 1696).unwrap(),
+        rx,
+        Arc::clone(&telemetry),
+    );
+    let surface = test_surface(28);
+    surface.mark_commit();
+    runtime
+        .handle(PanelCommand::RegisterSurface(Arc::clone(&surface)))
+        .unwrap();
+    let active = lease(28, 9, 12);
+    runtime
+        .handle(PanelCommand::ActivateForeground {
+            lease: active,
+            ink_enabled: true,
+            full_refresh: true,
+        })
+        .unwrap();
+
+    assert_eq!(runtime.foreground, Some(active));
+    assert!(runtime.ink.enabled);
+    assert_eq!(runtime.ink.key, active.key);
+    assert_eq!(telemetry.committed_foreground(), Some(active));
+    let record = telemetry.recent_submissions().pop().unwrap();
+    assert_eq!(record.reason, SubmissionReason::ForegroundSwitch);
+    assert_eq!(record.intent, RefreshIntent::Full);
+    assert!(record.success);
+}
+
+#[test]
+fn panel_lock_epoch_is_committed_refreshed_and_cancelled_exactly() {
+    let (_tx, rx) = mpsc::channel();
+    let telemetry = Arc::new(PanelTelemetry::default());
+    let mut runtime = PanelRuntime::with_telemetry(
+        MemoryBackend::new(960, 1696).unwrap(),
+        rx,
+        Arc::clone(&telemetry),
+    );
+    let surface = test_surface(29);
+    surface.mark_commit();
+    runtime
+        .handle(PanelCommand::RegisterSurface(Arc::clone(&surface)))
+        .unwrap();
+    let locked = lease(29, 4, 8);
+    runtime
+        .handle(PanelCommand::ShowLock {
+            lease: locked,
+            sleep_epoch: 17,
+        })
+        .unwrap();
+    assert_eq!(
+        runtime.lock,
+        Some(PanelLock {
+            sleep_epoch: 17,
+            lease: locked,
+            frozen_surface_sequence: 1,
+        })
+    );
+    assert_eq!(telemetry.committed_lock_epoch(), 17);
+
+    surface.mark_commit();
+    runtime
+        .handle(PanelCommand::RefreshLock {
+            lease: locked,
+            sleep_epoch: 17,
+        })
+        .unwrap();
+    let record = telemetry.recent_submissions().pop().unwrap();
+    assert_eq!(record.reason, SubmissionReason::LockRefresh);
+    assert_eq!(record.intent, RefreshIntent::Full);
+    assert_eq!(record.surface_sequence, 1);
+
+    assert!(runtime
+        .handle(PanelCommand::CancelLock {
+            lease: locked,
+            sleep_epoch: 16,
+            replacement_surface_sequence: 1,
+        })
+        .is_err());
+    assert_eq!(telemetry.committed_lock_epoch(), 17);
+    runtime
+        .handle(PanelCommand::CancelLock {
+            lease: locked,
+            sleep_epoch: 17,
+            replacement_surface_sequence: 2,
+        })
+        .unwrap();
+    assert_eq!(runtime.lock, None);
+    assert_eq!(telemetry.committed_lock_epoch(), 0);
+    assert_eq!(telemetry.cancelled_lock_epoch(), 17);
+    let record = telemetry.recent_submissions().pop().unwrap();
+    assert_eq!(record.reason, SubmissionReason::UnlockScreen);
+    assert_eq!(record.surface_sequence, 2);
+}
+
+#[test]
+fn lock_refresh_survives_surface_disconnect_and_keeps_frozen_sequence() {
+    let (_tx, rx) = mpsc::channel();
+    let telemetry = Arc::new(PanelTelemetry::default());
+    let mut runtime = PanelRuntime::with_telemetry(
+        MemoryBackend::new(960, 1696).unwrap(),
+        rx,
+        Arc::clone(&telemetry),
+    );
+    let surface = test_surface(30);
+    surface.mark_commit();
+    let locked = lease(30, 5, 9);
+    runtime
+        .handle(PanelCommand::RegisterSurface(surface))
+        .unwrap();
+    runtime
+        .handle(PanelCommand::ShowLock {
+            lease: locked,
+            sleep_epoch: 18,
+        })
+        .unwrap();
+    runtime
+        .handle(PanelCommand::DropSurface { key: 30 })
+        .unwrap();
+
+    assert!(!runtime.surfaces.contains_key(&30));
+    assert_eq!(runtime.foreground, Some(locked));
+    assert_eq!(telemetry.committed_lock_epoch(), 18);
+    runtime
+        .handle(PanelCommand::RefreshLock {
+            lease: locked,
+            sleep_epoch: 18,
+        })
+        .unwrap();
+    let record = telemetry.recent_submissions().pop().unwrap();
+    assert_eq!(record.reason, SubmissionReason::LockRefresh);
+    assert_eq!(record.surface_sequence, 1);
+}
+
+#[test]
+fn failed_unlock_restores_frozen_buffer_and_keeps_lock_committed() {
+    let (_tx, rx) = mpsc::channel();
+    let telemetry = Arc::new(PanelTelemetry::default());
+    let mut runtime =
+        PanelRuntime::with_telemetry(FailOncePanel::new(), rx, Arc::clone(&telemetry));
+    let surface = test_surface(31);
+    surface.mark_commit();
+    let locked = lease(31, 6, 10);
+    runtime
+        .handle(PanelCommand::RegisterSurface(Arc::clone(&surface)))
+        .unwrap();
+    runtime
+        .handle(PanelCommand::ShowLock {
+            lease: locked,
+            sleep_epoch: 19,
+        })
+        .unwrap();
+    let frozen = runtime.backend.pixels.clone();
+    surface.fill_for_test(0x00);
+    surface.mark_commit();
+    runtime.backend.fail_next = true;
+
+    assert!(runtime
+        .handle(PanelCommand::CancelLock {
+            lease: locked,
+            sleep_epoch: 19,
+            replacement_surface_sequence: 2,
+        })
+        .is_err());
+    assert_eq!(runtime.backend.pixels, frozen);
+    assert_eq!(telemetry.committed_lock_epoch(), 19);
+    assert_eq!(telemetry.cancelled_lock_epoch(), 0);
+    assert_eq!(
+        runtime.lock,
+        Some(PanelLock {
+            sleep_epoch: 19,
+            lease: locked,
+            frozen_surface_sequence: 1,
+        })
+    );
+}
+
+#[test]
+fn stale_control_command_does_not_terminate_panel_worker() {
+    let (tx, rx) = mpsc::channel();
+    let telemetry = Arc::new(PanelTelemetry::default());
+    let runtime = PanelRuntime::with_telemetry(
+        MemoryBackend::new(960, 1696).unwrap(),
+        rx,
+        Arc::clone(&telemetry),
+    );
+    let surface = test_surface(32);
+    surface.mark_commit();
+    let active = lease(32, 7, 11);
+    for command in [
+        PanelCommand::RefreshLock {
+            lease: active,
+            sleep_epoch: 20,
+        },
+        PanelCommand::RegisterSurface(surface),
+        PanelCommand::SetForeground {
+            lease: active,
+            full_refresh: false,
+        },
+        PanelCommand::Shutdown,
+    ] {
+        telemetry.command_enqueued();
+        tx.send(command).unwrap();
+    }
+    drop(tx);
+
+    runtime.run().unwrap();
+    assert_eq!(telemetry.committed_foreground(), Some(active));
+    assert_eq!(telemetry.queue_depth(), 0);
 }
 
 #[test]

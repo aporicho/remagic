@@ -1,12 +1,13 @@
 use super::queue::InputQueue;
+use crate::input::PenFrame;
 use crate::panel::{PanelCommand, PanelLease, PanelTelemetry};
 use crate::protocol::DisplaySnapshot;
 use crate::surface::SharedSurface;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::os::fd::RawFd;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::SyncSender;
+use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 
 pub(super) struct SurfaceEntry {
@@ -19,12 +20,19 @@ pub(super) struct ClientSink {
     pub(super) queue: Arc<InputQueue>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct ForegroundLease {
     pub(super) key: i32,
     pub(super) generation: u64,
     pub(super) epoch: u64,
     pub(super) ink_enabled: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct LockLease {
+    pub(super) sleep_epoch: u64,
+    pub(super) foreground: ForegroundLease,
+    pub(super) unlock_region: crate::geometry::Rect,
 }
 
 impl ForegroundLease {
@@ -40,6 +48,14 @@ impl ForegroundLease {
 pub struct HostState {
     pub(super) surfaces: Mutex<HashMap<i32, SurfaceEntry>>,
     pub(super) foreground: Mutex<Option<ForegroundLease>>,
+    pub(super) prepared_foreground: Mutex<Option<ForegroundLease>>,
+    pub(super) lock: Mutex<Option<LockLease>>,
+    pub(super) lock_touches: Mutex<HashSet<i32>>,
+    pub(super) active_touches: Mutex<HashSet<i32>>,
+    pub(super) suppressed_touches: Mutex<HashSet<i32>>,
+    pub(super) active_pen: Mutex<Option<(PanelLease, PenFrame)>>,
+    pub(super) suppressed_pen: AtomicBool,
+    pub(super) input_epoch: Arc<AtomicU64>,
     pub(super) foreground_ops: Mutex<()>,
     pub(super) fences: Mutex<HashMap<i32, (u64, u64)>>,
     panel: SyncSender<PanelCommand>,
@@ -49,6 +65,8 @@ pub struct HostState {
     physical_stride: usize,
     shutdown: AtomicBool,
     pub(super) input_backpressure: AtomicU64,
+    pub(super) last_sleep_epoch: AtomicU64,
+    pub(super) last_cancelled_sleep_epoch: AtomicU64,
     pub(super) telemetry: Arc<PanelTelemetry>,
     pub(super) injected_sequence: AtomicU64,
 }
@@ -79,6 +97,14 @@ impl HostState {
         Arc::new(Self {
             surfaces: Mutex::new(HashMap::new()),
             foreground: Mutex::new(None),
+            prepared_foreground: Mutex::new(None),
+            lock: Mutex::new(None),
+            lock_touches: Mutex::new(HashSet::new()),
+            active_touches: Mutex::new(HashSet::new()),
+            suppressed_touches: Mutex::new(HashSet::new()),
+            active_pen: Mutex::new(None),
+            suppressed_pen: AtomicBool::new(false),
+            input_epoch: Arc::new(AtomicU64::new(1)),
             foreground_ops: Mutex::new(()),
             fences: Mutex::new(HashMap::new()),
             panel,
@@ -88,6 +114,8 @@ impl HostState {
             physical_stride,
             shutdown: AtomicBool::new(false),
             input_backpressure: AtomicU64::new(0),
+            last_sleep_epoch: AtomicU64::new(0),
+            last_cancelled_sleep_epoch: AtomicU64::new(0),
             telemetry,
             injected_sequence: AtomicU64::new(1),
         })
@@ -96,6 +124,7 @@ impl HostState {
     pub fn snapshot(&self) -> DisplaySnapshot {
         let surfaces = self.surfaces.lock().unwrap();
         let requested_foreground = *self.foreground.lock().unwrap();
+        let lock = *self.lock.lock().unwrap();
         let foreground = self.telemetry.committed_foreground();
         let (panel_submission_count, panel_last_marker, panel_failure_count, visible_signature) =
             self.telemetry.snapshot();
@@ -118,8 +147,16 @@ impl HostState {
             foreground_epoch: foreground.map_or(0, |value| value.foreground_epoch),
             ink_enabled: foreground.is_some_and(|committed| {
                 requested_foreground.is_some_and(|requested| {
-                    requested.panel_lease() == committed && requested.ink_enabled
+                    requested.panel_lease() == committed
+                        && requested.ink_enabled
+                        && self.telemetry.committed_ink() == Some((committed, true))
                 })
+            }),
+            lock_epoch: lock.map_or(0, |lock| lock.sleep_epoch),
+            lock_committed: lock.is_some_and(|lock| {
+                self.telemetry.committed_lock_epoch() == lock.sleep_epoch
+                    && foreground == Some(lock.foreground.panel_lease())
+                    && requested_foreground == Some(lock.foreground)
             }),
             queue_depth: self.telemetry.queue_depth(),
             input_backpressure_events: self.input_backpressure.load(Ordering::Relaxed),
@@ -143,16 +180,33 @@ impl HostState {
         self.shutdown.load(Ordering::Acquire)
     }
 
+    pub(super) fn fail_closed(&self, context: &str, error: &io::Error) {
+        eprintln!("remagic-display-host: {context}: {error}; stopping to avoid state divergence");
+        self.shutdown.store(true, Ordering::Release);
+    }
+
+    pub fn input_epoch_source(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.input_epoch)
+    }
+
     pub(super) fn enqueue_panel(&self, command: PanelCommand) -> io::Result<()> {
         self.telemetry.command_enqueued();
-        if self.panel.send(command).is_err() {
-            self.telemetry.command_dequeued();
-            return Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "panel thread stopped",
-            ));
+        match self.panel.try_send(command) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.telemetry.command_dequeued();
+                let (kind, message) = match error {
+                    TrySendError::Full(_) => (
+                        io::ErrorKind::WouldBlock,
+                        "panel command queue is full; transition was not committed",
+                    ),
+                    TrySendError::Disconnected(_) => {
+                        (io::ErrorKind::BrokenPipe, "panel thread stopped")
+                    }
+                };
+                Err(io::Error::new(kind, message))
+            }
         }
-        Ok(())
     }
 }
 

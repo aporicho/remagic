@@ -142,6 +142,16 @@ for helper in \
     fi
     cp "$KOREADER_ADAPTER/scripts/$helper" "$OUT/scripts/$helper"
 done
+for module in \
+    remagic-lifecycle-async.lua \
+    remagic-lifecycle-protocol.lua \
+    remagic-open-path.lua; do
+    if [ ! -f "$KOREADER_ADAPTER/scripts/$module" ]; then
+        echo "KOReader adapter module is missing: $module" >&2
+        exit 1
+    fi
+    install -m 0644 "$KOREADER_ADAPTER/scripts/$module" "$OUT/scripts/$module"
+done
 cp "$KOREADER_ADAPTER/manifests/koreader.toml" "$OUT/manifests/koreader.toml"
 for platform_patch in 1-remagic-storage.lua 2-remagic-runtime.lua; do
     cp "$KOREADER_ADAPTER/patches/$platform_patch" \

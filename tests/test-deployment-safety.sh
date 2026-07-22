@@ -487,6 +487,12 @@ mutation_line=$(grep -n 'acquire_directory_lock.*REMAGIC_INSTALL_LOCK' "$ROOT/sc
 grep -q 'STRIP tool is undefined or not executable' "$ROOT/scripts/build-bundle.sh"
 grep -q 'find scripts native/appload-runtime -type f -print0' "$ROOT/scripts/check.sh"
 grep -q 'cp -R systemd manifests scripts testing' "$ROOT/scripts/build-bundle.sh"
+grep -q 'remagic-register' "$ROOT/scripts/install-device.sh"
+grep -q 'stage/share/systemd' "$ROOT/scripts/install-device.sh"
+grep -Fq 'publish_symlink /usr/lib/systemd/system/remagicd.service "$UNIT_ROOT/multi-user.target.wants/remagicd.service"' \
+    "$ROOT/scripts/install-device.sh"
+grep -Fq 'publish_symlink /usr/lib/systemd/system/magicpaper-agent.service "$UNIT_ROOT/multi-user.target.wants/magicpaper-agent.service"' \
+    "$ROOT/scripts/install-device.sh"
 grep -q 'list_remagic_app_units' "$ROOT/scripts/lib/deployment-common.sh"
 grep -q 'list_legacy_display_units' "$ROOT/scripts/lib/deployment-common.sh"
 grep -q 'cleanup_stale_acceptance_environment' "$ROOT/scripts/remagic-recover"
@@ -537,6 +543,11 @@ if "$ROOT/scripts/remagic-schema-ready" "$SCHEMA_FENCE" magicpaper 1; then
     exit 1
 fi
 grep -q '^Conflicts=.*riddle-takeover.service' "$ROOT/systemd/remagicd.service"
+grep -q '^Environment=REMAGIC_PLATFORM_CAPABILITIES=.*input:mode-v2' \
+    "$ROOT/systemd/remagic-app@.service" || {
+    echo "application service omitted the dynamic input-mode capability" >&2
+    exit 1
+}
 shutdown_max_ms=$(sed -n \
     's/^pub const MAX_SHUTDOWN_KILL_TIMEOUT_MS: u64 = \([0-9_][0-9_]*\);$/\1/p' \
     "$ROOT/crates/remagic-core/src/manifest.rs" | tr -d _)

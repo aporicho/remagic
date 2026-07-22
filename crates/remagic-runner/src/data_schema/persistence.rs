@@ -6,6 +6,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 pub(super) const STATE_FORMAT: u32 = 1;
 pub(super) const PENDING_FORMAT: u32 = 1;
@@ -55,16 +56,26 @@ impl SchemaStateStore {
     pub(super) fn try_lock(&self) -> Result<SchemaLock, DataSchemaError> {
         let path = self.root.join("migration.lock");
         let file = open_private_file(&path, true)?;
-        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-        if result == 0 {
-            Ok(SchemaLock { _file: file })
-        } else {
-            let error = std::io::Error::last_os_error();
-            if error.kind() == std::io::ErrorKind::WouldBlock {
-                Err(DataSchemaError::ConcurrentTransaction)
-            } else {
-                Err(DataSchemaError::io("lock schema transaction", path, error))
+        // `flock` ownership follows the open-file description through fork.
+        // O_CLOEXEC closes it at exec, but an unrelated child created while a
+        // transaction is ending can retain the description for a very short
+        // fork/exec window. Briefly absorb that harmless hand-off; a genuine
+        // migration remains busy beyond the bounded grace period and still
+        // fails closed instead of blocking application startup indefinitely.
+        let deadline = Instant::now() + Duration::from_millis(25);
+        loop {
+            let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+            if result == 0 {
+                return Ok(SchemaLock { _file: file });
             }
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::WouldBlock {
+                return Err(DataSchemaError::io("lock schema transaction", path, error));
+            }
+            if Instant::now() >= deadline {
+                return Err(DataSchemaError::ConcurrentTransaction);
+            }
+            std::thread::sleep(Duration::from_millis(1));
         }
     }
 

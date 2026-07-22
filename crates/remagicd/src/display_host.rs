@@ -1,15 +1,18 @@
 use remagic_core::AppId;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
+
+mod lock;
+mod protocol;
+
+#[cfg(test)]
+use lock::lock_is_committed_as;
+pub use lock::{cancel_lock, show_lock};
+use protocol::{request, Command, WireRect};
 
 pub const SOCKET: &str = "/run/remagic/display.sock";
 pub const HOME_SURFACE_KEY: i32 = remagic_core::REMAGIC_HOME_QTFB_KEY;
-const MAX_REPLY_BYTES: u64 = 64 * 1024;
-static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
 
 /// Stable compatibility surface key. The high bit range is reserved for
 /// managed applications, keeping it disjoint from the manager-home surface.
@@ -34,6 +37,10 @@ pub struct Snapshot {
     #[serde(default)]
     pub ink_enabled: bool,
     #[serde(default)]
+    pub lock_epoch: u64,
+    #[serde(default)]
+    pub lock_committed: bool,
+    #[serde(default)]
     pub panel_failure_count: u64,
     #[serde(default)]
     pub last_presented_key: Option<i32>,
@@ -56,45 +63,6 @@ pub struct SubmissionRecord {
     #[serde(default)]
     pub marker: Option<u64>,
     pub success: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct Reply {
-    protocol: u32,
-    request_id: String,
-    ok: bool,
-    #[serde(default)]
-    error: Option<String>,
-    #[serde(default)]
-    snapshot: Option<Snapshot>,
-}
-
-#[derive(Serialize)]
-struct Envelope<'a, T: Serialize> {
-    protocol: u32,
-    request_id: String,
-    #[serde(flatten)]
-    command: &'a T,
-}
-
-#[derive(Serialize)]
-#[serde(tag = "command", rename_all = "snake_case")]
-enum Command {
-    Status,
-    SetForeground {
-        key: i32,
-        generation: u64,
-        foreground_epoch: u64,
-        full_refresh: bool,
-    },
-    ClearForeground,
-    ConfigureInk {
-        key: i32,
-        generation: u64,
-        foreground_epoch: u64,
-        enabled: bool,
-    },
-    RequestFullRefresh,
 }
 
 pub async fn wait_ready() -> Result<(), String> {
@@ -140,6 +108,30 @@ pub async fn wait_surface(key: i32, timeout: Duration) -> Result<Snapshot, Strin
     }
 }
 
+pub async fn wait_surface_sequence(
+    key: i32,
+    expected_sequence: u64,
+    timeout: Duration,
+) -> Result<Snapshot, String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let snapshot = status().await?;
+        let observed = snapshot.surface_sequences.get(&key).copied().unwrap_or(0);
+        if snapshot.surfaces.contains(&key)
+            && observed >= expected_sequence
+            && snapshot.surface_signatures.get(&key).copied().unwrap_or(0) != 0
+        {
+            return Ok(snapshot);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "surface {key} did not commit lock sequence {expected_sequence}; observed {observed}"
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 pub async fn status() -> Result<Snapshot, String> {
     request(&Command::Status)
         .await?
@@ -158,6 +150,7 @@ pub async fn set_foreground(
         .recent_submissions
         .last()
         .map_or(0, |submission| submission.sequence);
+    let baseline_failures = baseline.panel_failure_count;
     request(&Command::SetForeground {
         key,
         generation,
@@ -165,13 +158,82 @@ pub async fn set_foreground(
         full_refresh,
     })
     .await?;
+    wait_for_foreground_submission(
+        baseline_sequence,
+        baseline_failures,
+        key,
+        generation,
+        foreground_epoch,
+        full_refresh,
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn prepare_foreground(
+    key: i32,
+    generation: u64,
+    foreground_epoch: u64,
+) -> Result<(), String> {
+    request(&Command::PrepareForeground {
+        key,
+        generation,
+        foreground_epoch,
+    })
+    .await
+    .map(|_| ())
+}
+
+pub async fn activate_foreground(
+    key: i32,
+    generation: u64,
+    foreground_epoch: u64,
+    ink_enabled: bool,
+    full_refresh: bool,
+) -> Result<(), String> {
+    let baseline = status().await?;
+    let baseline_sequence = last_submission_sequence(&baseline);
+    request(&Command::ActivateForeground {
+        key,
+        generation,
+        foreground_epoch,
+        ink_enabled,
+        full_refresh,
+    })
+    .await?;
+    let snapshot = wait_for_foreground_submission(
+        baseline_sequence,
+        baseline.panel_failure_count,
+        key,
+        generation,
+        foreground_epoch,
+        full_refresh,
+    )
+    .await?;
+    if snapshot.ink_enabled != ink_enabled {
+        return Err(format!(
+            "display host committed foreground without its ink policy: expected={ink_enabled} actual={}",
+            snapshot.ink_enabled
+        ));
+    }
+    Ok(())
+}
+
+async fn wait_for_foreground_submission(
+    baseline_sequence: u64,
+    baseline_failures: u64,
+    key: i32,
+    generation: u64,
+    foreground_epoch: u64,
+    full_refresh: bool,
+) -> Result<Snapshot, String> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     loop {
         let snapshot = status().await?;
-        if snapshot.panel_failure_count > 0 {
+        if snapshot.panel_failure_count > baseline_failures {
             return Err(format!(
-                "display host reported {} panel submission failure(s)",
-                snapshot.panel_failure_count
+                "display host reported a new panel submission failure ({} -> {})",
+                baseline_failures, snapshot.panel_failure_count
             ));
         }
         if snapshot.has_presented(key, generation, foreground_epoch) {
@@ -189,7 +251,7 @@ pub async fn set_foreground(
                     && submission.marker.is_some()
             });
             if submitted {
-                return Ok(());
+                return Ok(snapshot);
             }
         }
         if tokio::time::Instant::now() >= deadline {
@@ -244,63 +306,11 @@ pub async fn configure_ink(
     }
 }
 
-pub async fn full_refresh() -> Result<(), String> {
-    request(&Command::RequestFullRefresh).await.map(|_| ())
-}
-
-async fn request(command: &Command) -> Result<Reply, String> {
-    let request_id = format!(
-        "remagicd-{}-{}",
-        std::process::id(),
-        NEXT_REQUEST.fetch_add(1, Ordering::Relaxed)
-    );
-    let envelope = Envelope {
-        protocol: 1,
-        request_id: request_id.clone(),
-        command,
-    };
-    let mut bytes = serde_json::to_vec(&envelope).map_err(|error| error.to_string())?;
-    bytes.push(b'\n');
-    let operation = async {
-        let mut stream = UnixStream::connect(SOCKET)
-            .await
-            .map_err(|error| format!("cannot connect to display host: {error}"))?;
-        stream
-            .write_all(&bytes)
-            .await
-            .map_err(|error| format!("cannot write display command: {error}"))?;
-        stream
-            .shutdown()
-            .await
-            .map_err(|error| format!("cannot finish display command: {error}"))?;
-        let mut line = String::new();
-        let mut reader = BufReader::new(stream).take(MAX_REPLY_BYTES);
-        let count = reader
-            .read_line(&mut line)
-            .await
-            .map_err(|error| format!("cannot read display reply: {error}"))?;
-        if count == 0 || !line.ends_with('\n') {
-            return Err("display host closed without a complete reply".into());
-        }
-        let reply: Reply = serde_json::from_str(&line)
-            .map_err(|error| format!("invalid display reply: {error}"))?;
-        if reply.protocol != 1 || reply.request_id != request_id {
-            return Err(format!(
-                "display host reply identity mismatch: protocol={} request_id={}",
-                reply.protocol, reply.request_id
-            ));
-        }
-        if reply.ok {
-            Ok(reply)
-        } else {
-            Err(reply
-                .error
-                .unwrap_or_else(|| "display host rejected the command".into()))
-        }
-    };
-    tokio::time::timeout(Duration::from_secs(3), operation)
-        .await
-        .map_err(|_| "display host command timed out".to_string())?
+fn last_submission_sequence(snapshot: &Snapshot) -> u64 {
+    snapshot
+        .recent_submissions
+        .last()
+        .map_or(0, |submission| submission.sequence)
 }
 
 impl Snapshot {
@@ -361,5 +371,25 @@ mod tests {
         assert!(snapshot.has_presented(9, 3, 11));
         snapshot.last_presented_key = Some(8);
         assert!(!snapshot.has_presented(9, 3, 11));
+    }
+
+    #[test]
+    fn idempotent_lock_retry_requires_the_exact_committed_fence() {
+        let snapshot = Snapshot {
+            foreground_key: Some(9),
+            generation: 3,
+            foreground_epoch: 11,
+            lock_epoch: 17,
+            lock_committed: true,
+            ..Snapshot::default()
+        };
+        assert!(lock_is_committed_as(&snapshot, 9, 3, 11, 17));
+        assert!(!lock_is_committed_as(&snapshot, 9, 3, 10, 17));
+        assert!(!lock_is_committed_as(&snapshot, 9, 3, 11, 16));
+        let uncommitted = Snapshot {
+            lock_committed: false,
+            ..snapshot
+        };
+        assert!(!lock_is_committed_as(&uncommitted, 9, 3, 11, 17));
     }
 }

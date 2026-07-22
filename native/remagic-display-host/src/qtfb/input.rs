@@ -1,6 +1,8 @@
 use super::queue::InputPush;
-use super::state::HostState;
-use crate::input::{InputFrame, PenFrame, PenPhase, PenTool, TouchFrame, TouchPhase};
+use super::state::{HostState, LockLease};
+use crate::input::{
+    CapturedInput, InputFrame, PenFrame, PenPhase, PenTool, TouchFrame, TouchPhase,
+};
 use crate::panel::PanelCommand;
 use crate::protocol::{
     input_packet, INPUT_PEN_PRESS, INPUT_PEN_RELEASE, INPUT_PEN_UPDATE, INPUT_TOUCH_PRESS,
@@ -11,6 +13,14 @@ use std::sync::atomic::Ordering;
 
 impl HostState {
     pub fn dispatch_input(&self, frame: InputFrame) {
+        let captured = CapturedInput {
+            epoch: self.input_epoch.load(Ordering::Acquire),
+            frame,
+        };
+        self.dispatch_captured_input(captured);
+    }
+
+    pub fn dispatch_captured_input(&self, captured: CapturedInput) {
         // Serialize input routing with Set/ClearForeground. A committed lease
         // alone is insufficient during a transition: once a switch has been
         // requested, the previously visible client must stop receiving new
@@ -19,6 +29,20 @@ impl HostState {
         // the panel command channel a deterministic Pen-before-Set or
         // Set-before-Pen order.
         let _operation = self.foreground_ops.lock().unwrap();
+        if captured.epoch != self.input_epoch.load(Ordering::Acquire) {
+            return;
+        }
+        let frame = captured.frame;
+        if self.suppress_fenced_contact(frame) {
+            return;
+        }
+        if self.prepared_foreground.lock().unwrap().is_some() {
+            return;
+        }
+        let lock = *self.lock.lock().unwrap();
+        if lock.is_some_and(|lock| !self.route_lock_contact(frame, lock)) {
+            return;
+        }
         let requested = self
             .foreground
             .lock()
@@ -28,6 +52,12 @@ impl HostState {
             return;
         };
         if requested != Some(lease) {
+            return;
+        }
+        if lock.is_none() && !self.route_foreground_touch(frame) {
+            return;
+        }
+        if !self.track_pen_contact(frame, lease) {
             return;
         }
         let packet = match frame {
@@ -41,7 +71,110 @@ impl HostState {
         self.send_to_key(lease.key, &packet);
     }
 
-    fn pen_packet(&self, frame: PenFrame) -> [u8; QTFB_SERVER_MESSAGE_SIZE] {
+    fn suppress_fenced_contact(&self, frame: InputFrame) -> bool {
+        if let InputFrame::Touch(touch) = frame {
+            let mut suppressed = self.suppressed_touches.lock().unwrap();
+            if suppressed.contains(&touch.device_id) {
+                if matches!(touch.phase, TouchPhase::Up | TouchPhase::Cancel) {
+                    suppressed.remove(&touch.device_id);
+                }
+                return true;
+            }
+        }
+        if let InputFrame::Pen(pen) = frame {
+            if self.suppressed_pen.load(Ordering::Acquire) {
+                return match pen.phase {
+                    PenPhase::Down => {
+                        self.suppressed_pen.store(false, Ordering::Release);
+                        false
+                    }
+                    PenPhase::Up | PenPhase::Cancel => {
+                        self.suppressed_pen.store(false, Ordering::Release);
+                        true
+                    }
+                    PenPhase::Move => true,
+                };
+            }
+        }
+        false
+    }
+
+    /// A locked domain only routes an unlock gesture that began inside the
+    /// explicit unlock control. Pen input stays fenced until cancellation.
+    fn route_lock_contact(&self, frame: InputFrame, lock: LockLease) -> bool {
+        let InputFrame::Touch(touch) = frame else {
+            return false;
+        };
+        let mut active = self.lock_touches.lock().unwrap();
+        let in_unlock_region = touch.x >= lock.unlock_region.x
+            && touch.x < lock.unlock_region.right()
+            && touch.y >= lock.unlock_region.y
+            && touch.y < lock.unlock_region.bottom();
+        match touch.phase {
+            TouchPhase::Down if in_unlock_region => {
+                active.insert(touch.device_id);
+                true
+            }
+            TouchPhase::Move => active.contains(&touch.device_id),
+            TouchPhase::Up | TouchPhase::Cancel => active.remove(&touch.device_id),
+            TouchPhase::Down => false,
+        }
+    }
+
+    fn route_foreground_touch(&self, frame: InputFrame) -> bool {
+        let InputFrame::Touch(touch) = frame else {
+            return true;
+        };
+        let mut active = self.active_touches.lock().unwrap();
+        match touch.phase {
+            TouchPhase::Down => {
+                active.insert(touch.device_id);
+                true
+            }
+            TouchPhase::Move => active.contains(&touch.device_id),
+            TouchPhase::Up | TouchPhase::Cancel => active.remove(&touch.device_id),
+        }
+    }
+
+    fn track_pen_contact(&self, frame: InputFrame, lease: crate::panel::PanelLease) -> bool {
+        let InputFrame::Pen(pen) = frame else {
+            return true;
+        };
+        let mut active = self.active_pen.lock().unwrap();
+        match pen.phase {
+            PenPhase::Down => {
+                if let Some((previous_lease, previous)) = active.take() {
+                    let cancelled = PenFrame {
+                        phase: PenPhase::Cancel,
+                        pressure: 0,
+                        ..previous
+                    };
+                    self.send_to_key(previous_lease.key, &self.pen_packet(cancelled));
+                    let _ = self.enqueue_panel(PanelCommand::Pen {
+                        lease: previous_lease,
+                        frame: cancelled,
+                    });
+                }
+                *active = Some((lease, pen));
+                true
+            }
+            PenPhase::Move => {
+                let Some((owner, last)) = active.as_mut() else {
+                    return false;
+                };
+                if *owner != lease {
+                    return false;
+                }
+                *last = pen;
+                true
+            }
+            PenPhase::Up | PenPhase::Cancel => {
+                active.take().is_some_and(|(owner, _)| owner == lease)
+            }
+        }
+    }
+
+    pub(super) fn pen_packet(&self, frame: PenFrame) -> [u8; QTFB_SERVER_MESSAGE_SIZE] {
         let input_type = match frame.phase {
             PenPhase::Down => INPUT_PEN_PRESS,
             PenPhase::Move => INPUT_PEN_UPDATE,
@@ -123,7 +256,7 @@ impl HostState {
         }
     }
 
-    fn send_to_key(&self, key: i32, packet: &[u8; QTFB_SERVER_MESSAGE_SIZE]) {
+    pub(super) fn send_to_key(&self, key: i32, packet: &[u8; QTFB_SERVER_MESSAGE_SIZE]) {
         let mut surfaces = self.surfaces.lock().unwrap();
         let Some(entry) = surfaces.get_mut(&key) else {
             return;

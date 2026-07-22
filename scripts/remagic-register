@@ -1,0 +1,119 @@
+#!/bin/sh
+set -eu
+
+[ "$(id -u)" -eq 0 ] || {
+    echo "remagic-register must run as root" >&2
+    exit 1
+}
+
+APP_ROOT=${REMAGIC_APP_ROOT:-/home/root/apps/remagic}
+UNIT_SOURCE=$APP_ROOT/share/systemd
+UNIT_ROOT=/usr/lib/systemd/system
+BOOT_WANTS=$UNIT_ROOT/multi-user.target.wants
+SYSTEMCTL=${SYSTEMCTL:-systemctl}
+MODE=${1:---runtime}
+UNITS='remagicd.service
+remagic-display-host.service
+remagic-home.service
+remagic-app@.service
+remagic-recover.service
+magicpaper-agent.service'
+
+validate_sources() {
+    printf '%s\n' "$UNITS" | while IFS= read -r unit; do
+        [ -n "$unit" ] || continue
+        source=$UNIT_SOURCE/$unit
+        [ -f "$source" ] && [ ! -L "$source" ] && [ -s "$source" ] || {
+            echo "unsafe or missing Remagic unit: $source" >&2
+            exit 1
+        }
+        [ "$(stat -c %u "$source" 2>/dev/null || echo unknown)" = 0 ] || {
+            echo "Remagic unit is not root-owned: $source" >&2
+            exit 1
+        }
+    done
+}
+
+start_services() {
+    "$SYSTEMCTL" daemon-reload
+    "$SYSTEMCTL" reset-failed remagicd.service magicpaper-agent.service \
+        >/dev/null 2>&1 || true
+    "$SYSTEMCTL" start remagicd.service
+    schema_ready=$APP_ROOT/libexec/remagic-schema-ready
+    schema_fence=/home/root/.local/state/magicpaper/.remagic-schema/schema-ready
+    if [ -x "$schema_ready" ] && \
+       "$schema_ready" "$schema_fence" magicpaper 1; then
+        "$SYSTEMCTL" start magicpaper-agent.service
+    fi
+    "$SYSTEMCTL" is-active --quiet remagicd.service
+}
+
+link_runtime() {
+    printf '%s\n' "$UNITS" | while IFS= read -r unit; do
+        [ -n "$unit" ] || continue
+        "$SYSTEMCTL" --runtime --force link "$UNIT_SOURCE/$unit" >/dev/null
+    done
+}
+
+publish_boot_link() {
+    unit=$1
+    temporary=$BOOT_WANTS/.remagic-register-$unit.$$
+    ln -s ../$unit "$temporary"
+    mv -Tf "$temporary" "$BOOT_WANTS/$unit"
+}
+
+publish_unit() {
+    unit=$1
+    temporary=$UNIT_ROOT/.remagic-register-$unit.$$
+    cp "$UNIT_SOURCE/$unit" "$temporary"
+    chmod 0644 "$temporary"
+    chown 0:0 "$temporary"
+    mv -Tf "$temporary" "$UNIT_ROOT/$unit"
+}
+
+install_persistent() {
+    root_options=$(awk '$2 == "/" { print $4; exit }' /proc/mounts)
+    root_was_read_only=false
+    case ",$root_options," in
+        *,ro,*)
+            mount -o remount,rw /
+            root_was_read_only=true
+            ;;
+    esac
+
+    status=0
+    for unit in $UNITS; do
+        publish_unit "$unit" || status=$?
+        [ "$status" -eq 0 ] || break
+    done
+    if [ "$status" -eq 0 ]; then
+        mkdir -p "$BOOT_WANTS" || status=$?
+    fi
+    if [ "$status" -eq 0 ]; then
+        publish_boot_link remagicd.service || status=$?
+    fi
+    if [ "$status" -eq 0 ]; then
+        publish_boot_link magicpaper-agent.service || status=$?
+    fi
+    sync
+    if [ "$root_was_read_only" = true ]; then
+        mount -o remount,ro / || status=$?
+    fi
+    [ "$status" -eq 0 ] || return "$status"
+}
+
+validate_sources
+case "$MODE" in
+    --runtime)
+        link_runtime
+        ;;
+    --persistent)
+        install_persistent
+        ;;
+    *)
+        echo "usage: remagic-register [--runtime|--persistent]" >&2
+        exit 2
+        ;;
+esac
+start_services
+echo "Remagic registration restored ($MODE)."

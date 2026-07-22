@@ -74,6 +74,7 @@ impl Daemon {
     async fn clear_runtime_tracking(&self, id: &AppId) {
         self.runtime_generations.write().await.remove(id);
         self.runtime_foreground_fences.write().await.remove(id);
+        self.runtime_input_modes.write().await.remove(id);
         self.runtime_exit_reports.write().await.remove(id);
         self.runtime_missing_observations.write().await.remove(id);
     }
@@ -118,6 +119,7 @@ impl Daemon {
             return Ok(());
         }
         self.runtime_foreground_fences.write().await.remove(&id);
+        self.runtime_input_modes.write().await.remove(&id);
         let crashed = utils::runtime_exit_is_crash(exit_code, reported_crash);
         let domain = self.state.read().await.domain.clone();
         let was_foreground = matches!(&domain, DomainState::Foreground(current) if current == &id);
@@ -246,6 +248,7 @@ mod exit_report_tests {
             sessions: RwLock::new(sessions),
             runtime_generations: RwLock::new(BTreeMap::new()),
             runtime_foreground_fences: RwLock::new(BTreeMap::new()),
+            runtime_input_modes: RwLock::new(BTreeMap::new()),
             runtime_exit_reports: RwLock::new(BTreeMap::new()),
             runtime_missing_observations: RwLock::new(BTreeMap::new()),
             session_store: remagic_core::SessionStore::new(session_root.clone()),
@@ -256,6 +259,8 @@ mod exit_report_tests {
             power_control,
             next_generation: AtomicU64::new(1),
             next_foreground_epoch: AtomicU64::new(1),
+            next_sleep_epoch: AtomicU64::new(1),
+            sleep_transaction: sleep::SleepTransaction::default(),
             launch_interrupt_epoch: Arc::new(AtomicU64::new(1)),
             manager_repair_pending: AtomicBool::new(false),
             domain_recovery_pending: AtomicBool::new(false),

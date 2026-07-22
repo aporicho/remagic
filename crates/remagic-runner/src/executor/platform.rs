@@ -12,6 +12,7 @@ pub(super) const DEFAULT_CAPABILITIES: &[&str] = &[
     "display:qtfb-v1",
     "input:touch-v1",
     "input:pen-v1",
+    "input:mode-v2",
     "ink:direct-v1",
     "lifecycle:v2",
     "network:outbound-v1",

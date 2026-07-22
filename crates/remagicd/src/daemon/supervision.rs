@@ -37,6 +37,14 @@ async fn supervise_once(daemon: &Daemon) -> Result<(), ()> {
     if matches!(domain, DomainState::Manager) && !manager_surface_is_healthy(daemon).await {
         queue_manager_repair(daemon).await?;
     }
+    let sleep = daemon.sleep_transaction.snapshot();
+    if matches!(domain, DomainState::Sleeping)
+        && sleep.phase == sleep::SleepPhase::Locked
+        && !lock_surface_is_healthy(sleep).await
+    {
+        warn!("display lock lost its committed presentation; restoring stock shell");
+        return queue_display_recovery(daemon).await;
+    }
     Ok(())
 }
 
@@ -48,11 +56,20 @@ async fn queue_display_recovery(daemon: &Daemon) -> Result<(), ()> {
     {
         return Ok(());
     }
-    warn!("display host disappeared while managed domain was active; restoring stock shell");
+    let state_sequence = daemon.state.read().await.sequence;
+    let sleep_revision = daemon.sleep_transaction.snapshot().revision;
+    warn!(
+        state_sequence,
+        sleep_revision,
+        "display host disappeared while managed domain was active; restoring stock shell"
+    );
     if daemon
         .events
         .send(QueuedEvent::unattended(
-            Event::DisplayHostExited,
+            Event::DisplayHostExited {
+                state_sequence,
+                sleep_revision,
+            },
             &daemon.launch_interrupt_epoch,
         ))
         .await
@@ -167,6 +184,25 @@ async fn manager_surface_is_healthy(daemon: &Daemon) -> bool {
     })
 }
 
+async fn lock_surface_is_healthy(sleep: sleep::SleepSnapshot) -> bool {
+    if sleep.epoch == 0 || sleep.phase != sleep::SleepPhase::Locked {
+        return false;
+    }
+    // Once committed, the lock image lives in display-host's private panel
+    // buffer. Home is Restart=on-failure and may briefly disconnect/recreate
+    // its writable QTFB surface without making those frozen pixels unsafe.
+    display_host::status()
+        .await
+        .is_ok_and(|snapshot| snapshot_has_committed_lock(&snapshot, sleep.epoch))
+}
+
+fn snapshot_has_committed_lock(snapshot: &display_host::Snapshot, sleep_epoch: u64) -> bool {
+    sleep_epoch != 0
+        && snapshot.lock_epoch == sleep_epoch
+        && snapshot.lock_committed
+        && snapshot.foreground_key == Some(display_host::HOME_SURFACE_KEY)
+}
+
 async fn queue_manager_repair(daemon: &Daemon) -> Result<(), ()> {
     if daemon
         .manager_repair_pending
@@ -246,6 +282,23 @@ mod tests {
         let tracked = BTreeMap::from([(app.clone(), 4)]);
         let probe = FakeProbe(BTreeSet::from([utils::app_unit(&app)]));
         assert!(inactive_runtimes(&probe, &tracked).await.is_empty());
+    }
+
+    #[test]
+    fn frozen_lock_remains_healthy_while_home_surface_reconnects() {
+        let snapshot = display_host::Snapshot {
+            foreground_key: Some(display_host::HOME_SURFACE_KEY),
+            generation: 4,
+            foreground_epoch: 8,
+            lock_epoch: 17,
+            lock_committed: true,
+            // A crashed Home has no current writable surface; the committed
+            // panel buffer is nevertheless still the authoritative lock.
+            surfaces: Vec::new(),
+            ..display_host::Snapshot::default()
+        };
+        assert!(snapshot_has_committed_lock(&snapshot, 17));
+        assert!(!snapshot_has_committed_lock(&snapshot, 16));
     }
 
     #[test]

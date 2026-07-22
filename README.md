@@ -41,7 +41,13 @@ runner 以 generation 绑定的 `schema-prepared`、`schema-complete` 两道原�
 - 应用内单按电源键：暂停应用并回到任务页。
 - 任务页单按电源键：召回最近应用。
 - 任务页或应用内三按电源键：返回原版/镇纸系统域。
-- 任务页“休眠”：由管理器执行系统休眠。
+- 任务页“休眠”：先提交并冻结 Remagic 锁屏，再释放 wakelock 进入系统休眠；按一次电源键唤醒后，Home 会自动准备并切回完整任务页，不需要再点屏幕，也不经过原版系统。只有自动返回暂时失败时，锁屏上的“立即返回”才作为手动恢复入口；30 秒后仍未恢复会带着同一冻结锁屏再次休眠。
+
+任务页右上角的“设置”进入锁屏设置。可循环选择默认白纸、原生锁屏和自定义 PNG，切换“填充裁切/完整适应”，以及开关时钟和唤醒提示；“预览锁屏”不会真的休眠。设置原子保存于 `/home/root/.config/remagic/home.toml`。自定义壁纸放入 `/home/root/.local/share/remagic/wallpapers/`，返回设置页后再次进入即可刷新列表；只读取普通 PNG 文件，损坏或过大的图片会安全回退到白底。
+
+USB 供电或其他内核唤醒锁可能阻止真正 suspend。此时休眠入口仍保留已经提交的锁屏和输入隔离，不再自动跳回任务页；“立即返回”是唯一的屏幕解锁入口。拔掉 USB 后可返回任务页并重新休眠，正常 suspend/resume 仍在实体电源键唤醒后直接进入管理器。
+
+锁屏期间，显示宿主持有冻结画面并吞掉笔输入，只把备用按钮范围内的一次完整手指接触交给 Home。物理唤醒后不重复刷新锁屏；Home 先在不可见的共享 surface 中准备完整任务页，显示宿主确认该序号后，以一次全屏事务替换锁屏并同时开放输入。Home 重启、提交失败或短暂背压都不会提前露出可写界面；失败事务会在冻结锁屏后自动重试，三按电源键仍可执行保底的系统域恢复。
 
 卡片和按钮支持手指操作，按下立即反色。应用之间直接切换时不经过黑白空白页；每次进入新前台只允许一次完整刷新，普通按压、书写和返回任务页使用局部更新。
 
@@ -78,13 +84,15 @@ runner 以 generation 绑定的 `schema-prepared`、`schema-complete` 两道原�
 ssh -F /dev/null root@10.11.99.1 /home/root/apps/remagic/share/device-acceptance-v2.sh
 ssh -F /dev/null root@10.11.99.1 /home/root/apps/remagic/share/device-fault-acceptance-v2.sh
 ssh -F /dev/null root@10.11.99.1 /home/root/apps/remagic/share/device-stress-acceptance-v2.sh
+ssh -F /dev/null root@10.11.99.1 /home/root/apps/remagic/share/device-lock-acceptance-v2.sh
 ```
 
-三组测试分别覆盖：
+四组测试分别覆盖：
 
 - 手指按压反馈、两应用真实首帧、墨迹收口、驻留/召回、直接切换、完整关闭和回到原版。
 - Home、应用子进程、整个应用 cgroup、显示宿主和 daemon 的故障注入与自动恢复。
 - 多轮 MagicPaper↔KOReader 切换、PID/surface 不变、队列排空、面板零失败、暖切换时延和每次恰好一次完整刷新。
+- 真实 suspend/resume、冻结锁屏、唤醒键防误触、按键唤醒后自动返回管理器、带页面序号的原子替换，以及“唤醒阶段不重复刷新锁屏”。测试开始后只需按一次实体电源键唤醒，其余检查自动完成。
 
 测试不仅检查 PID，还比对生命周期 fence、目标 surface 内容签名、最后实际提交的 key/sequence 和面板提交计数。
 
