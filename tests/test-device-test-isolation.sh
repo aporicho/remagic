@@ -347,6 +347,9 @@ for wrapped_command in cp find mv rm sha256sum sync; do
 done
 PATH=$FAIL_BIN:$ORIGINAL_PATH
 export PATH
+# dash retains command lookups performed before PATH changes. Clear that cache
+# so every injected failure is exercised through the wrapper on every shell.
+hash -r 2>/dev/null || true
 
 # Lock ownership files remain intact if the atomic retirement rename fails.
 remagic_test_lock || fail 'could not claim lock-retirement fault fixture'
