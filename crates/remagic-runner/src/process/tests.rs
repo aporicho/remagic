@@ -15,7 +15,10 @@ async fn lifecycle_descriptor_is_inherited_and_bidirectional() {
         .arg(
             "fd=$REMAGIC_LIFECYCLE_FD; \
              eval \"exec 8>&$fd\"; eval \"exec 9<&$fd\"; \
-             command=$(dd bs=64 count=1 <&9 2>/dev/null); \
+             command=''; \
+             while [ -z \"$command\" ]; do \
+                 command=$(dd bs=64 count=1 <&9 2>/dev/null) || command=''; \
+             done; \
              printf 'child:%s' \"$command\" >&8",
         )
         .env("REMAGIC_LIFECYCLE_FD", child_fd.to_string())
