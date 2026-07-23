@@ -126,7 +126,9 @@ REMAGIC_SYSTEM_SIGNING_KEY=/path/to/system-2026-01.pem \
 ```
 
 设备端更新校验由 `remagic-update check|verify|apply` 完成；它只接受本仓库 GitHub
-Release 路径、签名元数据和匹配的归档哈希。应用商店继续使用独立的 Catalog 签名密钥。
+Release 路径、签名元数据和匹配的归档哈希。下载与解包使用 `/home` 中权限为
+`0700` 的事务目录；成功、失败和下次启动时都会回收相应临时数据，避免占用内存盘。
+应用商店继续使用独立的 Catalog 签名密钥。
 
 默认需要当前 Paper Pro family SDK、同级 `quill-move`、`remagic-store` 和方正屏显
 雅宋字体。所有 Rust/C/C++ 设备组件强制以 baseline ARMv8-A 构建，防止 Chiappa
@@ -146,7 +148,7 @@ SDK 的产品专用 `-mcpu` 指令进入 Ferrari 通用包。
 
 普通分支与 Pull Request 由 `.github/workflows/ci.yml` 执行完整 host 检查。正式系统
 发布只需更新工作区版本与 `release/sequence`，然后推送同版本 tag（例如
-`v0.1.3`）。`.github/workflows/release.yml` 会自动完成：
+`v0.1.4`）。`.github/workflows/release.yml` 会自动完成：
 
 1. 校验并缓存官方 Paper Pro Move 3.27 SDK；
 2. 固定 Store、Quill、Node、Pi 和 UI 字体的版本及 SHA-256；

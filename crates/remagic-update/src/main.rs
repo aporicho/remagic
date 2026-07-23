@@ -4,11 +4,14 @@ use remagic_core::{
 };
 use serde::Deserialize;
 use std::fs;
-use std::path::PathBuf;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const TRUSTED_KEYS: &[u8] =
     include_bytes!("../../../scripts/system-release/system-trusted-keys.json");
+const WORK_ROOT: &str = "/home/root/.cache/remagic-update";
 
 #[derive(Deserialize)]
 struct TrustedKeyDocument {
@@ -44,10 +47,9 @@ fn main() -> Result<(), String> {
             let minimum = read_arg(&mut args, "MIN_SEQUENCE")?
                 .parse()
                 .map_err(|_| "invalid minimum sequence".to_owned())?;
-            let root = PathBuf::from(format!("/tmp/remagic-update-{}", std::process::id()));
-            fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-            let release = root.join("release.json");
-            let signature = root.join("release.sig.json");
+            let work = WorkDirectory::create()?;
+            let release = work.path().join("release.json");
+            let signature = work.path().join("release.sig.json");
             download(&release_url, &release)?;
             download(&signature_url, &signature)?;
             let verified = verify_files(&release, &signature, device, &os, minimum)?;
@@ -62,17 +64,16 @@ fn main() -> Result<(), String> {
             let minimum = read_arg(&mut args, "MIN_SEQUENCE")?
                 .parse()
                 .map_err(|_| "invalid minimum sequence".to_owned())?;
-            let root = PathBuf::from(format!("/tmp/remagic-update-{}", std::process::id()));
-            fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-            let release = root.join("release.json");
-            let signature = root.join("release.sig.json");
-            let archive = root.join("remagic-system.tar.gz");
+            let work = WorkDirectory::create()?;
+            let release = work.path().join("release.json");
+            let signature = work.path().join("release.sig.json");
+            let archive = work.path().join("remagic-system.tar.gz");
             download(&release_url, &release)?;
             download(&signature_url, &signature)?;
             let verified = verify_files(&release, &signature, device, &os, minimum)?;
             download(&verified.release.archive.url, &archive)?;
             verify_archive(&archive, &verified.release.archive)?;
-            apply_archive(&archive)
+            apply_archive(&archive, work.path())
         }
         Some("apply") => {
             let release = PathBuf::from(read_arg(&mut args, "RELEASE_JSON")?);
@@ -85,10 +86,68 @@ fn main() -> Result<(), String> {
                 .map_err(|_| "invalid minimum sequence".to_owned())?;
             let verified = verify_files(&release, &signature, device, &os, minimum)?;
             verify_archive(&archive, &verified.release.archive)?;
-            apply_archive(&archive)
+            let work = WorkDirectory::create()?;
+            apply_archive(&archive, work.path())
         }
         _ => Err("usage: remagic-update verify RELEASE_JSON SIGNATURE_JSON DEVICE OS MIN_SEQUENCE | check RELEASE_URL SIGNATURE_URL DEVICE OS MIN_SEQUENCE | install RELEASE_URL SIGNATURE_URL DEVICE OS MIN_SEQUENCE | apply RELEASE_JSON SIGNATURE_JSON ARCHIVE DEVICE OS MIN_SEQUENCE".into()),
     }
+}
+
+struct WorkDirectory {
+    path: PathBuf,
+}
+
+impl WorkDirectory {
+    fn create() -> Result<Self, String> {
+        Self::create_at(Path::new(WORK_ROOT))
+    }
+
+    fn create_at(base: &Path) -> Result<Self, String> {
+        fs::create_dir_all(base).map_err(|e| e.to_string())?;
+        fs::set_permissions(base, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+        cleanup_stale_work_directories(base)?;
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos();
+        let path = base.join(format!("work-{}-{nonce}", std::process::id()));
+        fs::create_dir(&path).map_err(|e| e.to_string())?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for WorkDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn cleanup_stale_work_directories(base: &Path) -> Result<(), String> {
+    for entry in fs::read_dir(base).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let file_type = entry.file_type().map_err(|e| e.to_string())?;
+        if !file_type.is_dir() || file_type.is_symlink() {
+            continue;
+        }
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(pid) = name
+            .strip_prefix("work-")
+            .and_then(|tail| tail.split('-').next())
+            .and_then(|value| value.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if !Path::new("/proc").join(pid.to_string()).exists() {
+            fs::remove_dir_all(entry.path()).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 fn verify_files(
@@ -178,8 +237,8 @@ fn verify_archive(
         .ok_or_else(|| "system archive SHA-256 does not match signed metadata".into())
 }
 
-fn apply_archive(archive: &PathBuf) -> Result<(), String> {
-    let root = PathBuf::from(format!("/tmp/remagic-system-update-{}", std::process::id()));
+fn apply_archive(archive: &PathBuf, work: &Path) -> Result<(), String> {
+    let root = work.join("system");
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
     let status = Command::new("tar")
         .args(["-xzf"])
@@ -222,4 +281,49 @@ fn unix_now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|value| value.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn work_directory_is_private_and_removed_on_drop() {
+        let base = std::env::temp_dir().join(format!(
+            "remagic-update-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = {
+            let work = WorkDirectory::create_at(&base).unwrap();
+            fs::write(work.path().join("payload"), b"fixture").unwrap();
+            assert_eq!(
+                fs::metadata(work.path()).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            work.path().to_owned()
+        };
+        assert!(!path.exists());
+        fs::remove_dir(base).unwrap();
+    }
+
+    #[test]
+    fn stale_work_directory_is_removed_before_a_new_transaction() {
+        let base = std::env::temp_dir().join(format!(
+            "remagic-update-stale-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(base.join("work-4294967295-dead")).unwrap();
+        let work = WorkDirectory::create_at(&base).unwrap();
+        assert!(!base.join("work-4294967295-dead").exists());
+        drop(work);
+        fs::remove_dir(base).unwrap();
+    }
 }
