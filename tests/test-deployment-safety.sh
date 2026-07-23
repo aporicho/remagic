@@ -399,7 +399,7 @@ SYSTEM_INSTALL=$ROOT/scripts/system-release/install-device.sh
 SYSTEM_BUILD=$ROOT/scripts/build-system-release.sh
 sh -n "$ROOT/install.sh"
 sh -n "$SYSTEM_INSTALL"
-sh -n "$SYSTEM_BUILD"
+bash -n "$SYSTEM_BUILD"
 grep -Fq '(cd "$SOURCE_DIR" && sha256sum -c SHA256SUMS)' "$SYSTEM_INSTALL"
 grep -Fq '(cd "$PAYLOAD" && sha256sum -c share/system-files.sha256)' "$SYSTEM_INSTALL"
 grep -Fq 'snapshot_path "$path" "$name"' "$SYSTEM_INSTALL"
