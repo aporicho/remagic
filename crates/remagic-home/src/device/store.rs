@@ -3,7 +3,7 @@ use std::path::Path;
 use std::time::Duration;
 use tokio::process::Command;
 
-const STORE_BINARY: &str = "/home/root/apps/remagic-store/current/bin/remagic-store";
+const STORE_BINARY: &str = "/home/root/apps/remagic-store/current/payload/bin/remagic-store";
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct CatalogApp {
@@ -282,6 +282,14 @@ async fn run_package_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn store_binary_follows_the_transactional_package_layout() {
+        assert_eq!(
+            STORE_BINARY,
+            "/home/root/apps/remagic-store/current/payload/bin/remagic-store"
+        );
+    }
 
     #[tokio::test]
     async fn unknown_catalog_identity_fails_before_process_launch() {
