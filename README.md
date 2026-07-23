@@ -146,7 +146,7 @@ SDK 的产品专用 `-mcpu` 指令进入 Ferrari 通用包。
 
 普通分支与 Pull Request 由 `.github/workflows/ci.yml` 执行完整 host 检查。正式系统
 发布只需更新工作区版本与 `release/sequence`，然后推送同版本 tag（例如
-`v0.1.1`）。`.github/workflows/release.yml` 会自动完成：
+`v0.1.2`）。`.github/workflows/release.yml` 会自动完成：
 
 1. 校验并缓存官方 Paper Pro Move 3.27 SDK；
 2. 固定 Store、Quill、Node、Pi 和 UI 字体的版本及 SHA-256；
