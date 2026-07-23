@@ -142,6 +142,22 @@ SDK 的产品专用 `-mcpu` 指令进入 Ferrari 通用包。
 正式 Catalog 必须填写实际 Release URL、大小和 SHA-256，再用离线 Ed25519 私钥
 签名；fixture URL 永远不能发布成可安装目录。
 
+### CI/CD 发布
+
+普通分支与 Pull Request 由 `.github/workflows/ci.yml` 执行完整 host 检查。正式系统
+发布只需更新工作区版本与 `release/sequence`，然后推送同版本 tag（例如
+`v0.1.1`）。`.github/workflows/release.yml` 会自动完成：
+
+1. 校验并缓存官方 Paper Pro Move 3.27 SDK；
+2. 固定 Store、Quill、Node、Pi 和 UI 字体的版本及 SHA-256；
+3. 交叉编译并运行 ARM64 Pi 启动探针和全部发布契约；
+4. 使用仓库 Secret `REMAGIC_SYSTEM_SIGNING_KEY` 签署更新元数据；
+5. 将归档、校验和、签名和 release manifest 原子发布到同名 GitHub Release。
+
+`release/sequence` 必须严格递增，它是设备拒绝降级的最终依据。SDK 从 reMarkable
+官方公开工具链地址获取；UI 字体固定在 `build-assets-v1` Release，并在构建前验证
+SHA-256。私钥从不进入仓库、缓存或构建产物。
+
 ## 验收与恢复
 
 设备测试脚本安装在 `/home/root/apps/remagic/share/testing/`：

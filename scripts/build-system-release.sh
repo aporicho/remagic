@@ -46,8 +46,8 @@ node_version=$(sed -n 's/^REMAGIC_NODE_VERSION=//p' \
     exit 1
 }
 [ -d "$STORE" ] || { echo "ReMagic Store repository is missing: $STORE" >&2; exit 1; }
-[ -d "$QUILL/src" ] && [ -f "$QUILL/vendor/libqsgepaper.so" ] || {
-    echo "Quill source/vendor ABI library is incomplete: $QUILL" >&2
+[ -f "$QUILL/src/vendor_probe.cpp" ] && [ -f "$QUILL/src/quill_c.cpp" ] || {
+    echo "Quill bridge source is incomplete: $QUILL" >&2
     exit 1
 }
 [ -s "$UI_FONT" ] && [ ! -L "$UI_FONT" ] || {
@@ -75,6 +75,14 @@ sysroot=${SDKTARGETSYSROOT:-${OECORE_TARGET_SYSROOT:-}}
     echo "reMarkable SDK compiler/sysroot contract is incomplete" >&2
     exit 1
 }
+quill_vendor=${QUILL_VENDOR_DIR:-$QUILL/vendor}
+if [ ! -f "$quill_vendor/libqsgepaper.so" ]; then
+    quill_vendor=$sysroot/usr/lib/plugins/scenegraph
+fi
+[ -f "$quill_vendor/libqsgepaper.so" ] || {
+    echo "Quill ABI library is absent from both the bridge and SDK" >&2
+    exit 1
+}
 
 export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=$compiler
 export CC_aarch64_unknown_linux_gnu=$compiler
@@ -88,7 +96,7 @@ qt_include=$sysroot/usr/include
 "$cxx" --sysroot="$sysroot" -march=armv8-a -fPIC -shared -O2 -std=c++17 \
     -I "$qt_include" -I "$qt_include/QtCore" -I "$qt_include/QtGui" \
     "$QUILL/src/vendor_probe.cpp" "$QUILL/src/quill_c.cpp" \
-    -L "$QUILL/vendor" -lqsgepaper -lQt6Gui -lQt6Core -ldl \
+    -L "$quill_vendor" -lqsgepaper -lQt6Gui -lQt6Core -ldl \
     -o "$BUILD_ROOT/quill/libquill.so"
 
 cd "$ROOT"
@@ -96,7 +104,7 @@ cargo build --locked --release --target "$TARGET" --workspace
 cargo build --locked --release --target "$TARGET" -p remagic-home --features device
 (
     cd native/remagic-display-host
-    RUSTFLAGS="$RUSTFLAGS -C link-arg=-Wl,-rpath-link,$QUILL/vendor" \
+    RUSTFLAGS="$RUSTFLAGS -C link-arg=-Wl,-rpath-link,$quill_vendor" \
     QUILL_LIB_DIR="$BUILD_ROOT/quill" \
         cargo build --locked --release --target "$TARGET" --features device
 )

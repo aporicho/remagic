@@ -1,0 +1,124 @@
+name: Release ReMagic
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  SDK_URL: https://storage.googleapis.com/remarkable-codex-toolchain/3.27.0.97/chiappa/remarkable-production-image-5.7.119-chiappa-public-x86_64-toolchain.sh
+  SDK_SHA256: f22794bc6bb6729e648a7404a561e870d537818bd62a2f9950522f0cf15b4130
+  SDK_DIR: /home/runner/remagic-sdk-chiappa-3.27
+  STORE_REF: 5f1ae75c59675905a2b9a0fb7e7a17cc732b2b07
+  QUILL_REF: 39262ee0bef69915e3ead3ac218d5973916f422a
+  UI_FONT_SHA256: dbbdf59d7035d980abecf4f820e615b72107865a00f6eb41a1bbb9d9d1492fd1
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out ReMagic
+        uses: actions/checkout@v4
+        with:
+          path: remagic
+          fetch-depth: 0
+      - name: Check out pinned Store source
+        uses: actions/checkout@v4
+        with:
+          repository: aporicho/remagic-store
+          ref: ${{ env.STORE_REF }}
+          path: remagic-store
+      - name: Check out pinned Quill bridge
+        uses: actions/checkout@v4
+        with:
+          repository: MaximeRivest/quill
+          ref: ${{ env.QUILL_REF }}
+          path: quill-move
+      - name: Install host build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build qemu-user xz-utils
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add aarch64-unknown-linux-gnu
+      - name: Restore reMarkable SDK
+        id: sdk-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.SDK_DIR }}
+          key: remarkable-sdk-chiappa-3.27.0.97-${{ env.SDK_SHA256 }}
+      - name: Install verified reMarkable SDK
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        run: |
+          curl --fail --location --retry 5 --output "$RUNNER_TEMP/remarkable-sdk.sh" "$SDK_URL"
+          echo "$SDK_SHA256  $RUNNER_TEMP/remarkable-sdk.sh" | sha256sum -c -
+          chmod 0755 "$RUNNER_TEMP/remarkable-sdk.sh"
+          "$RUNNER_TEMP/remarkable-sdk.sh" -y -d "$SDK_DIR"
+      - name: Fetch pinned UI font
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/remagic-assets"
+          gh release download build-assets-v1 --repo aporicho/remagic \
+            --pattern UIFont.ttf --dir "$RUNNER_TEMP/remagic-assets"
+          echo "$UI_FONT_SHA256  $RUNNER_TEMP/remagic-assets/UIFont.ttf" | sha256sum -c -
+      - name: Check release identity
+        working-directory: remagic
+        run: |
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+          test "$GITHUB_REF_NAME" = "v$version"
+          sequence=$(tr -d '[:space:]' < release/sequence)
+          test "$sequence" -ge 1
+      - name: Build reproducible Pi runtime
+        working-directory: remagic
+        run: scripts/build-pi-runtime.sh
+      - name: Build and verify system release
+        working-directory: remagic
+        env:
+          RM_SDK: ${{ env.SDK_DIR }}
+          QUILL_DIR: ${{ github.workspace }}/quill-move
+          REMAGIC_STORE_DIR: ${{ github.workspace }}/remagic-store
+          REMAGIC_UI_FONT: ${{ runner.temp }}/remagic-assets/UIFont.ttf
+          REMAGIC_PI_RUNTIME_DIR: ${{ github.workspace }}/remagic/dist/pi-runtime
+        run: |
+          export REMAGIC_RELEASE_SEQUENCE
+          REMAGIC_RELEASE_SEQUENCE=$(tr -d '[:space:]' < release/sequence)
+          scripts/build-system-release.sh
+      - name: Sign release metadata
+        working-directory: remagic
+        env:
+          REMAGIC_SYSTEM_SIGNING_KEY_VALUE: ${{ secrets.REMAGIC_SYSTEM_SIGNING_KEY }}
+        run: |
+          test -n "$REMAGIC_SYSTEM_SIGNING_KEY_VALUE"
+          umask 077
+          key="$RUNNER_TEMP/remagic-system-signing.pem"
+          printf '%s\n' "$REMAGIC_SYSTEM_SIGNING_KEY_VALUE" > "$key"
+          REMAGIC_SYSTEM_SIGNING_KEY="$key" \
+            scripts/system-release/sign-release.sh dist/system-release/remagic-release-v1.json
+      - name: Publish verified assets
+        working-directory: remagic
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          out=dist/system-release
+          archive="$out/remagic-system-$version-universal-aarch64.tar.gz"
+          sha256sum -c "$archive.sha256"
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --verify-tag --draft --title "ReMagic $version" --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
+            "$archive" "$archive.sha256" \
+            "$out/remagic-release-v1.json" "$out/remagic-release-v1.sig.json" \
+            "$out/remagic-release.env"
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --draft=false --latest
