@@ -23,11 +23,11 @@ pub enum RuntimeValidationError {
     InvalidPolicyValue(&'static str, String),
     #[error("a required certificate policy has no CA bundle or directory")]
     MissingCertificateSource,
-    #[error("network hosts cannot be declared when network mode is deny or inbound")]
+    #[error("network hosts cannot be declared when network mode is deny, inbound, or lan_peer")]
     HostsWithDeniedNetwork,
-    #[error("inbound network mode requires a non-privileged listen_port")]
+    #[error("inbound and lan_peer network modes require a non-privileged listen_port")]
     MissingListenPort,
-    #[error("listen_port {0} is only valid for inbound network mode")]
+    #[error("listen_port {0} is only valid for inbound or lan_peer network mode")]
     UnexpectedListenPort(u16),
     #[error("network policy requires OS enforcement, but only policy metadata is available")]
     RequiredNetworkEnforcementUnavailable,

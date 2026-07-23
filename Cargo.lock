@@ -369,6 +369,7 @@ dependencies = [
  "remagic-core",
  "remagic-device",
  "remagic-protocol",
+ "serde",
  "serde_json",
  "thiserror",
 ]

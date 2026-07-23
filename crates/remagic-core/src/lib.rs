@@ -13,8 +13,9 @@ pub use remagic_device::{
 
 pub use manifest::{
     AppId, AppKind, AppManifest, BackgroundRestartPolicy, BackgroundService, DataSchema,
-    ManifestStore, ParkStrategy, ReadinessMode, ReadinessPolicy, ShutdownPolicy, UninstallPolicy,
-    MANIFEST_SCHEMA_V1, MANIFEST_SCHEMA_V2, MAX_SHUTDOWN_KILL_TIMEOUT_MS, REMAGIC_APP_API_VERSION,
+    ManifestStore, ParkStrategy, ReadinessMode, ReadinessPolicy, ShutdownPolicy, SyncProvider,
+    UninstallPolicy, MANIFEST_SCHEMA_V1, MANIFEST_SCHEMA_V2, MAX_SHUTDOWN_KILL_TIMEOUT_MS,
+    REMAGIC_APP_API_VERSION,
 };
 pub use runtime::{
     is_platform_reserved_environment, qtfb_key_for_app, validate_environment_pair,

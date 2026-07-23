@@ -15,6 +15,8 @@ pub struct ManagedEnvironment {
     pub listen_addr: Option<SocketAddr>,
     pub books_dir: Option<PathBuf>,
     pub wallpapers_dir: Option<PathBuf>,
+    pub data_home: PathBuf,
+    pub control_socket: PathBuf,
 }
 
 impl ManagedEnvironment {
@@ -48,6 +50,8 @@ impl ManagedEnvironment {
             listen_addr: optional_parse("REMAGIC_LISTEN_ADDR")?,
             books_dir: optional_path("REMAGIC_BOOKS_DIR"),
             wallpapers_dir: optional_path("REMAGIC_WALLPAPERS_DIR"),
+            data_home: PathBuf::from(required("XDG_DATA_HOME")?),
+            control_socket: PathBuf::from(required("REMAGIC_SOCKET")?),
         })
     }
 
@@ -71,6 +75,31 @@ impl ManagedEnvironment {
         }
         if self.listen_addr.is_none() || self.books_dir.is_none() || self.wallpapers_dir.is_none() {
             return Err(ManagedEnvironmentError::IncompleteUploadContract);
+        }
+        Ok(())
+    }
+
+    pub fn require_transfer_contract(&self) -> Result<(), ManagedEnvironmentError> {
+        for capability in [
+            "display:qtfb-v1",
+            "input:touch-v1",
+            "lifecycle:v2",
+            "network:lan-peer-v1",
+            "storage:books-write-v1",
+            "storage:wallpapers-write-v1",
+            "sync:koreader-state-v1",
+        ] {
+            if !self
+                .device
+                .capabilities
+                .iter()
+                .any(|value| value == capability)
+            {
+                return Err(ManagedEnvironmentError::MissingCapability(capability));
+            }
+        }
+        if self.listen_addr.is_none() || self.books_dir.is_none() || self.wallpapers_dir.is_none() {
+            return Err(ManagedEnvironmentError::IncompleteTransferContract);
         }
         Ok(())
     }
@@ -124,4 +153,6 @@ pub enum ManagedEnvironmentError {
     MissingCapability(&'static str),
     #[error("runtime did not provide the upload network and storage contract")]
     IncompleteUploadContract,
+    #[error("runtime did not provide the transfer network, storage, and sync contract")]
+    IncompleteTransferContract,
 }

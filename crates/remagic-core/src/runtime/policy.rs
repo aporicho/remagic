@@ -134,6 +134,10 @@ pub enum NetworkMode {
     /// Accept connections on a platform-assigned local address. This grants
     /// no outbound-network contract.
     Inbound,
+    /// Accept connections and initiate encrypted peer sessions on the local
+    /// network. Internet destinations remain outside this application
+    /// contract; multicast discovery is permitted only while foregrounded.
+    LanPeer,
 }
 
 impl NetworkMode {
@@ -143,6 +147,7 @@ impl NetworkMode {
             Self::HttpsOnly => "https_only",
             Self::Outbound => "outbound",
             Self::Inbound => "inbound",
+            Self::LanPeer => "lan_peer",
         }
     }
 }
@@ -206,7 +211,7 @@ pub struct NetworkPolicy {
     /// optionally beginning with `*.` for a subdomain suffix.
     #[serde(default)]
     pub allowed_hosts: BTreeSet<String>,
-    /// Required for `inbound`; forbidden for every other mode. ReMagic owns
+    /// Required for `inbound` and `lan_peer`; forbidden for every other mode. ReMagic owns
     /// the bind host and exposes the resulting address in the launch
     /// environment, while the application selects only its non-privileged
     /// port.
@@ -326,14 +331,18 @@ fn validate_certificate_policy(
 }
 
 fn validate_network_policy(network: &NetworkPolicy) -> Result<(), RuntimeValidationError> {
-    if matches!(network.mode, NetworkMode::Deny | NetworkMode::Inbound)
-        && !network.allowed_hosts.is_empty()
+    if matches!(
+        network.mode,
+        NetworkMode::Deny | NetworkMode::Inbound | NetworkMode::LanPeer
+    ) && !network.allowed_hosts.is_empty()
     {
         return Err(RuntimeValidationError::HostsWithDeniedNetwork);
     }
     match (network.mode, network.listen_port) {
-        (NetworkMode::Inbound, Some(port)) if port >= 1024 => {}
-        (NetworkMode::Inbound, _) => return Err(RuntimeValidationError::MissingListenPort),
+        (NetworkMode::Inbound | NetworkMode::LanPeer, Some(port)) if port >= 1024 => {}
+        (NetworkMode::Inbound | NetworkMode::LanPeer, _) => {
+            return Err(RuntimeValidationError::MissingListenPort)
+        }
         (_, Some(port)) => return Err(RuntimeValidationError::UnexpectedListenPort(port)),
         (_, None) => {}
     }

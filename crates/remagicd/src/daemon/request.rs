@@ -65,6 +65,11 @@ impl Daemon {
                 info!(%app_id, %title, %body, "application notification queued");
                 Response::Ok
             }
+            Request::Sync {
+                requester,
+                provider,
+                action,
+            } => self.sync_request(requester, provider, action).await,
             Request::Package { operation } => self.enqueue(Event::Package(operation)).await,
         }
     }

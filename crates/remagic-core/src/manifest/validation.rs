@@ -20,6 +20,7 @@ impl AppManifest {
         self.validate_shutdown()?;
         self.validate_background_service()?;
         self.validate_data_schema()?;
+        self.validate_sync_provider()?;
         self.runtime
             .validate(self.schema == MANIFEST_SCHEMA_V2)
             .map_err(ManifestError::Runtime)?;
@@ -294,6 +295,37 @@ impl AppManifest {
         Ok(())
     }
 
+    fn validate_sync_provider(&self) -> Result<(), ManifestError> {
+        let Some(provider) = &self.sync_provider else {
+            return Ok(());
+        };
+        if self.schema != MANIFEST_SCHEMA_V2 {
+            return Err(ManifestError::SyncProviderRequiresV2);
+        }
+        if provider.schema != 1 {
+            return Err(ManifestError::InvalidSyncProviderSchema(provider.schema));
+        }
+        if !(1_000..=120_000).contains(&provider.timeout_ms) {
+            return Err(ManifestError::InvalidSyncProviderTimeout(
+                provider.timeout_ms,
+            ));
+        }
+        validate_absolute("sync_provider.exporter", &provider.exporter)?;
+        validate_absolute("sync_provider.importer", &provider.importer)?;
+        let mut kinds = BTreeSet::new();
+        for kind in &provider.data_kinds {
+            let valid = !kind.is_empty()
+                && kind.len() <= 64
+                && kind
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_');
+            if !valid || !kinds.insert(kind) {
+                return Err(ManifestError::InvalidSyncDataKind(kind.clone()));
+            }
+        }
+        Ok(())
+    }
+
     fn validate_v2_runtime_contract(&self) -> Result<(), ManifestError> {
         let has_capability = |required: &str| {
             self.capabilities
@@ -329,25 +361,32 @@ impl AppManifest {
 
         let declares_outbound = has_capability("network:outbound-v1");
         let declares_inbound = has_capability("network:listen-v1");
+        let declares_lan_peer = has_capability("network:lan-peer-v1");
         match self.runtime.network.mode {
-            NetworkMode::Deny if declares_outbound || declares_inbound => {
+            NetworkMode::Deny if declares_outbound || declares_inbound || declares_lan_peer => {
                 return Err(ManifestError::NetworkCapabilityMismatch {
                     mode: NetworkMode::Deny,
                     expected: "no network capability",
                 })
             }
             NetworkMode::HttpsOnly | NetworkMode::Outbound
-                if !declares_outbound || declares_inbound =>
+                if !declares_outbound || declares_inbound || declares_lan_peer =>
             {
                 return Err(ManifestError::NetworkCapabilityMismatch {
                     mode: self.runtime.network.mode,
                     expected: "only network:outbound-v1",
                 })
             }
-            NetworkMode::Inbound if !declares_inbound || declares_outbound => {
+            NetworkMode::Inbound if !declares_inbound || declares_outbound || declares_lan_peer => {
                 return Err(ManifestError::NetworkCapabilityMismatch {
                     mode: self.runtime.network.mode,
                     expected: "only network:listen-v1",
+                })
+            }
+            NetworkMode::LanPeer if !declares_lan_peer || declares_outbound || declares_inbound => {
+                return Err(ManifestError::NetworkCapabilityMismatch {
+                    mode: self.runtime.network.mode,
+                    expected: "only network:lan-peer-v1",
                 })
             }
             _ => {}

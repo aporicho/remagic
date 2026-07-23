@@ -96,8 +96,10 @@ impl DeviceProfile {
                 "lifecycle:v2",
                 "network:outbound-v1",
                 "network:listen-v1",
+                "network:lan-peer-v1",
                 "storage:books-write-v1",
                 "storage:wallpapers-write-v1",
+                "sync:koreader-state-v1",
                 "agent:pi-v1",
             ]
             .into_iter()

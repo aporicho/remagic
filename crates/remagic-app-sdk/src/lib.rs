@@ -8,9 +8,11 @@ mod environment;
 mod lifecycle;
 mod qtfb;
 mod surface;
+mod sync;
 
 pub use environment::{ManagedEnvironment, ManagedEnvironmentError};
 pub use lifecycle::{LifecycleClient, LifecycleError};
 pub use qtfb::{InputEvent, QtfbClient, QtfbError, TouchPhase, REFRESH_FAST, REFRESH_UI};
 pub use remagic_protocol::{LifecycleCommand, LifecycleStage, ShutdownReason};
 pub use surface::{Rgb565, Surface, BLACK, WHITE};
+pub use sync::{SyncClient, SyncError};

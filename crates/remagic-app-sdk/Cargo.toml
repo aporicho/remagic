@@ -11,5 +11,6 @@ libc.workspace = true
 remagic-core = { path = "../remagic-core" }
 remagic-device = { path = "../remagic-device" }
 remagic-protocol = { path = "../remagic-protocol" }
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

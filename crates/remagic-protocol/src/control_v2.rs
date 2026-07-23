@@ -246,6 +246,7 @@ impl TryFrom<crate::Request> for ControlIntent {
             | Request::Ready { .. }
             | Request::Parked { .. }
             | Request::Notify { .. } => return Err(LegacyControlConversionError::LifecycleRequest),
+            Request::Sync { .. } => return Err(LegacyControlConversionError::InternalRequest),
         })
     }
 }
@@ -254,6 +255,8 @@ impl TryFrom<crate::Request> for ControlIntent {
 pub enum LegacyControlConversionError {
     #[error("v1 application callback belongs on the lifecycle channel")]
     LifecycleRequest,
+    #[error("request belongs to an internal application service boundary")]
+    InternalRequest,
 }
 
 #[cfg(test)]

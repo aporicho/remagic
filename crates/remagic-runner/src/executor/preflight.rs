@@ -95,18 +95,29 @@ fn validate_network_capability(manifest: &AppManifest) -> Result<(), ExecutorErr
         .capabilities
         .iter()
         .any(|candidate| candidate.as_str() == "network:listen-v1");
+    let has_lan_peer = manifest
+        .capabilities
+        .iter()
+        .any(|candidate| candidate.as_str() == "network:lan-peer-v1");
     match manifest.runtime.network.mode {
-        NetworkMode::Deny if has_outbound || has_inbound => Err(
+        NetworkMode::Deny if has_outbound || has_inbound || has_lan_peer => Err(
             ExecutorError::NetworkCapabilityMismatch("deny policy may not request network"),
         ),
-        NetworkMode::HttpsOnly | NetworkMode::Outbound if !has_outbound || has_inbound => {
+        NetworkMode::HttpsOnly | NetworkMode::Outbound
+            if !has_outbound || has_inbound || has_lan_peer =>
+        {
             Err(ExecutorError::NetworkCapabilityMismatch(
                 "outbound policy requires only network:outbound-v1",
             ))
         }
-        NetworkMode::Inbound if !has_inbound || has_outbound => {
+        NetworkMode::Inbound if !has_inbound || has_outbound || has_lan_peer => {
             Err(ExecutorError::NetworkCapabilityMismatch(
                 "inbound policy requires only network:listen-v1",
+            ))
+        }
+        NetworkMode::LanPeer if !has_lan_peer || has_outbound || has_inbound => {
+            Err(ExecutorError::NetworkCapabilityMismatch(
+                "LAN peer policy requires only network:lan-peer-v1",
             ))
         }
         _ => Ok(()),

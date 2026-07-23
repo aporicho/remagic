@@ -87,7 +87,7 @@ pub enum UninstallPolicy {
 
 pub const MANIFEST_SCHEMA_V1: u32 = 1;
 pub const MANIFEST_SCHEMA_V2: u32 = 2;
-pub const REMAGIC_APP_API_VERSION: u32 = 4;
+pub const REMAGIC_APP_API_VERSION: u32 = 5;
 pub const MAX_STARTUP_TIMEOUT_MS: u64 = 1_450_000;
 
 fn default_required_remagic_api() -> u32 {
@@ -218,6 +218,23 @@ pub struct DataSchema {
     pub migration_timeout_ms: u64,
 }
 
+fn default_sync_timeout_ms() -> u64 {
+    30_000
+}
+
+/// Adapter-owned, offline data exchange hooks. ReMagic invokes these only
+/// after the provider application has completed a graceful shutdown.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SyncProvider {
+    pub schema: u32,
+    pub exporter: PathBuf,
+    pub importer: PathBuf,
+    #[serde(default)]
+    pub data_kinds: Vec<String>,
+    #[serde(default = "default_sync_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
 fn default_schema() -> u32 {
     1
 }
@@ -277,6 +294,8 @@ pub struct AppManifest {
     pub background_service: Option<BackgroundService>,
     #[serde(default)]
     pub data_schema: Option<DataSchema>,
+    #[serde(default)]
+    pub sync_provider: Option<SyncProvider>,
     #[serde(default)]
     pub runtime: RuntimeRequirements,
     /// Legacy schema v1 systemd background unit.
@@ -389,6 +408,14 @@ pub enum ManifestError {
     InvalidDataSchemaVersion,
     #[error("data_schema requires manifest schema v2")]
     DataSchemaRequiresV2,
+    #[error("sync_provider requires manifest schema v2")]
+    SyncProviderRequiresV2,
+    #[error("unsupported sync provider schema {0}")]
+    InvalidSyncProviderSchema(u32),
+    #[error("sync provider timeout must be between 1000 and 120000 ms, got {0}")]
+    InvalidSyncProviderTimeout(u64),
+    #[error("invalid or duplicate sync provider data kind: {0}")]
+    InvalidSyncDataKind(String),
     #[error("backup/recovery timeout must be between 100 and 600000 ms, got {0}")]
     InvalidBackupTimeout(u64),
     #[error("migration timeout must be between 100 and 600000 ms, got {0}")]

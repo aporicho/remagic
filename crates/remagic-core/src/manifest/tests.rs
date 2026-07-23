@@ -25,6 +25,7 @@ fn legacy_manifest(environment: BTreeMap<String, String>) -> AppManifest {
         shutdown: ShutdownPolicy::default(),
         background_service: None,
         data_schema: None,
+        sync_provider: None,
         runtime: RuntimeRequirements::default(),
         background_unit: None,
         supports_open_path: false,

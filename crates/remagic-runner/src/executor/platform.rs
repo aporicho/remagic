@@ -18,8 +18,10 @@ pub(super) const DEFAULT_CAPABILITIES: &[&str] = &[
     "lifecycle:v2",
     "network:outbound-v1",
     "network:listen-v1",
+    "network:lan-peer-v1",
     "storage:books-write-v1",
     "storage:wallpapers-write-v1",
+    "sync:koreader-state-v1",
     "agent:pi-v1",
 ];
 pub(super) const APPROVED_LIBRARY_DIRS: &[&str] = &[

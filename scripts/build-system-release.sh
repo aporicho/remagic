@@ -209,7 +209,7 @@ install -m 0644 "$ROOT/scripts/system-release/common.sh" "$RELEASE_ROOT/common.s
 cat >"$RELEASE_ROOT/release.env" <<EOF
 REMAGIC_RELEASE_SCHEMA=1
 REMAGIC_VERSION=$VERSION
-REMAGIC_API=4
+REMAGIC_API=5
 REMAGIC_PI_RUNTIME_SCHEMA=$pi_runtime_schema
 REMAGIC_PI_VERSION=$pi_version
 REMAGIC_NODE_VERSION=$node_version

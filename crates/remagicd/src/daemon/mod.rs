@@ -8,6 +8,7 @@ mod request;
 mod server;
 mod sleep;
 mod supervision;
+mod sync;
 mod utils;
 
 use crate::{power_device, system::SystemController};

@@ -145,9 +145,23 @@ pub enum Request {
         title: String,
         body: String,
     },
+    Sync {
+        requester: AppId,
+        provider: AppId,
+        action: SyncAction,
+    },
     Package {
         operation: PackageOperation,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum SyncAction {
+    Prepare,
+    Export { output: PathBuf },
+    Import { input: PathBuf },
+    Finish,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -191,6 +205,10 @@ pub enum Response {
         apps: Vec<AppView>,
     },
     PackageOutput {
+        success: bool,
+        output: String,
+    },
+    SyncOutput {
         success: bool,
         output: String,
     },
