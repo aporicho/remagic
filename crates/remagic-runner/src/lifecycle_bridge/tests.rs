@@ -52,6 +52,8 @@ fn environment() -> LaunchEnvironment {
         ("REMAGIC_NETWORK_POLICY_ENFORCEMENT", "metadata_only"),
         ("REMAGIC_NETWORK_ISOLATED", "0"),
         ("REMAGIC_NETWORK_ALLOWED_HOSTS", ""),
+        ("REMAGIC_NETWORK_LISTEN_PORT", ""),
+        ("REMAGIC_LISTEN_ADDR", ""),
     ] {
         variables.insert(key.to_owned(), value.to_owned());
     }
@@ -135,6 +137,22 @@ fn magicpaper_uses_canonical_length_prefixed_protocol() {
     let value: Value = serde_json::from_slice(&packet[4..]).unwrap();
     assert_eq!(value["body"]["token"]["generation"], 7);
     assert_eq!(value["body"]["command"], "start");
+}
+
+#[test]
+fn only_koreader_uses_the_legacy_newline_transport() {
+    assert_eq!(
+        ChildTransport::for_app(&AppId::new("magicpaper").unwrap()),
+        ChildTransport::LengthPrefixed
+    );
+    assert_eq!(
+        ChildTransport::for_app(&AppId::new("upload").unwrap()),
+        ChildTransport::LengthPrefixed
+    );
+    assert_eq!(
+        ChildTransport::for_app(&AppId::new("koreader").unwrap()),
+        ChildTransport::Newline
+    );
 }
 
 #[test]

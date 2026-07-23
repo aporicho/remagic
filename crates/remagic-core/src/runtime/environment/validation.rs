@@ -79,6 +79,26 @@ fn validate_network_variables(
         "REMAGIC_NETWORK_ALLOWED_HOSTS",
         &allowed_hosts,
     )?;
+    let listen_port = environment
+        .network
+        .listen_port
+        .map(|port| port.to_string())
+        .unwrap_or_default();
+    validate_exact_variable(
+        &environment.variables,
+        "REMAGIC_NETWORK_LISTEN_PORT",
+        &listen_port,
+    )?;
+    let listen_address = environment
+        .network
+        .listen_port
+        .map(|port| format!("0.0.0.0:{port}"))
+        .unwrap_or_default();
+    validate_exact_variable(
+        &environment.variables,
+        "REMAGIC_LISTEN_ADDR",
+        &listen_address,
+    )?;
     let enforcement =
         required_variable(&environment.variables, "REMAGIC_NETWORK_POLICY_ENFORCEMENT")?;
     let isolated = required_variable(&environment.variables, "REMAGIC_NETWORK_ISOLATED")?;

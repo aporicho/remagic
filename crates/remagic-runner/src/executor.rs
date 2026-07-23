@@ -120,6 +120,7 @@ fn prepare_v2_execution(
         &environment.directories,
         &manifest.runtime.fonts.directories,
         &resolved_libraries,
+        &manifest.capabilities,
         platform,
     )?;
     if manifest

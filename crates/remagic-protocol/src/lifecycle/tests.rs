@@ -63,6 +63,8 @@ fn environment() -> LaunchEnvironment {
             ),
             ("REMAGIC_NETWORK_ISOLATED".into(), "0".into()),
             ("REMAGIC_NETWORK_ALLOWED_HOSTS".into(), "".into()),
+            ("REMAGIC_NETWORK_LISTEN_PORT".into(), "".into()),
+            ("REMAGIC_LISTEN_ADDR".into(), "".into()),
         ]),
         directories,
         resolved_libraries: Vec::new(),

@@ -328,17 +328,26 @@ impl AppManifest {
         }
 
         let declares_outbound = has_capability("network:outbound-v1");
+        let declares_inbound = has_capability("network:listen-v1");
         match self.runtime.network.mode {
-            NetworkMode::Deny if declares_outbound => {
+            NetworkMode::Deny if declares_outbound || declares_inbound => {
                 return Err(ManifestError::NetworkCapabilityMismatch {
                     mode: NetworkMode::Deny,
-                    expected: "no network:outbound-v1 capability",
+                    expected: "no network capability",
                 })
             }
-            NetworkMode::HttpsOnly | NetworkMode::Outbound if !declares_outbound => {
+            NetworkMode::HttpsOnly | NetworkMode::Outbound
+                if !declares_outbound || declares_inbound =>
+            {
                 return Err(ManifestError::NetworkCapabilityMismatch {
                     mode: self.runtime.network.mode,
-                    expected: "network:outbound-v1",
+                    expected: "only network:outbound-v1",
+                })
+            }
+            NetworkMode::Inbound if !declares_inbound || declares_outbound => {
+                return Err(ManifestError::NetworkCapabilityMismatch {
+                    mode: self.runtime.network.mode,
+                    expected: "only network:listen-v1",
                 })
             }
             _ => {}

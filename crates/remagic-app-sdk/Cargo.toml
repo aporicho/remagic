@@ -1,0 +1,15 @@
+[package]
+name = "remagic-app-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Native application SDK for the ReMagic managed runtime"
+
+[dependencies]
+libc.workspace = true
+remagic-core = { path = "../remagic-core" }
+remagic-device = { path = "../remagic-device" }
+remagic-protocol = { path = "../remagic-protocol" }
+serde_json.workspace = true
+thiserror.workspace = true

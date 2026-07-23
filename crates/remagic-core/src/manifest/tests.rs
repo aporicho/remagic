@@ -355,6 +355,18 @@ fn schema_v2_network_policy_matches_declared_capability() {
     app.capabilities
         .push(Capability::new("network:outbound-v1").unwrap());
     assert!(app.validate().is_ok());
+
+    app.capabilities
+        .retain(|capability| capability.as_str() != "network:outbound-v1");
+    app.runtime.network.mode = NetworkMode::Inbound;
+    app.runtime.network.listen_port = Some(8787);
+    assert!(matches!(
+        app.validate(),
+        Err(ManifestError::NetworkCapabilityMismatch { .. })
+    ));
+    app.capabilities
+        .push(Capability::new("network:listen-v1").unwrap());
+    assert!(app.validate().is_ok());
 }
 
 #[test]

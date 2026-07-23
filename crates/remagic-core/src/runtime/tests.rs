@@ -54,6 +54,8 @@ fn launch_environment() -> LaunchEnvironment {
         ),
         ("REMAGIC_NETWORK_ISOLATED".into(), "0".into()),
         ("REMAGIC_NETWORK_ALLOWED_HOSTS".into(), String::new()),
+        ("REMAGIC_NETWORK_LISTEN_PORT".into(), String::new()),
+        ("REMAGIC_LISTEN_ADDR".into(), String::new()),
     ]);
     LaunchEnvironment {
         app_id: AppId::new("test").unwrap(),
@@ -207,6 +209,7 @@ fn resolver_builds_complete_platform_environment_and_rejects_spoofing() {
         network: NetworkPolicy {
             mode: NetworkMode::HttpsOnly,
             allowed_hosts: BTreeSet::from(["api.example.com".into()]),
+            listen_port: None,
             require_enforcement: false,
         },
         background_execution: BackgroundExecution::Continue,
@@ -289,5 +292,43 @@ fn network_policy_never_claims_isolation_without_enforcement() {
             device_profile(),
         ),
         Err(RuntimeValidationError::RequiredNetworkEnforcementUnavailable)
+    );
+}
+
+#[test]
+fn inbound_policy_exposes_only_the_platform_bind_address() {
+    let requirements = RuntimeRequirements {
+        directories: Some(directories()),
+        network: NetworkPolicy {
+            mode: NetworkMode::Inbound,
+            allowed_hosts: BTreeSet::new(),
+            listen_port: Some(8787),
+            require_enforcement: false,
+        },
+        ..RuntimeRequirements::default()
+    };
+    let environment = LaunchEnvironment::resolve(
+        AppId::new("upload").unwrap(),
+        &requirements,
+        &BTreeMap::new(),
+        Vec::new(),
+        BTreeSet::from([Capability::new("network:listen-v1").unwrap()]),
+        "/usr/bin:/bin",
+        NetworkEnforcement::MetadataOnly,
+        device_profile(),
+    )
+    .unwrap();
+    assert_eq!(
+        environment.variables["REMAGIC_NETWORK_POLICY_MODE"],
+        "inbound"
+    );
+    assert_eq!(environment.variables["REMAGIC_NETWORK_LISTEN_PORT"], "8787");
+    assert_eq!(environment.variables["REMAGIC_LISTEN_ADDR"], "0.0.0.0:8787");
+
+    let mut invalid = requirements.clone();
+    invalid.network.listen_port = Some(80);
+    assert_eq!(
+        invalid.validate(true),
+        Err(RuntimeValidationError::MissingListenPort)
     );
 }

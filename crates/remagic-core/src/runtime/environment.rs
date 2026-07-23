@@ -185,6 +185,22 @@ fn insert_network_variables(
                 .collect::<Vec<_>>()
                 .join(","),
         ),
+        (
+            "REMAGIC_NETWORK_LISTEN_PORT",
+            requirements
+                .network
+                .listen_port
+                .map(|port| port.to_string())
+                .unwrap_or_default(),
+        ),
+        (
+            "REMAGIC_LISTEN_ADDR",
+            requirements
+                .network
+                .listen_port
+                .map(|port| format!("0.0.0.0:{port}"))
+                .unwrap_or_default(),
+        ),
     ] {
         variables.insert(key.into(), value);
     }

@@ -362,6 +362,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "remagic-app-sdk"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "remagic-core",
+ "remagic-device",
+ "remagic-protocol",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "remagic-core"
 version = "0.1.0"
 dependencies = [

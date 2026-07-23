@@ -1,7 +1,7 @@
 use super::platform::{deduplicate_paths, APPROVED_LIBRARY_DIRS};
 use super::preflight::validate_readable_directory;
 use super::{ExecutorError, LaunchDescriptor, PlatformRuntime};
-use remagic_core::{AppId, RuntimeDirectories};
+use remagic_core::{AppId, Capability, RuntimeDirectories};
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
@@ -218,6 +218,7 @@ pub(super) fn append_platform_variables(
     directories: &RuntimeDirectories,
     font_directories: &[PathBuf],
     resolved_libraries: &[PathBuf],
+    capabilities: &[Capability],
     platform: &PlatformRuntime,
 ) -> Result<(), ExecutorError> {
     insert_platform_variables(
@@ -232,6 +233,37 @@ pub(super) fn append_platform_variables(
         "LD_LIBRARY_PATH".into(),
         approved_library_path(resolved_libraries, platform)?,
     );
+    insert_shared_storage_variables(variables, capabilities, platform)?;
+    Ok(())
+}
+
+fn insert_shared_storage_variables(
+    variables: &mut BTreeMap<String, String>,
+    capabilities: &[Capability],
+    platform: &PlatformRuntime,
+) -> Result<(), ExecutorError> {
+    for (capability, variable, path) in [
+        (
+            "storage:books-write-v1",
+            "REMAGIC_BOOKS_DIR",
+            platform.home_root.join("books"),
+        ),
+        (
+            "storage:wallpapers-write-v1",
+            "REMAGIC_WALLPAPERS_DIR",
+            platform.home_root.join(".local/share/remagic/wallpapers"),
+        ),
+    ] {
+        if !capabilities
+            .iter()
+            .any(|candidate| candidate.as_str() == capability)
+        {
+            continue;
+        }
+        create_directory_without_symlinks(&path)?;
+        validate_owned_directory(&path)?;
+        variables.insert(variable.into(), path_text(&path)?);
+    }
     Ok(())
 }
 

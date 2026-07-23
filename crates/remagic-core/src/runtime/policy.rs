@@ -131,6 +131,9 @@ pub enum NetworkMode {
     Deny,
     HttpsOnly,
     Outbound,
+    /// Accept connections on a platform-assigned local address. This grants
+    /// no outbound-network contract.
+    Inbound,
 }
 
 impl NetworkMode {
@@ -139,6 +142,7 @@ impl NetworkMode {
             Self::Deny => "deny",
             Self::HttpsOnly => "https_only",
             Self::Outbound => "outbound",
+            Self::Inbound => "inbound",
         }
     }
 }
@@ -202,6 +206,12 @@ pub struct NetworkPolicy {
     /// optionally beginning with `*.` for a subdomain suffix.
     #[serde(default)]
     pub allowed_hosts: BTreeSet<String>,
+    /// Required for `inbound`; forbidden for every other mode. ReMagic owns
+    /// the bind host and exposes the resulting address in the launch
+    /// environment, while the application selects only its non-privileged
+    /// port.
+    #[serde(default)]
+    pub listen_port: Option<u16>,
     /// Refuse to launch unless the platform can prove that it installed an
     /// operating-system enforcement boundary for this policy.
     #[serde(default)]
@@ -316,8 +326,16 @@ fn validate_certificate_policy(
 }
 
 fn validate_network_policy(network: &NetworkPolicy) -> Result<(), RuntimeValidationError> {
-    if network.mode == NetworkMode::Deny && !network.allowed_hosts.is_empty() {
+    if matches!(network.mode, NetworkMode::Deny | NetworkMode::Inbound)
+        && !network.allowed_hosts.is_empty()
+    {
         return Err(RuntimeValidationError::HostsWithDeniedNetwork);
+    }
+    match (network.mode, network.listen_port) {
+        (NetworkMode::Inbound, Some(port)) if port >= 1024 => {}
+        (NetworkMode::Inbound, _) => return Err(RuntimeValidationError::MissingListenPort),
+        (_, Some(port)) => return Err(RuntimeValidationError::UnexpectedListenPort(port)),
+        (_, None) => {}
     }
     for host in &network.allowed_hosts {
         validate_host(host)?;

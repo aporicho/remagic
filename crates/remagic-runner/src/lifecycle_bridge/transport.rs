@@ -14,11 +14,12 @@ pub(super) enum ChildTransport {
 
 impl ChildTransport {
     pub(super) fn for_app(app_id: &AppId) -> Self {
-        if app_id.as_str() == "magicpaper" {
-            Self::LengthPrefixed
-        } else {
+        if app_id.as_str() == "koreader" {
             // KOReader's Lua adapter consumes one JSON envelope per line.
             Self::Newline
+        } else {
+            // Native ReMagic applications use the canonical framed protocol.
+            Self::LengthPrefixed
         }
     }
 }

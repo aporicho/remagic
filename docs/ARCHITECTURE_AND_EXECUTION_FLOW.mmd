@@ -93,6 +93,32 @@ flowchart TB
     ko_fonts@{ shape: rect, label: "适配层字体<br/>上图东观体 · 方正屏显雅宋等" }
     ko_settings@{ shape: rect, label: "KOReader 设置 · 语言 · 字体" }
   end
+  subgraph upload_graph [图 4 · 文件上传应用]
+    direction TB
+    subgraph up_lifecycle [前台安全边界]
+      direction LR
+      up_foreground@{ shape: rect, label: "进入前台<br/>轮换二维码、配对码与会话令牌" }
+      up_listen@{ shape: rect, label: "仅前台监听<br/>USB / Wi-Fi · 端口 8787" }
+      up_background@{ shape: rect, label: "切后台<br/>关闭端口 · 取消传输 · 清理临时文件" }
+    end
+    subgraph up_browser [浏览器上传旅程]
+      direction LR
+      up_pair@{ shape: rect, label: "扫码或六位码配对<br/>同源 · 尝试次数限制" }
+      up_queue@{ shape: rect, label: "选择 · 拖放 · 粘贴<br/>批量队列 · 单文件串行" }
+      up_convert@{ shape: rect, label: "壁纸在浏览器转换 PNG<br/>书籍保持原始字节" }
+    end
+    subgraph up_publish [设备端验证与发布]
+      direction LR
+      up_stream@{ shape: rect, label: "有界流式接收<br/>Content-Length · 超时 · 取消" }
+      up_validate@{ shape: rect, label: "格式与内容校验<br/>书籍签名 · PNG 完整解码" }
+      up_atomic@{ shape: rect, label: "同目录原子发布<br/>不覆盖 · 中文重名后缀" }
+      up_books@{ shape: rect, label: "统一书库<br/>/home/root/books" }
+      up_wallpapers@{ shape: rect, label: "ReMagic 壁纸库<br/>只加入列表，不自动应用" }
+    end
+    up_environment@{ shape: rect, label: "ReMagic API 4 应用边界<br/>QTFB · 触摸 · 生命周期 · 入站网络 · 共享目录" }
+    up_screen@{ shape: rect, label: "设备界面<br/>地址 · 二维码 · 配对码 · 进度 · 最近记录" }
+    up_kind@{ shape: diam, label: "上传类型？" }
+  end
   rm_user --> rm_trigger
   rm_original <-->|三按切换| rm_trigger
   rm_trigger <-->|进入 / 返回| rm_home
@@ -159,13 +185,29 @@ flowchart TB
   ko_pause -->|关闭| ko_close
   ko_upstream --> ko_launch
   ko_fonts --> ko_settings
-    %% 三张彼此独立的逻辑图，共存于一个标准 Mermaid 文件。
+  up_environment --> up_foreground
+  up_foreground --> up_listen
+  up_foreground --> up_screen
+  up_screen -->|点击刷新凭据| up_foreground
+  up_listen --> up_pair
+  up_pair --> up_queue
+  up_queue --> up_convert
+  up_convert --> up_stream
+  up_stream --> up_validate
+  up_validate --> up_kind
+  up_kind -->|书籍| up_atomic
+  up_kind -->|壁纸| up_atomic
+  up_atomic --> up_books
+  up_atomic --> up_wallpapers
+  up_foreground -->|切换应用 / 关闭| up_background
+  up_background -.->|再次打开| up_foreground
+    %% 四张彼此独立的逻辑图，共存于一个标准 Mermaid 文件。
     %% 顶层 subgraph 之间没有任何连线。
     classDef system fill:#111,color:#fff,stroke:#111,stroke-width:2px;
     classDef component fill:#fff,color:#111,stroke:#111,stroke-width:2px;
     classDef boundary fill:#eee,color:#111,stroke:#666,stroke-dasharray:5 5;
     classDef decision fill:#fff,color:#111,stroke:#111,stroke-width:2px;
-class rm_daemon,rm_display,rm_runner,rm_supervisor,rm_agentd,rm_store,mp_loop,ko_adapter system;
-class rm_home,rm_stopped,rm_foreground,rm_background,mp_capture,mp_preview,mp_local,mp_buffer,mp_layout,mp_appear,mp_visible,mp_fade,mp_ready,mp_commands,mp_data,ko_upstream,ko_books,ko_progress,ko_settings,ko_launch,ko_reading,ko_pause,ko_resume,ko_close component;
-class rm_original,rm_detect,rm_verify,mp_environment,mp_ocr,mp_pi,ko_environment boundary;
-class rm_health,mp_route decision;
+class rm_daemon,rm_display,rm_runner,rm_supervisor,rm_agentd,rm_store,mp_loop,ko_adapter,up_listen system;
+class rm_home,rm_stopped,rm_foreground,rm_background,mp_capture,mp_preview,mp_local,mp_buffer,mp_layout,mp_appear,mp_visible,mp_fade,mp_ready,mp_commands,mp_data,ko_upstream,ko_books,ko_progress,ko_settings,ko_launch,ko_reading,ko_pause,ko_resume,ko_close,up_foreground,up_background,up_pair,up_queue,up_convert,up_stream,up_validate,up_atomic,up_books,up_wallpapers,up_screen component;
+class rm_original,rm_detect,rm_verify,mp_environment,mp_ocr,mp_pi,ko_environment,up_environment boundary;
+class rm_health,mp_route,up_kind decision;

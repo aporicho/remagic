@@ -95,6 +95,9 @@ impl DeviceProfile {
                 "input:touch-v1",
                 "lifecycle:v2",
                 "network:outbound-v1",
+                "network:listen-v1",
+                "storage:books-write-v1",
+                "storage:wallpapers-write-v1",
                 "agent:pi-v1",
             ]
             .into_iter()

@@ -91,13 +91,22 @@ fn validate_network_capability(manifest: &AppManifest) -> Result<(), ExecutorErr
         .capabilities
         .iter()
         .any(|candidate| candidate.as_str() == "network:outbound-v1");
+    let has_inbound = manifest
+        .capabilities
+        .iter()
+        .any(|candidate| candidate.as_str() == "network:listen-v1");
     match manifest.runtime.network.mode {
-        NetworkMode::Deny if has_outbound => Err(ExecutorError::NetworkCapabilityMismatch(
-            "deny policy may not request network:outbound-v1",
-        )),
-        NetworkMode::HttpsOnly | NetworkMode::Outbound if !has_outbound => {
+        NetworkMode::Deny if has_outbound || has_inbound => Err(
+            ExecutorError::NetworkCapabilityMismatch("deny policy may not request network"),
+        ),
+        NetworkMode::HttpsOnly | NetworkMode::Outbound if !has_outbound || has_inbound => {
             Err(ExecutorError::NetworkCapabilityMismatch(
-                "outbound policy requires network:outbound-v1",
+                "outbound policy requires only network:outbound-v1",
+            ))
+        }
+        NetworkMode::Inbound if !has_inbound || has_outbound => {
+            Err(ExecutorError::NetworkCapabilityMismatch(
+                "inbound policy requires only network:listen-v1",
             ))
         }
         _ => Ok(()),

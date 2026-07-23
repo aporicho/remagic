@@ -420,6 +420,45 @@ fn pi_agent_capability_injects_private_token_and_fails_without_socket() {
 }
 
 #[test]
+fn upload_capabilities_inject_only_safe_shared_storage_roots() {
+    let root = test_root("upload-storage");
+    let library_dir = root.join("lib");
+    fs::create_dir_all(&library_dir).unwrap();
+    fs::write(library_dir.join("librequired.so"), b"test").unwrap();
+    let mut manifest = v2_manifest(&root, "");
+    manifest
+        .capabilities
+        .push(Capability::new("storage:books-write-v1").unwrap());
+    manifest
+        .capabilities
+        .push(Capability::new("storage:wallpapers-write-v1").unwrap());
+    let descriptor = LaunchDescriptor {
+        generation: Some(1),
+        foreground_epoch: Some(2),
+        lease_id: Some(3),
+        qtfb_key: Some(qtfb_key_for_app(&manifest.id)),
+        ..LaunchDescriptor::default()
+    };
+    let platform = platform(&library_dir);
+    let plan = prepare_execution(&manifest, &descriptor, &platform).unwrap();
+    assert_eq!(
+        plan.variables["REMAGIC_BOOKS_DIR"],
+        platform.home_root.join("books").display().to_string()
+    );
+    assert_eq!(
+        plan.variables["REMAGIC_WALLPAPERS_DIR"],
+        platform
+            .home_root
+            .join(".local/share/remagic/wallpapers")
+            .display()
+            .to_string()
+    );
+    assert!(Path::new(&plan.variables["REMAGIC_BOOKS_DIR"]).is_dir());
+    assert!(Path::new(&plan.variables["REMAGIC_WALLPAPERS_DIR"]).is_dir());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn schema_v2_runtime_directories_reject_symlinks_and_unsafe_existing_modes() {
     let root = test_root("directories");
     let library_dir = root.join("lib");
