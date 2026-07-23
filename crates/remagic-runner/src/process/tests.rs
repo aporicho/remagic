@@ -9,19 +9,16 @@ use std::time::Duration;
 async fn lifecycle_descriptor_is_inherited_and_bidirectional() {
     let (parent, child) = lifecycle_socket_pair().unwrap();
     let child_fd = child.as_raw_fd();
-    let mut command = Command::new("/bin/sh");
+    let mut command = Command::new(std::env::current_exe().unwrap());
     command
-        .arg("-c")
-        .arg(
-            "fd=$REMAGIC_LIFECYCLE_FD; \
-             eval \"exec 8>&$fd\"; eval \"exec 9<&$fd\"; \
-             command=''; \
-             while [ -z \"$command\" ]; do \
-                 command=$(dd bs=64 count=1 <&9 2>/dev/null) || command=''; \
-             done; \
-             printf 'child:%s' \"$command\" >&8",
-        )
+        .args([
+            "--exact",
+            "process::tests::lifecycle_child_helper",
+            "--ignored",
+            "--nocapture",
+        ])
         .env("REMAGIC_LIFECYCLE_FD", child_fd.to_string())
+        .env("REMAGIC_LIFECYCLE_TEST_HELPER", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -42,23 +39,82 @@ async fn lifecycle_descriptor_is_inherited_and_bidirectional() {
     assert_eq!(sent, b"runner-command\n".len() as isize);
 
     let mut buffer = [0_u8; 64];
-    let received = loop {
-        let received = unsafe {
-            libc::recv(
-                parent.as_raw_fd(),
-                buffer.as_mut_ptr().cast(),
-                buffer.len(),
-                0,
-            )
-        };
-        if received >= 0 || io::Error::last_os_error().kind() != io::ErrorKind::WouldBlock {
-            break received;
+    let received = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let received = unsafe {
+                libc::recv(
+                    parent.as_raw_fd(),
+                    buffer.as_mut_ptr().cast(),
+                    buffer.len(),
+                    0,
+                )
+            };
+            if received >= 0 || io::Error::last_os_error().kind() != io::ErrorKind::WouldBlock {
+                break received;
+            }
+            tokio::task::yield_now().await;
         }
-        tokio::task::yield_now().await;
-    };
+    })
+    .await
+    .expect("lifecycle helper timed out");
     assert!(received > 0, "{}", io::Error::last_os_error());
     assert_eq!(&buffer[..received as usize], b"child:runner-command");
     assert!(process.wait().await.unwrap().success());
+}
+
+#[test]
+#[ignore = "exec-only lifecycle descriptor helper"]
+fn lifecycle_child_helper() {
+    assert_eq!(
+        std::env::var("REMAGIC_LIFECYCLE_TEST_HELPER").as_deref(),
+        Ok("1")
+    );
+    let descriptor = std::env::var("REMAGIC_LIFECYCLE_FD")
+        .unwrap()
+        .parse::<i32>()
+        .unwrap();
+    let command = receive_test_packet(descriptor);
+    assert_eq!(command, b"runner-command\n");
+    send_test_packet(descriptor, b"child:runner-command");
+}
+
+fn receive_test_packet(descriptor: i32) -> Vec<u8> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut buffer = [0_u8; 64];
+    loop {
+        let received = unsafe {
+            libc::recv(
+                descriptor,
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                libc::MSG_DONTWAIT,
+            )
+        };
+        if received > 0 {
+            return buffer[..received as usize].to_vec();
+        }
+        let error = io::Error::last_os_error();
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock, "{error}");
+        assert!(std::time::Instant::now() < deadline, "receive timed out");
+        std::thread::yield_now();
+    }
+}
+
+fn send_test_packet(descriptor: i32, packet: &[u8]) {
+    let sent = unsafe {
+        libc::send(
+            descriptor,
+            packet.as_ptr().cast(),
+            packet.len(),
+            libc::MSG_NOSIGNAL,
+        )
+    };
+    assert_eq!(
+        sent,
+        packet.len() as isize,
+        "{}",
+        io::Error::last_os_error()
+    );
 }
 
 #[tokio::test]
