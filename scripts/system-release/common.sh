@@ -84,3 +84,27 @@ require_safe_release_value() {
     esac
     printf '%s\n' "$value"
 }
+
+# systemd considers remagicd active before its asynchronous control socket is
+# ready to accept requests.  A system update must wait for the public control
+# plane instead of treating that short startup window as an install failure.
+wait_for_remagic_ready() {
+    ctl=$1
+    max_attempts=${2:-20}
+    delay=${3:-1}
+    attempt=0
+
+    while [ "$attempt" -lt "$max_attempts" ]; do
+        if systemctl is-active --quiet remagicd.service && \
+            "$ctl" status >/dev/null 2>&1; then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        if [ "$attempt" -lt "$max_attempts" ]; then
+            sleep "$delay"
+        fi
+    done
+
+    echo "ReMagic: manager control socket did not become ready after $max_attempts attempts" >&2
+    return 1
+}

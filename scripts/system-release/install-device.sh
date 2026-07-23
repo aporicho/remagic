@@ -284,8 +284,7 @@ rm -f /run/systemd/system/magicpaper-agent.service \
 systemctl daemon-reload
 
 "$APP_ROOT/libexec/remagic-register" --persistent
-systemctl is-active --quiet remagicd.service
-"$APP_ROOT/bin/remagicctl" status >/dev/null
+wait_for_remagic_ready "$APP_ROOT/bin/remagicctl"
 
 if [ "$FIRST_INSTALL" = true ]; then
     rm -f /home/root/.local/state/remagic/welcome-v1

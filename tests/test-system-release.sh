@@ -46,6 +46,34 @@ if (
     exit 1
 fi
 
+# remagicd becomes active before its control socket is ready. Verify that the
+# release helper tolerates that window, succeeds on the first healthy probe,
+# and still has a finite failure bound.
+. "$ROOT/scripts/system-release/common.sh"
+READY_ATTEMPTS=$TMP/ready-attempts
+READY_CTL=$TMP/remagicctl
+printf '0\n' >"$READY_ATTEMPTS"
+cat >"$READY_CTL" <<EOF
+#!/bin/sh
+attempt=\$(cat "$READY_ATTEMPTS")
+attempt=\$((attempt + 1))
+printf '%s\n' "\$attempt" >"$READY_ATTEMPTS"
+[ "\$attempt" -ge 3 ]
+EOF
+chmod 0755 "$READY_CTL"
+systemctl() { return 0; }
+wait_for_remagic_ready "$READY_CTL" 5 0
+[ "$(cat "$READY_ATTEMPTS")" = 3 ] || {
+    echo "manager readiness probe did not stop after success" >&2
+    exit 1
+}
+printf '#!/bin/sh\nexit 1\n' >"$READY_CTL"
+chmod 0755 "$READY_CTL"
+if wait_for_remagic_ready "$READY_CTL" 2 0 >/dev/null 2>&1; then
+    echo "manager readiness probe accepted an unavailable control socket" >&2
+    exit 1
+fi
+
 make_device "$TMP/mismatch" 'reMarkable Ferrari' 3.27.3.0
 printf 'reMarkable Chiappa\000' >"$TMP/mismatch/proc/device-tree/model"
 if (
@@ -148,6 +176,11 @@ grep -Fq 'REMAGIC_STORE_CATALOG_DIR=$STORE_PAYLOAD/share/catalog' \
 grep -Fq '"$STORE_PAYLOAD/bin/remagic-store" catalog' \
     "$ROOT/scripts/system-release/install-device.sh" || {
     echo "system installer does not verify the seeded Store catalog" >&2
+    exit 1
+}
+grep -Fq 'wait_for_remagic_ready "$APP_ROOT/bin/remagicctl"' \
+    "$ROOT/scripts/system-release/install-device.sh" || {
+    echo "system installer does not wait for the manager control plane" >&2
     exit 1
 }
 
