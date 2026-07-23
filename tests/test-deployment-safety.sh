@@ -455,6 +455,16 @@ grep -q '^Environment=REMAGIC_PLATFORM_CAPABILITIES=.*agent:pi-v1' \
     echo "application service omitted the Pi agent capability" >&2
     exit 1
 }
+grep -q '^Environment=REMAGIC_PLATFORM_CAPABILITIES=.*network:lan-peer-v1' \
+    "$ROOT/systemd/remagic-app@.service" || {
+    echo "application service omitted the LAN peer capability" >&2
+    exit 1
+}
+grep -q '^Environment=REMAGIC_PLATFORM_CAPABILITIES=.*sync:koreader-state-v1' \
+    "$ROOT/systemd/remagic-app@.service" || {
+    echo "application service omitted the KOReader sync capability" >&2
+    exit 1
+}
 grep -q '^Environment=REMAGIC_AGENT_SOCKET=/run/remagic/agent.sock' \
     "$ROOT/systemd/remagic-app@.service" || {
     echo "application service omitted the Pi agent socket" >&2

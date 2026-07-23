@@ -53,6 +53,28 @@ impl Display {
     ) -> io::Result<Vec<Button>> {
         self.fill(WHITE);
         let mut buttons = Vec::new();
+        let mut y = self.render_store_header(font, &mut buttons, error.is_some());
+        let entries = store_entries(apps, catalog);
+        y = self.render_system_update_card(
+            font,
+            &mut buttons,
+            y,
+            system_update,
+            busy == Some("__system__"),
+        );
+        for entry in &entries {
+            y = self.render_store_app(font, &mut buttons, y, entry, busy);
+        }
+        self.client.update_all()?;
+        Ok(buttons)
+    }
+
+    fn render_store_header(
+        &mut self,
+        font: &FontArc,
+        buttons: &mut Vec<Button>,
+        has_error: bool,
+    ) -> i32 {
         self.text(font, "更新中心", 54.0, 48, 82, BLACK);
         self.text(
             font,
@@ -74,33 +96,21 @@ impl Display {
         buttons.push(back);
 
         let mut y = 188;
-        if error.is_some() {
+        if has_error {
             self.text(font, "上次操作失败，请重试", 24.0, 50, 166, DARK_GRAY);
             y += 28;
         }
-        let fallback = STORE_APPS
-            .iter()
-            .map(|(id, name, summary)| CatalogApp {
-                id: (*id).into(),
-                name: (*name).into(),
-                summary: (*summary).into(),
-                version: "未知".into(),
-                status: if apps
-                    .iter()
-                    .any(|app| app.id.as_str() == *id && app.installed)
-                {
-                    CatalogStatus::Installed
-                } else {
-                    CatalogStatus::NotInstalled
-                },
-            })
-            .collect::<Vec<_>>();
-        let entries = if catalog.is_empty() {
-            &fallback
-        } else {
-            catalog
-        };
-        let system_busy = busy == Some("__system__");
+        y
+    }
+
+    fn render_system_update_card(
+        &mut self,
+        font: &FontArc,
+        buttons: &mut Vec<Button>,
+        y: i32,
+        system_update: &SystemUpdateInfo,
+        system_busy: bool,
+    ) -> i32 {
         self.card(38, y, self.width - 76, 142);
         self.text(font, "ReMagic 系统", 38.0, 72, y + 52, BLACK);
         let system_status = if system_busy {
@@ -129,79 +139,118 @@ impl Display {
                 Action::SystemUpdate
             },
         });
-        y += 166;
+        y + 166
+    }
 
-        for entry in entries {
-            let is_busy = busy == Some(entry.id.as_str());
-            let height = 176;
-            self.card(38, y, self.width - 76, height);
-            self.text(font, &entry.name, 41.0, 72, y + 58, BLACK);
-            self.text(
-                font,
-                &format!("{} · v{}", entry.summary, entry.version),
-                22.0,
-                72,
-                y + 99,
-                DARK_GRAY,
-            );
-            let (status, action) = if is_busy {
-                ("正在下载、验证并安装…", Action::Unavailable)
+    fn render_store_app(
+        &mut self,
+        font: &FontArc,
+        buttons: &mut Vec<Button>,
+        y: i32,
+        entry: &CatalogApp,
+        busy: Option<&str>,
+    ) -> i32 {
+        let is_busy = busy == Some(entry.id.as_str());
+        let installed = is_installed(entry.status) && !is_busy;
+        let height = 176;
+        self.card(38, y, self.width - 76, height);
+        self.text(font, &entry.name, 41.0, 72, y + 58, BLACK);
+        self.text(
+            font,
+            &format!("{} · v{}", entry.summary, entry.version),
+            22.0,
+            72,
+            y + 99,
+            DARK_GRAY,
+        );
+        let (status, action) = store_action(entry, is_busy);
+        self.text(font, status, 24.0, 72, y + 142, BLACK);
+        buttons.push(Button {
+            x: 38,
+            y,
+            width: if installed {
+                self.width - 244
             } else {
-                match entry.status {
-                    CatalogStatus::UpdateAvailable => (
-                        "有新版本 · 轻点更新",
-                        Action::StoreUpgrade(entry.id.clone()),
-                    ),
-                    CatalogStatus::Installed | CatalogStatus::NeedsConfiguration => (
-                        "已安装 · 轻点打开",
-                        Action::Launch(AppId::new(entry.id.clone()).expect("catalog app id")),
-                    ),
-                    CatalogStatus::Incompatible => ("当前设备或系统不兼容", Action::Unavailable),
-                    CatalogStatus::NotInstalled => {
-                        ("未安装 · 轻点安装", Action::StoreInstall(entry.id.clone()))
-                    }
-                }
-            };
-            self.text(font, status, 24.0, 72, y + 142, BLACK);
-            buttons.push(Button {
-                x: 38,
-                y,
-                width: if matches!(
-                    entry.status,
-                    CatalogStatus::Installed
-                        | CatalogStatus::NeedsConfiguration
-                        | CatalogStatus::UpdateAvailable
-                ) && !is_busy
-                {
-                    self.width - 244
-                } else {
-                    self.width - 76
-                },
-                height,
-                action,
-            });
-            if matches!(
-                entry.status,
-                CatalogStatus::Installed
-                    | CatalogStatus::NeedsConfiguration
-                    | CatalogStatus::UpdateAvailable
-            ) && !is_busy
-            {
-                let remove = Button {
-                    x: self.width - 206,
-                    y: y + 111,
-                    width: 132,
-                    height: 48,
-                    action: Action::StoreUninstall(entry.id.clone()),
-                };
-                self.round_rect(remove.x, remove.y, remove.width, remove.height, GRAY);
-                self.text(font, "卸载", 22.0, remove.x + 40, remove.y + 33, BLACK);
-                buttons.push(remove);
-            }
-            y += height + 26;
+                self.width - 76
+            },
+            height,
+            action,
+        });
+        if installed {
+            self.render_uninstall_button(font, buttons, y, &entry.id);
         }
-        self.client.update_all()?;
-        Ok(buttons)
+        y + height + 26
+    }
+
+    fn render_uninstall_button(
+        &mut self,
+        font: &FontArc,
+        buttons: &mut Vec<Button>,
+        y: i32,
+        app_id: &str,
+    ) {
+        let remove = Button {
+            x: self.width - 206,
+            y: y + 111,
+            width: 132,
+            height: 48,
+            action: Action::StoreUninstall(app_id.to_owned()),
+        };
+        self.round_rect(remove.x, remove.y, remove.width, remove.height, GRAY);
+        self.text(font, "卸载", 22.0, remove.x + 40, remove.y + 33, BLACK);
+        buttons.push(remove);
+    }
+}
+
+fn store_entries(apps: &[AppView], catalog: &[CatalogApp]) -> Vec<CatalogApp> {
+    if !catalog.is_empty() {
+        return catalog.to_vec();
+    }
+    STORE_APPS
+        .iter()
+        .map(|(id, name, summary)| CatalogApp {
+            id: (*id).into(),
+            name: (*name).into(),
+            summary: (*summary).into(),
+            version: "未知".into(),
+            status: if apps
+                .iter()
+                .any(|app| app.id.as_str() == *id && app.installed)
+            {
+                CatalogStatus::Installed
+            } else {
+                CatalogStatus::NotInstalled
+            },
+        })
+        .collect()
+}
+
+fn is_installed(status: CatalogStatus) -> bool {
+    matches!(
+        status,
+        CatalogStatus::Installed
+            | CatalogStatus::NeedsConfiguration
+            | CatalogStatus::UpdateAvailable
+    )
+}
+
+fn store_action(entry: &CatalogApp, busy: bool) -> (&'static str, Action) {
+    if busy {
+        return ("正在下载、验证并安装…", Action::Unavailable);
+    }
+    match entry.status {
+        CatalogStatus::UpdateAvailable => (
+            "有新版本 · 轻点更新",
+            Action::StoreUpgrade(entry.id.clone()),
+        ),
+        CatalogStatus::Installed | CatalogStatus::NeedsConfiguration => (
+            "已安装 · 轻点打开",
+            Action::Launch(AppId::new(entry.id.clone()).expect("catalog app id")),
+        ),
+        CatalogStatus::Incompatible => ("当前设备或系统不兼容", Action::Unavailable),
+        CatalogStatus::NotInstalled => {
+            ("未安装 · 轻点安装", Action::StoreInstall(entry.id.clone()))
+        }
     }
 }
 
