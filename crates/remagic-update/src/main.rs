@@ -117,21 +117,32 @@ fn download(url: &str, output: &PathBuf) -> Result<(), String> {
     if !url.starts_with("https://github.com/aporicho/remagic/releases/") {
         return Err("update URL is outside the trusted ReMagic GitHub release path".into());
     }
-    let status = Command::new("curl")
-        .args([
+    let curl = PathBuf::from("/home/root/apps/remagic/bin/curl");
+    let mut command = if curl.is_file() {
+        let mut command = Command::new(curl);
+        command.args([
             "--fail",
             "--location",
             "--silent",
             "--show-error",
             "--retry",
             "3",
+            "--connect-timeout",
+            "15",
+            "--max-time",
+            "60",
             "--proto",
             "=https",
             "--tlsv1.2",
-            "--max-time",
-            "60",
             "--output",
-        ])
+        ]);
+        command
+    } else {
+        let mut command = Command::new("/usr/bin/wget");
+        command.args(["-q", "-T", "60", "-t", "3", "-O"]);
+        command
+    };
+    let status = command
         .arg(output)
         .arg(url)
         .status()

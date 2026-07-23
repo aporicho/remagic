@@ -126,6 +126,7 @@ for binary in remagicd remagic-home remagic-runner remagicctl \
     remagic-vellum-worker remagic-package-inspect remagic-agentd remagic-update; do
     install -m 0755 "$ROOT/target/$TARGET/release/$binary" "$PAYLOAD/bin/$binary"
 done
+install -m 0755 "$sysroot/usr/bin/curl" "$PAYLOAD/bin/curl"
 install -m 0755 \
     "$ROOT/native/remagic-display-host/target/$TARGET/release/remagic-display-host" \
     "$PAYLOAD/bin/remagic-display-host"

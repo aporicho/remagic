@@ -29,7 +29,7 @@ store_package=$(require_safe_release_value STORE_PACKAGE "$RELEASE_FILE")
 pi_runtime_schema=$(require_safe_release_value REMAGIC_PI_RUNTIME_SCHEMA "$RELEASE_FILE")
 pi_version=$(require_safe_release_value REMAGIC_PI_VERSION "$RELEASE_FILE")
 node_version=$(require_safe_release_value REMAGIC_NODE_VERSION "$RELEASE_FILE")
-[ "$schema" = 1 ] && [ "$api" = 3 ] || {
+[ "$schema" = 1 ] && [ "$api" = 5 ] || {
     echo "ReMagic release schema/API is unsupported" >&2
     exit 1
 }
@@ -244,7 +244,8 @@ if [ -d "$APP_ROOT" ]; then
     mv "$APP_ROOT" "$BACKUP"
 fi
 mv "$STAGE" "$APP_ROOT"
-install -m 0644 "$RELEASE_FILE" "$APP_ROOT/share/release.env"
+cp "$RELEASE_FILE" "$APP_ROOT/share/release.env"
+chmod 0644 "$APP_ROOT/share/release.env"
 
 # Remove only manifests from the retired monolithic layout. Store-installed
 # applications use their own `/home/root/apps/<id>/current` paths and survive.
