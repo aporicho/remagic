@@ -226,7 +226,7 @@ rm -rf "$STAGE" "$BACKUP"
 mkdir -p "$STAGE"
 cp -a "$PAYLOAD/." "$STAGE/"
 chown -R 0:0 "$STAGE"
-(cd "$STAGE" && sha256sum -c share/system-files.sha256)
+(cd "$STAGE" && sha256sum -c share/system-files.sha256 >/dev/null)
 
 # Stop only ReMagic ownership. Stock xochitl and Paperweight are restored
 # before files move, so a failed installer never leaves a blank panel.
