@@ -26,7 +26,10 @@ api=$(require_safe_release_value REMAGIC_API "$RELEASE_FILE")
 release_os=$(require_safe_release_value SUPPORTED_OS_SERIES "$RELEASE_FILE")
 devices=$(require_safe_release_value SUPPORTED_DEVICES "$RELEASE_FILE")
 store_package=$(require_safe_release_value STORE_PACKAGE "$RELEASE_FILE")
-[ "$schema" = 1 ] && [ "$api" = 2 ] || {
+pi_runtime_schema=$(require_safe_release_value REMAGIC_PI_RUNTIME_SCHEMA "$RELEASE_FILE")
+pi_version=$(require_safe_release_value REMAGIC_PI_VERSION "$RELEASE_FILE")
+node_version=$(require_safe_release_value REMAGIC_NODE_VERSION "$RELEASE_FILE")
+[ "$schema" = 1 ] && [ "$api" = 3 ] || {
     echo "ReMagic release schema/API is unsupported" >&2
     exit 1
 }
@@ -39,15 +42,36 @@ esac
 
 PAYLOAD=$SOURCE_DIR/payload
 STORE_BUNDLE=$SOURCE_DIR/$store_package
+PI_RUNTIME=$PAYLOAD/runtime/pi
 [ -x "$PAYLOAD/bin/remagicd" ] && \
+    [ -x "$PAYLOAD/bin/remagic-agentd" ] && \
+    [ -x "$PI_RUNTIME/bin/node" ] && [ ! -L "$PI_RUNTIME/bin/node" ] && \
+    [ -x "$PI_RUNTIME/bin/pi" ] && [ ! -L "$PI_RUNTIME/bin/pi" ] && \
+    [ -f "$PI_RUNTIME/extensions/remagic-tools.js" ] && \
+    [ ! -L "$PI_RUNTIME/extensions/remagic-tools.js" ] && \
+    [ -f "$PI_RUNTIME/runtime.env" ] && [ ! -L "$PI_RUNTIME/runtime.env" ] && \
     [ -x "$PAYLOAD/bin/remagic-package-inspect" ] && \
     [ -x "$PAYLOAD/libexec/remagic-register" ] && \
+    [ -x "$PAYLOAD/libexec/remagic-configure-provider" ] && \
     [ -f "$PAYLOAD/share/system-files.sha256" ] && \
     [ -f "$STORE_BUNDLE" ] || {
     echo "ReMagic release payload is incomplete" >&2
     exit 1
 }
 (cd "$PAYLOAD" && sha256sum -c share/system-files.sha256)
+payload_pi_schema=$(require_safe_release_value REMAGIC_PI_RUNTIME_SCHEMA \
+    "$PI_RUNTIME/runtime.env")
+payload_pi_version=$(require_safe_release_value REMAGIC_PI_VERSION \
+    "$PI_RUNTIME/runtime.env")
+payload_node_version=$(require_safe_release_value REMAGIC_NODE_VERSION \
+    "$PI_RUNTIME/runtime.env")
+[ "$pi_runtime_schema" = 1 ] && \
+    [ "$payload_pi_schema" = "$pi_runtime_schema" ] && \
+    [ "$payload_pi_version" = "$pi_version" ] && \
+    [ "$payload_node_version" = "$node_version" ] || {
+    echo "ReMagic Pi runtime version does not match release metadata" >&2
+    exit 1
+}
 
 APP_ROOT=/home/root/apps/remagic
 APPS_ROOT=/home/root/apps
@@ -103,8 +127,10 @@ restore_snapshot() {
         /home/root/.local/share/remagic/apps.d/*.toml|\
         /home/root/.local/state/remagic/packages/remagic-store.json|\
         /usr/lib/systemd/system/remagic*.service|\
+        /usr/lib/systemd/system/remagic*.socket|\
         /usr/lib/systemd/system/remagic-app@koreader.service.d/10-koreader-runtime.conf|\
-        /usr/lib/systemd/system/multi-user.target.wants/remagicd.service) ;;
+        /usr/lib/systemd/system/multi-user.target.wants/remagicd.service|\
+        /usr/lib/systemd/system/sockets.target.wants/remagic-agentd.socket) ;;
         *) echo "ReMagic: unsafe rollback path $path" >&2; return 1 ;;
     esac
     rm -rf "$path"
@@ -130,6 +156,7 @@ restore_stock() {
 }
 
 rollback() {
+    systemctl stop remagic-agentd.service remagic-agentd.socket >/dev/null 2>&1 || true
     systemctl stop remagicd.service >/dev/null 2>&1 || true
     rm -rf "$APP_ROOT"
     if [ -e "$BACKUP" ]; then
@@ -180,8 +207,11 @@ for entry in \
     'unit-home:/usr/lib/systemd/system/remagic-home.service' \
     'unit-app:/usr/lib/systemd/system/remagic-app@.service' \
     'unit-recover:/usr/lib/systemd/system/remagic-recover.service' \
+    'unit-agent:/usr/lib/systemd/system/remagic-agentd.service' \
+    'unit-agent-socket:/usr/lib/systemd/system/remagic-agentd.socket' \
     'unit-koreader:/usr/lib/systemd/system/remagic-app@koreader.service.d/10-koreader-runtime.conf' \
-    'unit-wants:/usr/lib/systemd/system/multi-user.target.wants/remagicd.service'; do
+    'unit-wants:/usr/lib/systemd/system/multi-user.target.wants/remagicd.service' \
+    'unit-agent-wants:/usr/lib/systemd/system/sockets.target.wants/remagic-agentd.socket'; do
     name=${entry%%:*}
     path=${entry#*:}
     snapshot_path "$path" "$name"
@@ -198,6 +228,7 @@ chown -R 0:0 "$STAGE"
 
 # Stop only ReMagic ownership. Stock xochitl and Paperweight are restored
 # before files move, so a failed installer never leaves a blank panel.
+systemctl stop remagic-agentd.service remagic-agentd.socket >/dev/null 2>&1 || true
 systemctl stop remagicd.service >/dev/null 2>&1 || true
 restore_stock
 if systemctl is-active --quiet magicpaper-agent.service; then

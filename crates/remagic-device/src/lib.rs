@@ -95,6 +95,7 @@ impl DeviceProfile {
                 "input:touch-v1",
                 "lifecycle:v2",
                 "network:outbound-v1",
+                "agent:pi-v1",
             ]
             .into_iter()
             .map(str::to_owned)

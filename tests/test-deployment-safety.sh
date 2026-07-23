@@ -450,6 +450,24 @@ grep -q '^Environment=REMAGIC_PLATFORM_CAPABILITIES=.*input:mode-v2' \
     echo "application service omitted the dynamic input-mode capability" >&2
     exit 1
 }
+grep -q '^Environment=REMAGIC_PLATFORM_CAPABILITIES=.*agent:pi-v1' \
+    "$ROOT/systemd/remagic-app@.service" || {
+    echo "application service omitted the Pi agent capability" >&2
+    exit 1
+}
+grep -q '^Environment=REMAGIC_AGENT_SOCKET=/run/remagic/agent.sock' \
+    "$ROOT/systemd/remagic-app@.service" || {
+    echo "application service omitted the Pi agent socket" >&2
+    exit 1
+}
+grep -q '^Wants=remagic-agentd.socket$' "$ROOT/systemd/remagic-app@.service" || {
+    echo "application service does not request the optional Pi socket" >&2
+    exit 1
+}
+if grep -q '^Requires=.*remagic-agentd.socket' "$ROOT/systemd/remagic-app@.service"; then
+    echo "all applications incorrectly depend on the optional Pi socket" >&2
+    exit 1
+fi
 shutdown_max_ms=$(sed -n \
     's/^pub const MAX_SHUTDOWN_KILL_TIMEOUT_MS: u64 = \([0-9_][0-9_]*\);$/\1/p' \
     "$ROOT/crates/remagic-core/src/manifest.rs" | tr -d _)

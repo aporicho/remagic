@@ -10,6 +10,7 @@ members = [
     "crates/remagic-home",
     "crates/remagicctl",
     "crates/remagic-vellum-worker",
+    "crates/remagic-agentd",
 ]
 
 [workspace.package]

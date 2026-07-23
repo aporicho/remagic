@@ -17,7 +17,8 @@ mod platform;
 mod preflight;
 
 use environment::{
-    append_platform_variables, create_runtime_directories, insert_platform_variables,
+    append_platform_variables, create_runtime_directories, insert_agent_variable,
+    insert_platform_variables,
 };
 pub(crate) use platform::PlatformRuntime;
 #[cfg(test)]
@@ -121,6 +122,13 @@ fn prepare_v2_execution(
         &resolved_libraries,
         platform,
     )?;
+    if manifest
+        .capabilities
+        .iter()
+        .any(|capability| capability.as_str() == "agent:pi-v1")
+    {
+        insert_agent_variable(&mut environment.variables, platform)?;
+    }
     environment
         .validate()
         .map_err(|error| ExecutorError::Policy(error.to_string()))?;
@@ -147,6 +155,13 @@ fn prepare_legacy_execution(
         descriptor.source,
         platform,
     )?;
+    if manifest
+        .capabilities
+        .iter()
+        .any(|capability| capability.as_str() == "agent:pi-v1")
+    {
+        insert_agent_variable(&mut variables, platform)?;
+    }
     Ok(ExecutionPlan {
         generation: descriptor.generation,
         variables,
@@ -216,6 +231,21 @@ pub(crate) enum ExecutorError {
         actual_uid: u32,
         mode: u32,
     },
+    #[error("Pi agent socket is unavailable at {0}: {1}")]
+    AgentSocket(PathBuf, std::io::Error),
+    #[error("Pi agent socket path is invalid or is not a Unix socket: {0}")]
+    InvalidAgentSocket(PathBuf),
+    #[error(
+        "Pi agent socket {path} is not private platform state: expected uid {expected_uid}, got uid {actual_uid}, mode {mode:o}"
+    )]
+    UnsafeAgentSocket {
+        path: PathBuf,
+        expected_uid: u32,
+        actual_uid: u32,
+        mode: u32,
+    },
+    #[error("could not generate the private Pi agent client token: {0}")]
+    AgentToken(std::io::Error),
     #[error("runtime profile {profile:?} requires display={expected}, got {actual}")]
     ProfileDisplayMismatch {
         profile: RuntimeProfile,

@@ -11,6 +11,7 @@ STATE_ROOT=/home/root/.local/state/remagic/install
 ORIGINAL_ROOT=$STATE_ROOT/original
 MANIFEST_ROOT=/home/root/.local/share/remagic/apps.d
 UNIT_ROOT=/usr/lib/systemd/system
+SOCKET_WANTS_ROOT=$UNIT_ROOT/sockets.target.wants
 KOREADER_UNIT_DROPIN=$UNIT_ROOT/remagic-app@koreader.service.d/10-koreader-runtime.conf
 WANTS_ROOT=/etc/systemd/system/multi-user.target.wants
 IN_PROGRESS=$STATE_ROOT/in-progress
@@ -156,12 +157,15 @@ snapshot_managed_state() {
     snapshot_path "$snapshots" unit_runtime "$UNIT_ROOT/remagic-runtime.service"
     snapshot_path "$snapshots" unit_app "$UNIT_ROOT/remagic-app@.service"
     snapshot_path "$snapshots" unit_recover "$UNIT_ROOT/remagic-recover.service"
+    snapshot_path "$snapshots" unit_pi_agent "$UNIT_ROOT/remagic-agentd.service"
+    snapshot_path "$snapshots" unit_pi_agent_socket "$UNIT_ROOT/remagic-agentd.socket"
     snapshot_path "$snapshots" unit_agent "$UNIT_ROOT/magicpaper-agent.service"
     snapshot_path "$snapshots" unit_koreader_dropin "$KOREADER_UNIT_DROPIN"
     snapshot_path "$snapshots" want_remagicd "$WANTS_ROOT/remagicd.service"
     snapshot_path "$snapshots" want_agent "$WANTS_ROOT/magicpaper-agent.service"
     snapshot_path "$snapshots" want_old_remagicd "$UNIT_ROOT/multi-user.target.wants/remagicd.service"
     snapshot_path "$snapshots" want_old_agent "$UNIT_ROOT/multi-user.target.wants/magicpaper-agent.service"
+    snapshot_path "$snapshots" want_pi_agent "$SOCKET_WANTS_ROOT/remagic-agentd.socket"
     snapshot_path "$snapshots" want_runtime_etc "$WANTS_ROOT/remagic-runtime.service"
     snapshot_path "$snapshots" want_runtime_usr "$UNIT_ROOT/multi-user.target.wants/remagic-runtime.service"
     snapshot_path "$snapshots" want_riddle_usr "$UNIT_ROOT/multi-user.target.wants/riddle-power-launcher.service"
@@ -257,6 +261,8 @@ if [ -x "$APP_ROOT/bin/remagicctl" ]; then
     "$APP_ROOT/bin/remagicctl" system >/dev/null 2>&1 || true
 fi
 stop_unit_confirmed magicpaper-agent.service
+stop_unit_confirmed remagic-agentd.service
+stop_unit_confirmed remagic-agentd.socket
 stop_unit_confirmed remagicd.service
 stop_alternative_display_owners
 stop_unit_confirmed paperweight.service
@@ -279,10 +285,12 @@ rm -f "$WANTS_ROOT/remagicd.service" "$WANTS_ROOT/magicpaper-agent.service" \
     "$WANTS_ROOT/remagic-runtime.service" \
     "$UNIT_ROOT/multi-user.target.wants/remagicd.service" \
     "$UNIT_ROOT/multi-user.target.wants/magicpaper-agent.service" \
-    "$UNIT_ROOT/multi-user.target.wants/remagic-runtime.service"
+    "$UNIT_ROOT/multi-user.target.wants/remagic-runtime.service" \
+    "$SOCKET_WANTS_ROOT/remagic-agentd.socket"
 rm -f "$UNIT_ROOT/remagicd.service" "$UNIT_ROOT/remagic-display-host.service" \
     "$UNIT_ROOT/remagic-home.service" "$UNIT_ROOT/remagic-runtime.service" \
     "$UNIT_ROOT/remagic-app@.service" "$UNIT_ROOT/remagic-recover.service" \
+    "$UNIT_ROOT/remagic-agentd.service" "$UNIT_ROOT/remagic-agentd.socket" \
     "$UNIT_ROOT/magicpaper-agent.service" "$KOREADER_UNIT_DROPIN"
 rm -f "$MANIFEST_ROOT/magicpaper.toml" "$MANIFEST_ROOT/koreader.toml"
 restore_original_launcher_links

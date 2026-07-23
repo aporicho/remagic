@@ -3,10 +3,10 @@ id = "magicpaper"
 name = "MagicPaper"
 kind = "user"
 description = "手写 AI 魔法纸"
-version = "0.7.0"
+version = "0.8.0"
 package = "magicpaper"
 supported_devices = ["paper_pro", "paper_pro_move"]
-required_remagic_api = 2
+required_remagic_api = 3
 uninstall_policy = "keep_data"
 exec = "/home/root/apps/remagic/libexec/magicpaper-qtfb"
 working_dir = "/home/root/apps/remagic/opt/magicpaper"
@@ -20,6 +20,7 @@ capabilities = [
   "ink:direct-v1",
   "lifecycle:v2",
   "network:outbound-v1",
+  "agent:pi-v1",
 ]
 supports_open_path = false
 

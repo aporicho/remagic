@@ -7,6 +7,7 @@ SDK=${RM_SDK:-/home/aporicho/rm-sdk-chiappa-3.27}
 QUILL=${QUILL_DIR:-$ROOT/../quill-move}
 STORE=${REMAGIC_STORE_DIR:-$ROOT/../remagic-store}
 UI_FONT=${REMAGIC_UI_FONT:-/home/aporicho/Downloads/方正屏显雅宋.TTF}
+PI_RUNTIME=${REMAGIC_PI_RUNTIME_DIR:-}
 VERSION=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' \
     "$ROOT/Cargo.toml" | head -n 1)
 OUT_ROOT=$ROOT/dist/system-release
@@ -17,6 +18,32 @@ BUILD_ROOT=$(mktemp -d /tmp/remagic-system-build.XXXXXX)
 trap 'rm -rf "$BUILD_ROOT"' EXIT
 
 [ -n "$VERSION" ] || { echo "cannot determine ReMagic version" >&2; exit 1; }
+[ -s "$ROOT/runtime/pi/extensions/remagic-tools.js" ] && \
+    [ -x "$ROOT/scripts/remagic-configure-provider" ] || {
+    echo "ReMagic Pi safety extension or provider helper is missing" >&2
+    exit 1
+}
+[ -n "$PI_RUNTIME" ] && [ -d "$PI_RUNTIME" ] && [ ! -L "$PI_RUNTIME" ] || {
+    echo "REMAGIC_PI_RUNTIME_DIR must name a self-contained Pi runtime" >&2
+    exit 1
+}
+[ -x "$PI_RUNTIME/bin/node" ] && [ -x "$PI_RUNTIME/bin/pi" ] && \
+    [ -f "$PI_RUNTIME/runtime.env" ] || {
+    echo "Pi runtime must contain executable bin/node, bin/pi, and runtime.env" >&2
+    exit 1
+}
+pi_runtime_schema=$(sed -n 's/^REMAGIC_PI_RUNTIME_SCHEMA=//p' \
+    "$PI_RUNTIME/runtime.env" | sed -n '1p')
+pi_version=$(sed -n 's/^REMAGIC_PI_VERSION=//p' \
+    "$PI_RUNTIME/runtime.env" | sed -n '1p')
+node_version=$(sed -n 's/^REMAGIC_NODE_VERSION=//p' \
+    "$PI_RUNTIME/runtime.env" | sed -n '1p')
+[ "$pi_runtime_schema" = 1 ] && \
+    [[ "$pi_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][A-Za-z0-9.-]+)?$ ]] && \
+    [[ "$node_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][A-Za-z0-9.-]+)?$ ]] || {
+    echo "Pi runtime version manifest is invalid" >&2
+    exit 1
+}
 [ -d "$STORE" ] || { echo "ReMagic Store repository is missing: $STORE" >&2; exit 1; }
 [ -d "$QUILL/src" ] && [ -f "$QUILL/vendor/libqsgepaper.so" ] || {
     echo "Quill source/vendor ABI library is incomplete: $QUILL" >&2
@@ -95,7 +122,7 @@ mkdir -p "$PAYLOAD/bin" "$PAYLOAD/lib" "$PAYLOAD/fonts" \
     "$PAYLOAD/shims" "$PAYLOAD/libexec" "$PAYLOAD/share/systemd" \
     "$PAYLOAD/share/testing/manifests" "$RELEASE_ROOT/packages"
 for binary in remagicd remagic-home remagic-runner remagicctl \
-    remagic-vellum-worker remagic-package-inspect; do
+    remagic-vellum-worker remagic-package-inspect remagic-agentd; do
     install -m 0755 "$ROOT/target/$TARGET/release/$binary" "$PAYLOAD/bin/$binary"
 done
 install -m 0755 \
@@ -104,11 +131,52 @@ install -m 0755 \
 install -m 0644 "$BUILD_ROOT/quill/libquill.so" "$PAYLOAD/lib/libquill.so"
 "$strip_tool" --strip-unneeded "$PAYLOAD/lib/libquill.so"
 install -m 0644 "$UI_FONT" "$PAYLOAD/fonts/UIFont.ttf"
+mkdir -p "$PAYLOAD/runtime/pi"
+cp -aL "$PI_RUNTIME/." "$PAYLOAD/runtime/pi/"
+[ -z "$(find "$PAYLOAD/runtime/pi" -type l -print -quit)" ] || {
+    echo "canonical Pi release runtime still contains symbolic links" >&2
+    exit 1
+}
+# The official Node archive carries debug/symbol sections. The SDK's AArch64
+# strip tool removes only link-time metadata from the release copy; the source
+# runtime remains untouched and its JavaScript/native modules are unchanged.
+"$strip_tool" --strip-unneeded "$PAYLOAD/runtime/pi/bin/node"
+mkdir -p "$PAYLOAD/runtime/pi/extensions"
+install -m 0644 "$ROOT/runtime/pi/extensions/remagic-tools.js" \
+    "$PAYLOAD/runtime/pi/extensions/remagic-tools.js"
+
+# Execute the exact stripped ARM64 Node/Pi payload under the SDK emulator. A
+# format check alone cannot catch a broken loader, missing JS dependency, or an
+# extension that Pi cannot import. `get_state` is local and makes no API call.
+qemu_tool=$(command -v qemu-aarch64 || true)
+if [ -z "$qemu_tool" ]; then
+    qemu_tool=$(find "$SDK/sysroots" -type f -name qemu-aarch64 -print -quit)
+fi
+[ -x "$qemu_tool" ] || { echo "SDK AArch64 emulator is unavailable" >&2; exit 1; }
+pi_probe=$(
+    printf '%s\n' '{"id":"release-arm-state","type":"get_state"}' | \
+        env HOME="$BUILD_ROOT/pi-probe-home" \
+            PI_CODING_AGENT_DIR="$BUILD_ROOT/pi-probe-config" \
+            PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 \
+            DEEPSEEK_API_KEY=release-probe-only \
+            "$qemu_tool" -L "$sysroot" "$PAYLOAD/runtime/pi/bin/node" \
+            "$PAYLOAD/runtime/pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js" \
+            --mode rpc --provider deepseek --model deepseek-v4-flash \
+            --thinking off --no-session --no-skills --no-prompt-templates \
+            --no-context-files --no-approve --system-prompt paper \
+            --no-builtin-tools --no-extensions --extension \
+            "$PAYLOAD/runtime/pi/extensions/remagic-tools.js"
+)
+printf '%s\n' "$pi_probe" | grep -Fq \
+    '"id":"release-arm-state","type":"response","command":"get_state","success":true' || {
+    echo "packaged ARM64 Pi runtime failed its RPC startup probe" >&2
+    exit 1
+}
 install -m 0755 "$BUILD_ROOT/shims/qtfb-shim.so" "$PAYLOAD/shims/qtfb-shim.so"
 install -m 0644 "$BUILD_ROOT/shims/LICENSE.qtfb-shim" \
     "$PAYLOAD/shims/LICENSE.qtfb-shim"
 
-for helper in remagic-register remagic-recover; do
+for helper in remagic-register remagic-recover remagic-configure-provider; do
     install -m 0755 "$ROOT/scripts/$helper" "$PAYLOAD/libexec/$helper"
 done
 for helper in deployment-common.sh device-test-recovery.sh device-test-manifests.sh \
@@ -116,7 +184,8 @@ for helper in deployment-common.sh device-test-recovery.sh device-test-manifests
     install -m 0644 "$ROOT/scripts/lib/$helper" "$PAYLOAD/libexec/$helper"
 done
 for unit in remagicd.service remagic-display-host.service remagic-home.service \
-    remagic-app@.service remagic-recover.service; do
+    remagic-app@.service remagic-recover.service remagic-agentd.service \
+    remagic-agentd.socket; do
     install -m 0644 "$ROOT/systemd/$unit" "$PAYLOAD/share/systemd/$unit"
 done
 mkdir -p "$PAYLOAD/share/systemd/remagic-app@koreader.service.d"
@@ -140,7 +209,10 @@ install -m 0644 "$ROOT/scripts/system-release/common.sh" "$RELEASE_ROOT/common.s
 cat >"$RELEASE_ROOT/release.env" <<EOF
 REMAGIC_RELEASE_SCHEMA=1
 REMAGIC_VERSION=$VERSION
-REMAGIC_API=2
+REMAGIC_API=3
+REMAGIC_PI_RUNTIME_SCHEMA=$pi_runtime_schema
+REMAGIC_PI_VERSION=$pi_version
+REMAGIC_NODE_VERSION=$node_version
 SUPPORTED_OS_SERIES=3.27
 SUPPORTED_DEVICES=ferrari,chiappa
 STORE_PACKAGE=packages/$store_name
@@ -158,6 +230,7 @@ EOF
 )
 
 for artifact in "$PAYLOAD/bin/"* "$PAYLOAD/lib/libquill.so" \
+    "$PAYLOAD/runtime/pi/bin/node" \
     "$PAYLOAD/shims/qtfb-shim.so" "$store_binary"; do
     file "$artifact" | grep -q 'ELF 64-bit.*ARM aarch64' || {
         echo "refusing non-AArch64 system artifact: $artifact" >&2

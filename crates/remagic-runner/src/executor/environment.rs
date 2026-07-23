@@ -5,6 +5,7 @@ use remagic_core::{AppId, RuntimeDirectories};
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
+use std::io::Read;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -136,6 +137,32 @@ pub(super) fn insert_platform_variables(
     insert_token_variables(variables, app_id, generation, descriptor)?;
     insert_descriptor_variables(variables, descriptor)?;
     Ok(())
+}
+
+pub(super) fn insert_agent_variable(
+    variables: &mut BTreeMap<String, String>,
+    platform: &PlatformRuntime,
+) -> Result<(), ExecutorError> {
+    variables.insert(
+        "REMAGIC_AGENT_SOCKET".into(),
+        path_text(&platform.agent_socket)?,
+    );
+    variables.insert("REMAGIC_AGENT_TOKEN".into(), random_agent_token()?);
+    variables.insert("REMAGIC_AGENT_PRINCIPAL".into(), "foreground".into());
+    Ok(())
+}
+
+fn random_agent_token() -> Result<String, ExecutorError> {
+    let mut bytes = [0_u8; 32];
+    fs::File::open("/dev/urandom")
+        .and_then(|mut source| source.read_exact(&mut bytes))
+        .map_err(ExecutorError::AgentToken)?;
+    let mut token = String::with_capacity(64);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(&mut token, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    Ok(token)
 }
 
 fn insert_token_variables(

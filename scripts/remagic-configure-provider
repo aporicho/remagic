@@ -1,0 +1,56 @@
+#!/bin/sh
+set -eu
+
+[ "$(id -u)" -eq 0 ] || {
+    echo "ReMagic provider configuration requires root" >&2
+    exit 1
+}
+
+case ${1:-} in
+    deepseek) key_name=DEEPSEEK_API_KEY ;;
+    openai) key_name=OPENAI_API_KEY ;;
+    *) echo "supported providers: deepseek, openai" >&2; exit 2 ;;
+esac
+provider=$1
+IFS= read -r secret
+IFS= read -r base_url || base_url=
+[ -n "$secret" ] || { echo "API key may not be empty" >&2; exit 2; }
+[ "$(printf '%s' "$secret" | wc -c)" -le 16384 ] || {
+    echo "API key exceeds 16 KiB" >&2
+    exit 2
+}
+if printf '%s' "$secret" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+    echo "API key contains control characters" >&2
+    exit 2
+fi
+if [ -n "$base_url" ]; then
+    [ "$(printf '%s' "$base_url" | wc -c)" -le 2048 ] || {
+        echo "BASE_URL exceeds 2048 bytes" >&2
+        exit 2
+    }
+    case $base_url in
+        http://*|https://*) ;;
+        *) echo "BASE_URL must use http or https" >&2; exit 2 ;;
+    esac
+    if printf '%s' "$base_url" | LC_ALL=C grep -q '[[:cntrl:][:space:]]'; then
+        echo "BASE_URL contains invalid characters" >&2
+        exit 2
+    fi
+fi
+
+directory=/home/root/.config/remagic/secrets/providers
+destination=$directory/$provider.env
+mkdir -p "$directory"
+chmod 0700 "$directory"
+temporary=$directory/.$provider.env.$$
+trap 'rm -f "$temporary"' EXIT HUP INT TERM
+umask 077
+{
+    printf '%s=%s\n' "$key_name" "$secret"
+    [ -z "$base_url" ] || printf 'BASE_URL=%s\n' "$base_url"
+} >"$temporary"
+chmod 0600 "$temporary"
+chown 0:0 "$temporary"
+mv -f "$temporary" "$destination"
+trap - EXIT HUP INT TERM
+echo "ReMagic provider configuration updated for $provider"

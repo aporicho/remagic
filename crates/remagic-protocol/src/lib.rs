@@ -5,11 +5,17 @@ use std::path::PathBuf;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+mod agent;
 mod control_v2;
 mod display;
 mod lifecycle;
 mod runtime_app;
 
+pub use agent::{
+    read_agent_frame, write_agent_frame, AgentClientMessage, AgentErrorCode, AgentEvent,
+    AgentFrameError, AgentHistoryTurn, AgentLane, AgentProfile, AgentRuntimeSource, AgentStatus,
+    AgentToolDefinition, AGENT_MAX_FRAME, AGENT_PROTOCOL_V1, DEFAULT_AGENT_SOCKET,
+};
 pub use control_v2::{
     AppViewV2, ControlErrorCode, ControlEvent, ControlEventEnvelope, ControlIntent, ControlReply,
     ControlRequest, ControlResponse, LegacyControlConversionError, SupervisorSnapshot,

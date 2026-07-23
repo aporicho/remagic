@@ -221,6 +221,13 @@ pub(super) fn validate_runtime_resources(
     if manifest.runtime.profile == RuntimeProfile::QtfbCompat {
         validate_qtfb_socket(&platform.qtfb_socket)?;
     }
+    if manifest
+        .capabilities
+        .iter()
+        .any(|capability| capability.as_str() == "agent:pi-v1")
+    {
+        validate_agent_socket(&platform.agent_socket)?;
+    }
     for directory in &manifest.runtime.fonts.directories {
         validate_readable_directory(directory, "font directory")?;
     }
@@ -256,6 +263,34 @@ fn validate_qtfb_socket(path: &Path) -> Result<(), ExecutorError> {
     let effective_uid = unsafe { libc::geteuid() };
     if metadata.uid() != effective_uid || metadata.permissions().mode() & 0o022 != 0 {
         return Err(ExecutorError::UnsafeQtfbSocket {
+            path: path.to_path_buf(),
+            expected_uid: effective_uid,
+            actual_uid: metadata.uid(),
+            mode: metadata.permissions().mode() & 0o777,
+        });
+    }
+    Ok(())
+}
+
+fn validate_agent_socket(path: &Path) -> Result<(), ExecutorError> {
+    let invalid = !path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        });
+    if invalid {
+        return Err(ExecutorError::InvalidAgentSocket(path.to_path_buf()));
+    }
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|source| ExecutorError::AgentSocket(path.to_path_buf(), source))?;
+    if !metadata.file_type().is_socket() {
+        return Err(ExecutorError::InvalidAgentSocket(path.to_path_buf()));
+    }
+    let effective_uid = unsafe { libc::geteuid() };
+    if metadata.uid() != effective_uid || metadata.permissions().mode() & 0o077 != 0 {
+        return Err(ExecutorError::UnsafeAgentSocket {
             path: path.to_path_buf(),
             expected_uid: effective_uid,
             actual_uid: metadata.uid(),

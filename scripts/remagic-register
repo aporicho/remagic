@@ -10,13 +10,16 @@ APP_ROOT=${REMAGIC_APP_ROOT:-/home/root/apps/remagic}
 UNIT_SOURCE=$APP_ROOT/share/systemd
 UNIT_ROOT=/usr/lib/systemd/system
 BOOT_WANTS=$UNIT_ROOT/multi-user.target.wants
+SOCKET_WANTS=$UNIT_ROOT/sockets.target.wants
 SYSTEMCTL=${SYSTEMCTL:-systemctl}
 MODE=${1:---runtime}
 UNITS='remagicd.service
 remagic-display-host.service
 remagic-home.service
 remagic-app@.service
-remagic-recover.service'
+remagic-recover.service
+remagic-agentd.service
+remagic-agentd.socket'
 KOREADER_DROPIN=remagic-app@koreader.service.d/10-koreader-runtime.conf
 
 validate_sources() {
@@ -46,6 +49,8 @@ validate_sources() {
 start_services() {
     "$SYSTEMCTL" daemon-reload
     "$SYSTEMCTL" reset-failed remagicd.service >/dev/null 2>&1 || true
+    "$SYSTEMCTL" start remagic-agentd.socket
+    "$SYSTEMCTL" is-active --quiet remagic-agentd.socket
     "$SYSTEMCTL" start remagicd.service
     "$SYSTEMCTL" is-active --quiet remagicd.service
 }
@@ -66,9 +71,10 @@ link_runtime() {
 
 publish_boot_link() {
     unit=$1
-    temporary=$BOOT_WANTS/.remagic-register-$unit.$$
+    target=${2:-$BOOT_WANTS}
+    temporary=$target/.remagic-register-$unit.$$
     ln -s ../$unit "$temporary"
-    mv -Tf "$temporary" "$BOOT_WANTS/$unit"
+    mv -Tf "$temporary" "$target/$unit"
 }
 
 publish_unit() {
@@ -109,10 +115,13 @@ install_persistent() {
         publish_koreader_dropin || status=$?
     fi
     if [ "$status" -eq 0 ]; then
-        mkdir -p "$BOOT_WANTS" || status=$?
+        mkdir -p "$BOOT_WANTS" "$SOCKET_WANTS" || status=$?
     fi
     if [ "$status" -eq 0 ]; then
         publish_boot_link remagicd.service || status=$?
+    fi
+    if [ "$status" -eq 0 ]; then
+        publish_boot_link remagic-agentd.socket "$SOCKET_WANTS" || status=$?
     fi
     sync
     if [ "$root_was_read_only" = true ]; then

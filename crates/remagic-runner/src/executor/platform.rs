@@ -17,6 +17,7 @@ pub(super) const DEFAULT_CAPABILITIES: &[&str] = &[
     "ink:direct-v1",
     "lifecycle:v2",
     "network:outbound-v1",
+    "agent:pi-v1",
 ];
 pub(super) const APPROVED_LIBRARY_DIRS: &[&str] = &[
     "/home/root/apps/remagic/lib",
@@ -30,6 +31,7 @@ pub(crate) struct PlatformRuntime {
     pub device: DeviceProfile,
     pub capabilities: BTreeSet<Capability>,
     pub qtfb_socket: PathBuf,
+    pub agent_socket: PathBuf,
     pub path: String,
     pub library_search_dirs: Vec<PathBuf>,
     pub zoneinfo_root: PathBuf,
@@ -53,6 +55,9 @@ impl PlatformRuntime {
             qtfb_socket: env::var_os("REMAGIC_QTFB_SOCKET")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_QTFB_SOCKET)),
+            agent_socket: env::var_os("REMAGIC_AGENT_SOCKET")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(remagic_protocol::DEFAULT_AGENT_SOCKET)),
             path: env::var("PATH").unwrap_or_else(|_| DEFAULT_PATH.to_owned()),
             library_search_dirs,
             zoneinfo_root: PathBuf::from("/usr/share/zoneinfo"),

@@ -37,6 +37,10 @@ fn platform(library_dir: &Path) -> PlatformRuntime {
     let qtfb_socket = root.join("qtfb.sock");
     let _ = fs::remove_file(&qtfb_socket);
     drop(UnixListener::bind(&qtfb_socket).unwrap());
+    let agent_socket = root.join("agent.sock");
+    let _ = fs::remove_file(&agent_socket);
+    drop(UnixListener::bind(&agent_socket).unwrap());
+    fs::set_permissions(&agent_socket, fs::Permissions::from_mode(0o600)).unwrap();
     let zoneinfo_root = root.join("zoneinfo");
     let timezone = zoneinfo_root.join("Asia/Shanghai");
     fs::create_dir_all(timezone.parent().unwrap()).unwrap();
@@ -48,6 +52,7 @@ fn platform(library_dir: &Path) -> PlatformRuntime {
             .map(|value| Capability::new((*value).to_owned()).unwrap())
             .collect(),
         qtfb_socket,
+        agent_socket,
         path: DEFAULT_PATH.into(),
         library_search_dirs: vec![library_dir.to_path_buf()],
         zoneinfo_root,
@@ -375,6 +380,41 @@ fn schema_v2_preflight_requires_declared_fonts_certificates_timezone_and_qtfb_so
             &platform_without_socket
         ),
         Err(ExecutorError::QtfbSocket(_, _))
+    ));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn pi_agent_capability_injects_private_token_and_fails_without_socket() {
+    let root = test_root("agent");
+    let library_dir = root.join("lib");
+    fs::create_dir_all(&library_dir).unwrap();
+    fs::write(library_dir.join("librequired.so"), b"test").unwrap();
+    let mut manifest = v2_manifest(&root, "");
+    manifest
+        .capabilities
+        .push(Capability::new("agent:pi-v1").unwrap());
+    let descriptor = LaunchDescriptor {
+        generation: Some(1),
+        foreground_epoch: Some(2),
+        lease_id: Some(3),
+        qtfb_key: Some(qtfb_key_for_app(&manifest.id)),
+        ..LaunchDescriptor::default()
+    };
+    let platform = platform(&library_dir);
+    let plan = prepare_execution(&manifest, &descriptor, &platform).unwrap();
+    assert_eq!(
+        plan.variables["REMAGIC_AGENT_SOCKET"],
+        platform.agent_socket.display().to_string()
+    );
+    let token = &plan.variables["REMAGIC_AGENT_TOKEN"];
+    assert_eq!(token.len(), 64);
+    assert!(token.bytes().all(|byte| byte.is_ascii_hexdigit()));
+
+    fs::remove_file(&platform.agent_socket).unwrap();
+    assert!(matches!(
+        prepare_execution(&manifest, &descriptor, &platform),
+        Err(ExecutorError::AgentSocket(_, _))
     ));
     fs::remove_dir_all(root).unwrap();
 }

@@ -62,6 +62,74 @@ grep -Fq 'testing/manifests/$test_manifest' "$ROOT/scripts/build-system-release.
     echo "system release does not ship isolated acceptance manifests" >&2
     exit 1
 }
+grep -Fq 'remagic-agentd.socket' "$ROOT/scripts/build-system-release.sh" || {
+    echo "system release does not ship the Pi agent socket" >&2
+    exit 1
+}
+grep -Fq 'BindsTo=remagicd.service' "$ROOT/systemd/remagic-agentd.service" || {
+    echo "Pi agent broker is not lifecycle-bound to the manager" >&2
+    exit 1
+}
+grep -Fq 'REMAGIC_API=3' "$ROOT/scripts/build-system-release.sh" || {
+    echo "system release did not publish ReMagic API 3" >&2
+    exit 1
+}
+grep -Fq 'REMAGIC_PI_RUNTIME_DIR must name a self-contained Pi runtime' \
+    "$ROOT/scripts/build-system-release.sh" || {
+    echo "system release still permits an unbundled Pi runtime" >&2
+    exit 1
+}
+grep -Fq 'REMAGIC_PI_RUNTIME_SCHEMA=' "$ROOT/scripts/build-system-release.sh" || {
+    echo "system release does not bind a Pi runtime version manifest" >&2
+    exit 1
+}
+grep -Fq 'payload_pi_version' "$ROOT/scripts/system-release/install-device.sh" || {
+    echo "system installer does not verify the bundled Pi runtime version" >&2
+    exit 1
+}
+[ -s "$ROOT/runtime/pi/extensions/remagic-tools.js" ] || {
+    echo "system release has no fixed safe Pi tools extension" >&2
+    exit 1
+}
+[ -x "$ROOT/scripts/build-pi-runtime.sh" ] || {
+    echo "system repository has no reproducible Pi runtime builder" >&2
+    exit 1
+}
+[ -s "$ROOT/runtime/pi/package-lock.json" ] || {
+    echo "Pi runtime dependencies are not locked" >&2
+    exit 1
+}
+grep -Fq 'npm ci' "$ROOT/scripts/build-pi-runtime.sh" || {
+    echo "Pi runtime builder does not consume its dependency lock" >&2
+    exit 1
+}
+grep -Fq 'strip-unneeded "$PAYLOAD/runtime/pi/bin/node"' \
+    "$ROOT/scripts/build-system-release.sh" || {
+    echo "system release does not strip the packaged Node runtime" >&2
+    exit 1
+}
+grep -Fq 'release-arm-state' "$ROOT/scripts/build-system-release.sh" || {
+    echo "system release does not execute its ARM64 Pi payload" >&2
+    exit 1
+}
+grep -Fq 'runtime/pi/extensions/remagic-tools.js' \
+    "$ROOT/scripts/build-system-release.sh" || {
+    echo "system release does not package the safe Pi tools extension" >&2
+    exit 1
+}
+grep -Fq 'remagic-configure-provider' "$ROOT/scripts/build-system-release.sh" || {
+    echo "system release does not package provider configuration support" >&2
+    exit 1
+}
+grep -Fq 'REMAGIC_DEVICE_HOST:-${REMAGIC_HOST:-10.11.99.1}' \
+    "$ROOT/configure-provider.sh" || {
+    echo "provider helper does not share the installer host override" >&2
+    exit 1
+}
+grep -Fq 'REMAGIC_SSH_TARGET:-root@$host' "$ROOT/configure-provider.sh" || {
+    echo "provider helper does not share the installer SSH target override" >&2
+    exit 1
+}
 if grep -Eq 'opt/magicpaper|opt/koreader-for-remagic|MAGICPAPER_DIR' \
     "$ROOT/scripts/build-system-release.sh"; then
     echo "system release still embeds a user application payload" >&2
@@ -93,4 +161,7 @@ done
 sh -n "$ROOT/install.sh"
 sh -n "$ROOT/scripts/system-release/common.sh"
 sh -n "$ROOT/scripts/system-release/install-device.sh"
+sh -n "$ROOT/scripts/remagic-configure-provider"
+bash -n "$ROOT/configure-provider.sh"
+bash -n "$ROOT/scripts/build-pi-runtime.sh"
 echo "system release contract passed"

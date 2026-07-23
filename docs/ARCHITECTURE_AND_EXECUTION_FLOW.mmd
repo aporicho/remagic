@@ -1,0 +1,171 @@
+%% canvas-layout: {"version":1,"edgeRouting":"bezier","layoutMode":"manual","edges":{"mp_pen_mp_capture_26":{"from":"mp_pen","to":"mp_capture","label":"","style":"solid","arrowType":"arrow","markerStart":"none","markerEnd":"arrow","minLength":1,"index":26,"toAnchor":"top"},"mp_idle_mp_commit_29":{"from":"mp_idle","to":"mp_commit","label":"","style":"solid","arrowType":"arrow","markerStart":"none","markerEnd":"arrow","minLength":1,"index":29,"fromAnchor":"bottom"}},"viewport":{"scale":0.2836540264997702,"x":675.5833836142874,"y":163.67408849245658},"nodes":{"rm_user":{"x":1566.5,"y":129,"fill":"#fbf6ef"},"rm_original":{"x":747.7,"y":138,"fill":"#ffe1e5"},"rm_trigger":{"x":1371.5,"y":331,"fill":"#fff0cf"},"rm_home":{"x":1308.5,"y":533,"fill":"#eadfd2"},"rm_daemon":{"x":1085.7,"y":786,"fill":"#e9eff0"},"rm_display":{"x":120,"y":1108,"fill":"#f3e6f1"},"rm_runner":{"x":421,"y":1108,"fill":"#e7eadb"},"rm_supervisor":{"x":409.5,"y":1370,"fill":"#f1eadf"},"rm_agentd":{"x":685,"y":1108,"fill":"#fbf6ef"},"rm_store":{"x":419,"y":790.1860579564262,"fill":"#ffe1e5"},"rm_stopped":{"x":1163,"y":1126,"fill":"#fff0cf"},"rm_starting":{"x":1195.3,"y":1379,"fill":"#eadfd2"},"rm_foreground":{"x":1211.8,"y":1632,"fill":"#e9eff0"},"rm_background":{"x":1151,"y":1983,"fill":"#f3e6f1"},"rm_closing":{"x":1086.7,"y":2274,"fill":"#e7eadb"},"rm_detect":{"x":1597.2,"y":795,"fill":"#f1eadf"},"rm_verify":{"x":1580.2,"y":1117,"fill":"#fbf6ef"},"rm_stage":{"x":1595.2,"y":1379,"fill":"#ffe1e5"},"rm_publish":{"x":1602.2,"y":1632,"fill":"#fff0cf"},"rm_health":{"x":1579.2,"y":1936,"fill":"#eadfd2"},"rm_ready":{"x":1581,"y":2283,"fill":"#e9eff0"},"rm_rollback":{"x":1765,"y":2283,"fill":"#f3e6f1"},"rm_priority":{"x":872.5,"y":524,"fill":"#e7eadb"},"mp_environment":{"x":3576.5,"y":120,"fill":"#f1eadf"},"mp_loop":{"x":3653.5,"y":331,"fill":"#fbf6ef"},"mp_pen":{"x":3780,"y":542,"fill":"#ffe1e5"},"mp_capture":{"x":4078,"y":799,"fill":"#fff0cf"},"mp_preview":{"x":4085,"y":1121,"fill":"#eadfd2"},"mp_idle":{"x":4072,"y":1383,"fill":"#e9eff0"},"mp_commit":{"x":4078,"y":1983,"fill":"#f3e6f1"},"mp_ocr":{"x":3640.2,"y":1983,"fill":"#e7eadb"},"mp_transcript":{"x":3719.2,"y":2274,"fill":"#f1eadf"},"mp_route":{"x":3892.818001646227,"y":2563.397432321201,"fill":"#fbf6ef"},"mp_local":{"x":3908.818001646227,"y":3446,"fill":"#ffe1e5"},"mp_context":{"x":3554.5,"y":2898,"fill":"#fff0cf"},"mp_agent":{"x":3421.7,"y":3142,"fill":"#eadfd2"},"mp_pi":{"x":3350,"y":3326,"fill":"#e9eff0"},"mp_final":{"x":3341.5,"y":3510,"fill":"#f3e6f1"},"mp_buffer":{"x":3702.5,"y":3694,"fill":"#e7eadb"},"mp_layout":{"x":3405.9007876733717,"y":3918.566670585439,"fill":"#f1eadf"},"mp_appear":{"x":3386.4007876733717,"y":4102.566670585439,"fill":"#fbf6ef"},"mp_visible":{"x":3414.4007876733717,"y":4286.566670585439,"fill":"#ffe1e5"},"mp_touch":{"x":3414.4007876733717,"y":4452.566670585439,"fill":"#fff0cf"},"mp_fade":{"x":3400.4007876733717,"y":4636.566670585439,"fill":"#eadfd2"},"mp_ready":{"x":3688.5,"y":4882,"fill":"#e9eff0"},"mp_commands":{"x":3308.9106800652407,"y":331,"fill":"#f3e6f1"},"mp_data":{"x":3291.5,"y":725.3944273977239,"fill":"#e7eadb"},"mp_cancel":{"x":3281.9106800652407,"y":1632,"fill":"#f1eadf"},"ko_environment":{"x":2541.5,"y":129,"fill":"#fbf6ef"},"ko_adapter":{"x":2519,"y":322,"fill":"#ffe1e5"},"ko_upstream":{"x":2622.5,"y":533,"fill":"#fff0cf"},"ko_books":{"x":2052.7,"y":795,"fill":"#eadfd2"},"ko_progress":{"x":2277.7,"y":804,"fill":"#e9eff0"},"ko_settings":{"x":2536.7,"y":804,"fill":"#f3e6f1"},"ko_launch":{"x":2841.5,"y":795,"fill":"#e7eadb"},"ko_reading":{"x":2854.5,"y":1117,"fill":"#f1eadf"},"ko_pause":{"x":2655,"y":1379,"fill":"#fbf6ef"},"ko_resume":{"x":2241.7,"y":1243.7753212947441,"fill":"#ffe1e5"},"ko_close":{"x":2841.5,"y":1632,"fill":"#fff0cf"},"ko_fonts":{"x":2201,"y":533,"fill":"#eadfd2"}}}
+flowchart TB
+  subgraph remagic_graph [图 1 · ReMagic 系统]
+    direction TB
+    subgraph rm_core [系统核心服务]
+      direction LR
+      rm_display@{ shape: rect, label: "remagic-display-host<br/>唯一显示与输入所有者<br/>Quill · 面板 · 触摸 · 压感笔" }
+      rm_supervisor@{ shape: rect, label: "systemd / cgroup<br/>进程监督 · 冻结 · 恢复<br/>Shutdown · TERM · KILL" }
+      rm_agentd@{ shape: rect, label: "remagic-agentd<br/>私有 Pi Agent 服务<br/>认证 · Worker · 优先级 · 取消" }
+      rm_runner@{ shape: rect, label: "remagic-runner<br/>manifest 预检<br/>应用环境 · 生命周期通道" }
+      rm_store@{ shape: rect, label: "ReMagic Store / package<br/>签名目录 · 校验 · 安装<br/>原子升级 · 回滚" }
+    end
+    subgraph rm_lifecycle [通用应用生命周期]
+      direction LR
+      rm_starting@{ shape: rect, label: "启动预检<br/>进程 → 首帧 → 面板提交" }
+      rm_foreground@{ shape: rect, label: "前台<br/>持有输入与显示租约" }
+      rm_background@{ shape: rect, label: "后台暂停<br/>保存状态 · 冻结 cgroup" }
+      rm_closing@{ shape: rect, label: "完全关闭<br/>有界 Shutdown → TERM → KILL" }
+    end
+    subgraph rm_install [系统安装与恢复]
+      direction LR
+      rm_detect@{ shape: rect, label: "USB SSH<br/>检测型号与 OS" }
+      rm_verify@{ shape: rect, label: "可信 URL<br/>双重 SHA-256 校验" }
+      rm_stage@{ shape: rect, label: "临时 staging<br/>停服前完整核验" }
+      rm_publish@{ shape: rect, label: "安装系统树<br/>注册三按入口" }
+      rm_ready@{ shape: rect, label: "安装完成" }
+      rm_health@{ shape: diam, label: "健康检查？" }
+      rm_rollback@{ shape: rect, label: "恢复上一版本和注册" }
+    end
+    rm_user@{ shape: rect, label: "用户<br/>手指 · 电源键" }
+    rm_original@{ shape: rect, label: "原版 xochitl / 镇纸系统域" }
+    rm_trigger@{ shape: rect, label: "三按电源键<br/>系统域切换入口" }
+    rm_home@{ shape: rect, label: "ReMagic Home<br/>任务页 · 设置 · 锁屏 · 应用管理" }
+    rm_stopped@{ shape: rect, label: "未运行" }
+    rm_priority@{ shape: rect, label: "全局优先级<br/>用户输入 ＞ 前台问答 ＞ OCR 预请求 ＞ 定时任务 ＞ 后台维护" }
+    rm_daemon@{ shape: rect, label: "remagicd<br/>全局状态机 · 前台租约<br/>生命周期 · 故障恢复" }
+  end
+  subgraph magicpaper_graph [图 2 · MagicPaper 应用]
+    direction TB
+    subgraph mp_input_path [低延迟书写路径]
+      direction LR
+      mp_capture@{ shape: rect, label: "采集压感笔迹<br/>平滑与增量栅格化" }
+      mp_preview@{ shape: rect, label: "立即局部提交<br/>黑白低延迟预览" }
+      mp_idle@{ shape: rect, label: "停笔约 1 秒<br/>可启动 OCR 预请求" }
+    end
+    subgraph mp_answer_path [OCR 与 Pi Agent 回答路径]
+      direction TB
+      mp_transcript@{ shape: rect, label: "候选转录<br/>文字 + 置信度" }
+      mp_context@{ shape: rect, label: "组合转录、近期对话<br/>任务与 TODO 目录" }
+      mp_route@{ shape: diam, label: "高置信度本地命令？" }
+    end
+    subgraph mp_render_path [回答显示与下一轮]
+      direction LR
+      mp_layout@{ shape: rect, label: "测量整段宽高<br/>横向 + 纵向居中" }
+      mp_appear@{ shape: rect, label: "所选手写字体逐笔浮现<br/>最多约 25 Hz" }
+      mp_visible@{ shape: rect, label: "保持可读" }
+      mp_touch@{ shape: rect, label: "笔再次接触<br/>立即开始淡出" }
+      mp_fade@{ shape: rect, label: "动画期间忽略书写<br/>有界清理残影" }
+    end
+    subgraph mp_local_features [本地功能与数据]
+      direction LR
+      mp_data@{ shape: rect, label: "持久数据<br/>对话 · 任务 · TODO · 偏好 · 对话边界" }
+    end
+    mp_environment@{ shape: rect, label: "ReMagic 提供的应用边界<br/>QTFB surface · 笔/触摸 · 生命周期 · agent:pi-v1" }
+    mp_final@{ shape: rect, label: "最终纸面答案<br/>隐藏搜索过程、URL、引用与元数据" }
+    mp_buffer@{ shape: rect, label: "完整缓冲回答" }
+    mp_ready@{ shape: rect, label: "恢复空白可写纸面" }
+    mp_pen@{ shape: rect, label: "笔落下" }
+    mp_loop@{ shape: rect, label: "MagicPaper 黑白纸面主循环<br/>用户交互最高优先级" }
+    mp_ocr@{ shape: rect, label: "PaddleOCR PP-OCRv6<br/>有界 PNG · 超时 · 取消 · 大小限制" }
+    mp_agent@{ shape: rect, label: "agent:pi-v1 请求<br/>身份 · token · lane · profile" }
+    mp_pi@{ shape: rect, label: "常驻 Pi RPC Worker<br/>模型 / 安全搜索 / OCR 语境纠错" }
+    mp_commands@{ shape: rect, label: "任务 · TODO · 历史<br/>字体 · 设置 · 帮助 · read · 刷新" }
+    mp_cancel@{ shape: rect, label: "统一取消边界<br/>继续书写 · 切后台 · 新交互 · 超时 · 断开" }
+    mp_commit@{ shape: rect, label: "达到提交静默时间<br/>冻结本轮快照" }
+    mp_local@{ shape: rect, label: "本地执行<br/>不调用模型、不消耗 API" }
+  end
+  subgraph koreader_graph [图 3 · KOReader 应用]
+    direction TB
+    subgraph ko_lifecycle [阅读生命周期]
+      direction LR
+      ko_reading@{ shape: rect, label: "前台阅读<br/>持有 surface 与触摸" }
+      ko_close@{ shape: rect, label: "完全退出<br/>关闭进程，保留阅读数据" }
+      ko_pause@{ shape: rect, label: "暂停<br/>保存状态 · 冻结整个 cgroup" }
+      ko_resume@{ shape: rect, label: "召回<br/>恢复同一 PID、surface 和书页" }
+    end
+    ko_environment@{ shape: rect, label: "ReMagic 提供的应用边界<br/>QTFB surface · 触摸 · 生命周期 · cgroup" }
+    ko_adapter@{ shape: rect, label: "KOReader for ReMagic 适配层<br/>manifest · QTFB shim · HOME/XDG · 字体 · 书库路径" }
+    ko_books@{ shape: rect, label: "统一书库<br/>/home/root/books" }
+    ko_progress@{ shape: rect, label: "阅读位置 · 书签 · 历史" }
+    ko_upstream@{ shape: rect, label: "KOReader 上游应用<br/>不修改阅读业务逻辑" }
+    ko_launch@{ shape: rect, label: "启动<br/>进入书籍目录或指定书籍" }
+    ko_fonts@{ shape: rect, label: "适配层字体<br/>上图东观体 · 方正屏显雅宋等" }
+    ko_settings@{ shape: rect, label: "KOReader 设置 · 语言 · 字体" }
+  end
+  rm_user --> rm_trigger
+  rm_original <-->|三按切换| rm_trigger
+  rm_trigger <-->|进入 / 返回| rm_home
+  rm_daemon --> rm_display
+  rm_daemon --> rm_runner
+  rm_runner --> rm_supervisor
+  rm_daemon --> rm_agentd
+  rm_store --> rm_runner
+  rm_home -->|启动 · 暂停 · 召回 · 关闭| rm_daemon
+  rm_stopped -->|点击应用| rm_starting
+  rm_starting -->|成功| rm_foreground
+  rm_starting -->|失败并恢复显示| rm_stopped
+  rm_foreground -->|暂停 / 切换| rm_background
+  rm_background -->|召回同一进程| rm_foreground
+  rm_foreground -->|关闭| rm_closing
+  rm_closing --> rm_stopped
+  rm_background -->|关闭| rm_closing
+  rm_daemon --> rm_stopped
+  rm_detect --> rm_verify
+  rm_verify --> rm_stage
+  rm_stage --> rm_publish
+  rm_publish --> rm_health
+  rm_health -->|通过| rm_ready
+  rm_health -->|失败| rm_rollback
+  rm_priority -.-> rm_daemon
+  mp_environment --> mp_loop
+  mp_pen --> mp_capture
+  mp_capture --> mp_preview
+  mp_preview --> mp_idle
+  mp_idle --> mp_commit
+  mp_loop --> mp_pen
+  mp_ocr --> mp_transcript
+  mp_transcript --> mp_route
+  mp_route -->|是| mp_local
+  mp_route -->|否 / 不确定| mp_context
+  mp_context --> mp_agent
+  mp_agent --> mp_pi
+  mp_pi --> mp_final
+  mp_commit --> mp_ocr
+  mp_buffer --> mp_layout
+  mp_layout --> mp_appear
+  mp_appear --> mp_visible
+  mp_visible --> mp_touch
+  mp_touch --> mp_fade
+  mp_fade --> mp_ready
+  mp_local --> mp_buffer
+  mp_final --> mp_buffer
+  mp_ready -.->|下一轮| mp_pen
+  mp_commands <--> mp_data
+  mp_loop --> mp_commands
+  mp_cancel -.-> mp_ocr
+  mp_cancel -.-> mp_agent
+  mp_cancel -.-> mp_pi
+  ko_environment --> ko_adapter
+  ko_adapter --> ko_upstream
+  ko_upstream <--> ko_books
+  ko_upstream <--> ko_progress
+  ko_upstream <--> ko_settings
+  ko_launch --> ko_reading
+  ko_reading -->|切换应用 / 单按电源键| ko_pause
+  ko_pause -->|再次打开| ko_resume
+  ko_resume --> ko_reading
+  ko_reading -->|关闭| ko_close
+  ko_pause -->|关闭| ko_close
+  ko_upstream --> ko_launch
+  ko_fonts --> ko_settings
+    %% 三张彼此独立的逻辑图，共存于一个标准 Mermaid 文件。
+    %% 顶层 subgraph 之间没有任何连线。
+    classDef system fill:#111,color:#fff,stroke:#111,stroke-width:2px;
+    classDef component fill:#fff,color:#111,stroke:#111,stroke-width:2px;
+    classDef boundary fill:#eee,color:#111,stroke:#666,stroke-dasharray:5 5;
+    classDef decision fill:#fff,color:#111,stroke:#111,stroke-width:2px;
+class rm_daemon,rm_display,rm_runner,rm_supervisor,rm_agentd,rm_store,mp_loop,ko_adapter system;
+class rm_home,rm_stopped,rm_foreground,rm_background,mp_capture,mp_preview,mp_local,mp_buffer,mp_layout,mp_appear,mp_visible,mp_fade,mp_ready,mp_commands,mp_data,ko_upstream,ko_books,ko_progress,ko_settings,ko_launch,ko_reading,ko_pause,ko_resume,ko_close component;
+class rm_original,rm_detect,rm_verify,mp_environment,mp_ocr,mp_pi,ko_environment boundary;
+class rm_health,mp_route decision;

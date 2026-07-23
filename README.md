@@ -37,6 +37,8 @@ ReMagic 是 reMarkable Paper Pro 与 Paper Pro Move 的独立应用系统层。�
   RGB565 QTFB surface。
 - `remagic-runner`：依据 schema-v2 manifest 创建每个应用的 HOME/XDG、字体、
   时区、证书、网络、QTFB 和生命周期环境。
+- `remagic-agentd`：按应用复用持久 Pi RPC 进程，隔离模型凭据，并为前台问答、
+  预请求和定时任务提供有优先级、可取消的流式回答通道。
 - `remagic-home`：手指可操作的任务页、应用商店、设置和锁屏。
 - `remagic-package`：验证完整文件清单，发布不可变内容寻址 release，原子切换
   `current`，支持升级、回滚、断电恢复与保留数据卸载。
@@ -45,6 +47,13 @@ ReMagic 是 reMarkable Paper Pro 与 Paper Pro Move 的独立应用系统层。�
 应用启动必须通过 manifest 预检、进程存活、生命周期 token、第一帧 surface 和
 实际面板提交。前台 lease 绑定 app、generation、foreground epoch 和 lease ID，
 旧进程与迟到消息不能覆盖新实例。
+
+声明 `agent:pi-v1` 的应用会得到私有 socket、随机 token 与进程代际身份。交互请求会
+抢占同一应用的预请求或定时请求；后台任务不能抢占正在进行的手写问答。客户端断开
+会中止其活动轮次。Pi 不加载内置工具、任意扩展、技能或工程上下文；启用工具时也只
+加载 ReMagic 固定的受限网页搜索扩展，应用不能借它取得 shell 或文件权限。协议与
+凭据位置详见
+[`docs/PI_AGENT_SERVICE.md`](docs/PI_AGENT_SERVICE.md)。
 
 数据迁移先在应用 state 目录建立 journal 和完整快照，再以已验证的文件描述符执行
 migrator；失败、超时或断电不会提交 schema。暂停先要求应用保存状态再撤销输入与
@@ -86,6 +95,18 @@ curl -fsSL https://raw.githubusercontent.com/aporicho/remagic/main/install.sh | 
 
 重装镇纸不会修改 `/home/root/apps/remagic`；若第三方安装器重写 systemd 注册，重新
 运行同一条 ReMagic 安装命令即可恢复入口，不需要重装应用或数据。
+
+安装系统后，在电脑终端配置 MagicPaper 使用的模型密钥。脚本会在终端隐藏输入，
+经 USB SSH 直接写入 ReMagic 的 root-only `0600` 供应商文件；密钥不会进入
+MagicPaper 数据、应用包或设备设置界面：
+
+```sh
+bash <(curl -fsSL https://raw.githubusercontent.com/aporicho/remagic/main/configure-provider.sh) deepseek
+```
+
+将末尾的 `deepseek` 换成 `openai` 即可配置 OpenAI。脚本随后可选填写兼容服务的
+API base URL；留空则使用供应商默认地址。更换密钥时重复同一条命令即可，ReMagic
+会在下一次 Pi Agent 启动或手动重启后读取新配置。
 
 ## 构建
 

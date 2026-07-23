@@ -1,0 +1,12 @@
+[Unit]
+Description=ReMagic Pi agent socket
+
+[Socket]
+ListenStream=/run/remagic/agent.sock
+FileDescriptorName=agent
+SocketMode=0600
+DirectoryMode=0700
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target

@@ -1,0 +1,17 @@
+[Unit]
+Description=ReMagic supervised Pi agent broker
+Requires=remagic-agentd.socket
+BindsTo=remagicd.service
+After=home.mount local-fs.target network.target remagicd.service
+RequiresMountsFor=/home/root/apps/remagic /home/root/.local/share/remagic
+
+[Service]
+Type=simple
+ExecStart=/home/root/apps/remagic/bin/remagic-agentd
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
