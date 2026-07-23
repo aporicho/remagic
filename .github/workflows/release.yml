@@ -16,7 +16,7 @@ env:
   SDK_URL: https://storage.googleapis.com/remarkable-codex-toolchain/3.27.0.97/chiappa/remarkable-production-image-5.7.119-chiappa-public-x86_64-toolchain.sh
   SDK_SHA256: f22794bc6bb6729e648a7404a561e870d537818bd62a2f9950522f0cf15b4130
   SDK_DIR: /home/runner/remagic-sdk-chiappa-3.27
-  STORE_REF: 5f1ae75c59675905a2b9a0fb7e7a17cc732b2b07
+  STORE_REF: 40dc02956900507d48951dba7f7e27101ea79044
   QUILL_REF: 39262ee0bef69915e3ead3ac218d5973916f422a
   UI_FONT_SHA256: dbbdf59d7035d980abecf4f820e615b72107865a00f6eb41a1bbb9d9d1492fd1
 

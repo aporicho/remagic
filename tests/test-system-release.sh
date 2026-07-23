@@ -173,6 +173,16 @@ grep -Fq 'REMAGIC_STORE_CATALOG_DIR=$STORE_PAYLOAD/share/catalog' \
     echo "system installer does not seed the signed offline Store catalog" >&2
     exit 1
 }
+grep -Fq 'if [ -e "$STORE_ACCEPTED_REVISION" ]; then' \
+    "$ROOT/scripts/system-release/install-device.sh" || {
+    echo "system installer cannot preserve a newer accepted Store catalog" >&2
+    exit 1
+}
+grep -Fq 'accepted Store catalog revision is invalid' \
+    "$ROOT/scripts/system-release/install-device.sh" || {
+    echo "system installer does not reject corrupt Store catalog state" >&2
+    exit 1
+}
 grep -Fq '"$STORE_PAYLOAD/bin/remagic-store" catalog' \
     "$ROOT/scripts/system-release/install-device.sh" || {
     echo "system installer does not verify the seeded Store catalog" >&2

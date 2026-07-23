@@ -18,7 +18,7 @@ CHECKSUM_FILE=$SOURCE_DIR/SHA256SUMS
     echo "ReMagic release metadata is incomplete" >&2
     exit 1
 }
-(cd "$SOURCE_DIR" && sha256sum -c SHA256SUMS)
+(cd "$SOURCE_DIR" && sha256sum -c SHA256SUMS >/dev/null)
 
 schema=$(require_safe_release_value REMAGIC_RELEASE_SCHEMA "$RELEASE_FILE")
 version=$(require_safe_release_value REMAGIC_VERSION "$RELEASE_FILE")
@@ -60,7 +60,7 @@ PI_RUNTIME=$PAYLOAD/runtime/pi
     echo "ReMagic release payload is incomplete" >&2
     exit 1
 }
-(cd "$PAYLOAD" && sha256sum -c share/system-files.sha256)
+(cd "$PAYLOAD" && sha256sum -c share/system-files.sha256 >/dev/null)
 payload_pi_schema=$(require_safe_release_value REMAGIC_PI_RUNTIME_SCHEMA \
     "$PI_RUNTIME/runtime.env")
 payload_pi_version=$(require_safe_release_value REMAGIC_PI_VERSION \
@@ -268,9 +268,20 @@ REMAGIC_PACKAGE_STATE_ROOT=$PACKAGE_STATE_ROOT \
 # the two first-party applications from the signed catalog shipped with this
 # system release.
 STORE_PAYLOAD=/home/root/apps/remagic-store/current/payload
-REMAGIC_STORE_CATALOG_DIR=$STORE_PAYLOAD/share/catalog \
-    "$STORE_PAYLOAD/bin/remagic-store" catalog \
-        "$REMAGIC_DEVICE_PRODUCT" "$REMAGIC_OS_VERSION" >/dev/null
+STORE_ACCEPTED_REVISION=/home/root/.local/state/remagic-store/accepted-revision
+if [ -e "$STORE_ACCEPTED_REVISION" ]; then
+    accepted_revision=$(sed -n '1p' "$STORE_ACCEPTED_REVISION")
+    case "$accepted_revision" in
+        ''|*[!0-9]*)
+            echo "ReMagic: accepted Store catalog revision is invalid" >&2
+            exit 1
+            ;;
+    esac
+else
+    REMAGIC_STORE_CATALOG_DIR=$STORE_PAYLOAD/share/catalog \
+        "$STORE_PAYLOAD/bin/remagic-store" catalog \
+            "$REMAGIC_DEVICE_PRODUCT" "$REMAGIC_OS_VERSION" >/dev/null
+fi
 
 # Retire the monolithic agent only after its process has stopped, but before
 # daemon-reload follows links into the replaced system tree. A rollback uses
