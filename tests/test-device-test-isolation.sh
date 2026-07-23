@@ -328,28 +328,36 @@ remagic_test_lock || fail 'partial terminal-root recovery failed'
 [ ! -e "$REMAGIC_TEST_ROOT" ] || fail 'partial terminal-root recovery retained test data'
 remagic_test_release_lock || fail 'could not release post-partial-terminal lock'
 
-ORIGINAL_PATH=$PATH
-FAIL_BIN=$TMP/fail-bin
-mkdir -p "$FAIL_BIN"
-make_failure_wrapper() {
-    wrapper_name=$1
-    wrapper_real=$(PATH=$ORIGINAL_PATH command -v "$wrapper_name")
-    [ -n "$wrapper_real" ] || fail "missing real command for fault injection: $wrapper_name"
-    {
-        printf '%s\n' '#!/bin/sh'
-        printf '%s\n' "[ \"\${REMAGIC_FIXTURE_FAIL_COMMAND:-}\" != '$wrapper_name' ] || exit 71"
-        printf 'exec %s "$@"\n' "$wrapper_real"
-    } >"$FAIL_BIN/$wrapper_name"
-    chmod 0755 "$FAIL_BIN/$wrapper_name"
+REAL_CP=$(command -v cp)
+REAL_FIND=$(command -v find)
+REAL_MV=$(command -v mv)
+REAL_RM=$(command -v rm)
+REAL_SHA256SUM=$(command -v sha256sum)
+REAL_SYNC=$(command -v sync)
+cp() {
+    [ "${REMAGIC_FIXTURE_FAIL_COMMAND:-}" != cp ] || return 71
+    "$REAL_CP" "$@"
 }
-for wrapped_command in cp find mv rm sha256sum sync; do
-    make_failure_wrapper "$wrapped_command"
-done
-PATH=$FAIL_BIN:$ORIGINAL_PATH
-export PATH
-# dash retains command lookups performed before PATH changes. Clear that cache
-# so every injected failure is exercised through the wrapper on every shell.
-hash -r 2>/dev/null || true
+find() {
+    [ "${REMAGIC_FIXTURE_FAIL_COMMAND:-}" != find ] || return 71
+    "$REAL_FIND" "$@"
+}
+mv() {
+    [ "${REMAGIC_FIXTURE_FAIL_COMMAND:-}" != mv ] || return 71
+    "$REAL_MV" "$@"
+}
+rm() {
+    [ "${REMAGIC_FIXTURE_FAIL_COMMAND:-}" != rm ] || return 71
+    "$REAL_RM" "$@"
+}
+sha256sum() {
+    [ "${REMAGIC_FIXTURE_FAIL_COMMAND:-}" != sha256sum ] || return 71
+    "$REAL_SHA256SUM" "$@"
+}
+sync() {
+    [ "${REMAGIC_FIXTURE_FAIL_COMMAND:-}" != sync ] || return 71
+    "$REAL_SYNC" "$@"
+}
 
 # Lock ownership files remain intact if the atomic retirement rename fails.
 remagic_test_lock || fail 'could not claim lock-retirement fault fixture'
@@ -435,9 +443,6 @@ unset REMAGIC_FIXTURE_FAIL_COMMAND
 [ ! -e "$REMAGIC_TEST_ROOT" ] || fail 'sync-failure fixture did not reach the no-journal phase'
 remagic_acceptance_recover_orphan "$$" || fail 'sync-failure transaction was not recoverable'
 REMAGIC_TEST_LOCKED=false
-
-PATH=$ORIGINAL_PATH
-export PATH
 
 # Run this complete fixture under BusyBox ash when it is available. The guard
 # prevents recursion; desktop environments without BusyBox still run all
