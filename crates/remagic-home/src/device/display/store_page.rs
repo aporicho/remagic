@@ -97,13 +97,6 @@ impl Display {
             self.text(font, &entry.summary, 24.0, 72, y + 99, DARK_GRAY);
             let (status, action) = if is_busy {
                 ("正在下载、验证并安装…", Action::Unavailable)
-            } else if installed.is_some_and(|app| app.installed)
-                && installed.is_some_and(|app| newer_version(&entry.version, &app.version))
-            {
-                (
-                    "有新版本 · 轻点更新",
-                    Action::StoreUpgrade(entry.id.clone()),
-                )
             } else if installed.is_some_and(|app| app.installed) {
                 (
                     "已安装 · 轻点打开",
@@ -124,16 +117,6 @@ impl Display {
         }
         self.client.update_all()?;
         Ok(buttons)
-    }
-}
-
-fn newer_version(available: &str, installed: &str) -> bool {
-    match (
-        semver::Version::parse(available),
-        semver::Version::parse(installed),
-    ) {
-        (Ok(available), Ok(installed)) => available > installed,
-        _ => false,
     }
 }
 

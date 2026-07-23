@@ -306,7 +306,10 @@ printf 'vendor_release=%s\nadapter_release=%s\n' \
 
 sed "s/__REMAGIC_ADAPTER_RELEASE__/$KOREADER_ADAPTER_RELEASE/g" \
     "$KOREADER_ADAPTER/manifests/koreader.toml" >"$OUT/manifests/koreader.toml"
-sed "s/__REMAGIC_ADAPTER_RELEASE__/$KOREADER_ADAPTER_RELEASE/g" \
+sed \
+    -e "s#__REMAGIC_ADAPTER_RELEASE__#$KOREADER_ADAPTER_RELEASE#g" \
+    -e "s#__REMAGIC_KOREADER_VENDOR_ROOT__#home/root/apps/koreader-for-remagic/vendor/releases/$KOREADER_VENDOR_RELEASE/koreader#g" \
+    -e "s#__REMAGIC_KOREADER_ADAPTER_ROOT__#home/root/apps/koreader-for-remagic/adapter/releases/$KOREADER_ADAPTER_RELEASE#g" \
     "$ROOT/testing/manifests/koreader.toml" >"$OUT/testing/manifests/koreader.toml"
 koreader_release_load "$OUT/opt/koreader-for-remagic/deployment/current.env"
 koreader_release_verify "$OUT/opt/koreader-for-remagic" || {
