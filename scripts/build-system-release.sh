@@ -122,7 +122,7 @@ mkdir -p "$PAYLOAD/bin" "$PAYLOAD/lib" "$PAYLOAD/fonts" \
     "$PAYLOAD/shims" "$PAYLOAD/libexec" "$PAYLOAD/share/systemd" \
     "$PAYLOAD/share/testing/manifests" "$RELEASE_ROOT/packages"
 for binary in remagicd remagic-home remagic-runner remagicctl \
-    remagic-vellum-worker remagic-package-inspect remagic-agentd; do
+    remagic-vellum-worker remagic-package-inspect remagic-agentd remagic-update; do
     install -m 0755 "$ROOT/target/$TARGET/release/$binary" "$PAYLOAD/bin/$binary"
 done
 install -m 0755 \
@@ -179,6 +179,8 @@ install -m 0644 "$BUILD_ROOT/shims/LICENSE.qtfb-shim" \
 for helper in remagic-register remagic-recover remagic-configure-provider; do
     install -m 0755 "$ROOT/scripts/$helper" "$PAYLOAD/libexec/$helper"
 done
+install -m 0644 "$ROOT/scripts/system-release/system-trusted-keys.json" \
+    "$PAYLOAD/share/system-trusted-keys.json"
 for helper in deployment-common.sh device-test-recovery.sh device-test-manifests.sh \
     device-test-isolation.sh; do
     install -m 0644 "$ROOT/scripts/lib/$helper" "$PAYLOAD/libexec/$helper"
@@ -254,5 +256,8 @@ SUPPORTED_DEVICES=ferrari,chiappa
 ARCHIVE_URL=https://github.com/aporicho/remagic/releases/download/v$VERSION/$(basename "$ARCHIVE")
 ARCHIVE_SHA256=$archive_sha
 EOF
+"$ROOT/scripts/system-release/create-release-metadata.sh" \
+    "$ARCHIVE" "$VERSION" "${REMAGIC_RELEASE_SEQUENCE:-1}" \
+    "$OUT_ROOT/remagic-release-v1.json" >/dev/null
 printf '%s\n' "$ARCHIVE"
 printf '%s  %s\n' "$archive_sha" "$ARCHIVE"

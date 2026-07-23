@@ -51,9 +51,11 @@ PI_RUNTIME=$PAYLOAD/runtime/pi
     [ ! -L "$PI_RUNTIME/extensions/remagic-tools.js" ] && \
     [ -f "$PI_RUNTIME/runtime.env" ] && [ ! -L "$PI_RUNTIME/runtime.env" ] && \
     [ -x "$PAYLOAD/bin/remagic-package-inspect" ] && \
+    [ -x "$PAYLOAD/bin/remagic-update" ] && \
     [ -x "$PAYLOAD/libexec/remagic-register" ] && \
     [ -x "$PAYLOAD/libexec/remagic-configure-provider" ] && \
     [ -f "$PAYLOAD/share/system-files.sha256" ] && \
+    [ -f "$PAYLOAD/share/system-trusted-keys.json" ] && \
     [ -f "$STORE_BUNDLE" ] || {
     echo "ReMagic release payload is incomplete" >&2
     exit 1

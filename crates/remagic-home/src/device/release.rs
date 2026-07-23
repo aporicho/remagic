@@ -16,6 +16,7 @@ pub(super) struct Context<'a> {
     pub(super) settings: &'a mut HomeSettings,
     pub(super) wallpapers: &'a mut Vec<WallpaperOption>,
     pub(super) store_error: &'a mut Option<String>,
+    pub(super) store_catalog: &'a mut Vec<super::store::CatalogApp>,
 }
 
 pub(super) async fn handle(
@@ -61,9 +62,13 @@ async fn handle_welcome(
         Action::OpenStore => {
             first_run::complete()?;
             refresh_apps(context.apps).await;
+            if let Ok(catalog) = super::store::catalog().await {
+                *context.store_catalog = catalog;
+            }
             *context.buttons = context.display.render_store(
                 context.font,
                 context.apps,
+                context.store_catalog,
                 None,
                 context.store_error.as_deref(),
             )?;
@@ -92,6 +97,9 @@ async fn handle_store(
         (UiMode::Store, Action::StoreInstall(app_id)) => {
             install_from_store(context, app_id).await?
         }
+        (UiMode::Store, Action::StoreUpgrade(app_id)) => {
+            upgrade_from_store(context, app_id).await?
+        }
         (UiMode::Store, Action::Launch(app_id)) => launch_from_store(context, app_id).await?,
         _ => return Ok(false),
     }
@@ -100,9 +108,17 @@ async fn handle_store(
 
 async fn enter_store(context: &mut Context<'_>) -> Result<(), Box<dyn std::error::Error>> {
     refresh_apps(context.apps).await;
+    match super::store::catalog().await {
+        Ok(catalog) => *context.store_catalog = catalog,
+        Err(error) => {
+            eprintln!("remagic-home: Store catalog refresh failed: {error}");
+            *context.store_error = Some(error.to_string());
+        }
+    }
     *context.buttons = context.display.render_store(
         context.font,
         context.apps,
+        context.store_catalog,
         None,
         context.store_error.as_deref(),
     )?;
@@ -122,13 +138,19 @@ async fn install_from_store(
     app_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     *context.store_error = None;
-    *context.buttons =
-        context
-            .display
-            .render_store(context.font, context.apps, Some(app_id), None)?;
+    *context.buttons = context.display.render_store(
+        context.font,
+        context.apps,
+        context.store_catalog,
+        Some(app_id),
+        None,
+    )?;
     if let Err(error) = store::install(app_id).await {
         eprintln!("remagic-home: Store install failed: {error}");
         *context.store_error = Some(error.to_string());
+    }
+    if let Ok(catalog) = super::store::catalog().await {
+        *context.store_catalog = catalog;
     }
     redraw_store(context).await
 }
@@ -149,11 +171,34 @@ async fn launch_from_store(
     redraw_store(context).await
 }
 
+async fn upgrade_from_store(
+    context: &mut Context<'_>,
+    app_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    *context.store_error = None;
+    *context.buttons = context.display.render_store(
+        context.font,
+        context.apps,
+        context.store_catalog,
+        Some(app_id),
+        None,
+    )?;
+    if let Err(error) = store::upgrade(app_id).await {
+        eprintln!("remagic-home: Store upgrade failed: {error}");
+        *context.store_error = Some(error.to_string());
+    }
+    if let Ok(catalog) = super::store::catalog().await {
+        *context.store_catalog = catalog;
+    }
+    redraw_store(context).await
+}
+
 async fn redraw_store(context: &mut Context<'_>) -> Result<(), Box<dyn std::error::Error>> {
     refresh_apps(context.apps).await;
     *context.buttons = context.display.render_store(
         context.font,
         context.apps,
+        context.store_catalog,
         None,
         context.store_error.as_deref(),
     )?;

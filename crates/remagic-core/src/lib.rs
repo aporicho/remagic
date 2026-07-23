@@ -5,6 +5,7 @@ pub mod power;
 pub mod runtime;
 pub mod session;
 pub mod state;
+pub mod system_release;
 
 pub use remagic_device::{
     DeviceDisplayProfile, DeviceProduct, DeviceProfile, DeviceProfileError, SurfacePixelFormat,

@@ -1,13 +1,14 @@
 use super::{Display, BLACK, DARK_GRAY, GRAY, WHITE};
-use crate::device::{Action, Button};
+use crate::device::{store::CatalogApp, Action, Button};
 use ab_glyph::FontArc;
 use remagic_core::AppId;
 use remagic_protocol::AppView;
 use std::io;
 
-const STORE_APPS: [(&str, &str, &str); 2] = [
+const STORE_APPS: [(&str, &str, &str); 3] = [
     ("magicpaper", "MagicPaper", "手写 AI 魔法纸"),
     ("koreader", "KOReader", "阅读与管理电子书"),
+    ("upload", "文件传输", "上传书籍、壁纸并同步设备"),
 ];
 
 impl Display {
@@ -19,8 +20,15 @@ impl Display {
     ) -> i32 {
         let height = 112;
         self.card(38, y, self.width - 76, height);
-        self.text(font, "应用商店", 35.0, 72, y + 48, BLACK);
-        self.text(font, "MagicPaper · KOReader", 22.0, 72, y + 86, DARK_GRAY);
+        self.text(font, "更新中心", 35.0, 72, y + 48, BLACK);
+        self.text(
+            font,
+            "系统更新 · 应用安装与更新",
+            22.0,
+            72,
+            y + 86,
+            DARK_GRAY,
+        );
         buttons.push(Button {
             x: 38,
             y,
@@ -35,13 +43,21 @@ impl Display {
         &mut self,
         font: &FontArc,
         apps: &[AppView],
+        catalog: &[CatalogApp],
         busy: Option<&str>,
         error: Option<&str>,
     ) -> io::Result<Vec<Button>> {
         self.fill(WHITE);
         let mut buttons = Vec::new();
-        self.text(font, "应用商店", 54.0, 48, 82, BLACK);
-        self.text(font, "ReMagic 第一方应用", 25.0, 50, 128, DARK_GRAY);
+        self.text(font, "更新中心", 54.0, 48, 82, BLACK);
+        self.text(
+            font,
+            "系统更新 · ReMagic 第一方应用",
+            25.0,
+            50,
+            128,
+            DARK_GRAY,
+        );
         let back = Button {
             x: self.width - 190,
             y: 38,
@@ -58,22 +74,43 @@ impl Display {
             self.text(font, "上次操作失败，请重试", 24.0, 50, 166, DARK_GRAY);
             y += 28;
         }
-        for (id, name, summary) in STORE_APPS {
-            let installed = apps.iter().find(|app| app.id.as_str() == id);
-            let is_busy = busy == Some(id);
+        let fallback = STORE_APPS
+            .iter()
+            .map(|(id, name, summary)| CatalogApp {
+                id: (*id).into(),
+                name: (*name).into(),
+                summary: (*summary).into(),
+                version: "未知".into(),
+            })
+            .collect::<Vec<_>>();
+        let entries = if catalog.is_empty() {
+            &fallback
+        } else {
+            catalog
+        };
+        for entry in entries {
+            let installed = apps.iter().find(|app| app.id.as_str() == entry.id);
+            let is_busy = busy == Some(entry.id.as_str());
             let height = 176;
             self.card(38, y, self.width - 76, height);
-            self.text(font, name, 41.0, 72, y + 58, BLACK);
-            self.text(font, summary, 24.0, 72, y + 99, DARK_GRAY);
+            self.text(font, &entry.name, 41.0, 72, y + 58, BLACK);
+            self.text(font, &entry.summary, 24.0, 72, y + 99, DARK_GRAY);
             let (status, action) = if is_busy {
                 ("正在下载、验证并安装…", Action::Unavailable)
+            } else if installed.is_some_and(|app| app.installed)
+                && installed.is_some_and(|app| newer_version(&entry.version, &app.version))
+            {
+                (
+                    "有新版本 · 轻点更新",
+                    Action::StoreUpgrade(entry.id.clone()),
+                )
             } else if installed.is_some_and(|app| app.installed) {
                 (
                     "已安装 · 轻点打开",
-                    Action::Launch(AppId::new(id).expect("fixed Store app id")),
+                    Action::Launch(AppId::new(entry.id.clone()).expect("catalog app id")),
                 )
             } else {
-                ("未安装 · 轻点安装", Action::StoreInstall(id.into()))
+                ("未安装 · 轻点安装", Action::StoreInstall(entry.id.clone()))
             };
             self.text(font, status, 24.0, 72, y + 142, BLACK);
             buttons.push(Button {
@@ -87,6 +124,16 @@ impl Display {
         }
         self.client.update_all()?;
         Ok(buttons)
+    }
+}
+
+fn newer_version(available: &str, installed: &str) -> bool {
+    match (
+        semver::Version::parse(available),
+        semver::Version::parse(installed),
+    ) {
+        (Ok(available), Ok(installed)) => available > installed,
+        _ => false,
     }
 }
 

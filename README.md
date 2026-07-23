@@ -118,6 +118,16 @@ API base URL；留空则使用供应商默认地址。更换密钥时重复同�
 ./scripts/build-system-release.sh
 ```
 
+系统 Release 生成后会同时得到 `remagic-release-v1.json`。发布前使用独立的系统签名密钥签署：
+
+```sh
+REMAGIC_SYSTEM_SIGNING_KEY=/path/to/system-2026-01.pem \
+  ./scripts/system-release/sign-release.sh dist/remagic-release-v1.json
+```
+
+设备端更新校验由 `remagic-update check|verify|apply` 完成；它只接受本仓库 GitHub
+Release 路径、签名元数据和匹配的归档哈希。应用商店继续使用独立的 Catalog 签名密钥。
+
 默认需要当前 Paper Pro family SDK、同级 `quill-move`、`remagic-store` 和方正屏显
 雅宋字体。所有 Rust/C/C++ 设备组件强制以 baseline ARMv8-A 构建，防止 Chiappa
 SDK 的产品专用 `-mcpu` 指令进入 Ferrari 通用包。

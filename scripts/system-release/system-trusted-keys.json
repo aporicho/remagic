@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "keys": [
+    {
+      "key_id": "remagic-system-2026-01",
+      "algorithm": "ed25519",
+      "public_key": "msfGZGESTfTS458uo5QQVVJX2ZK9lSytK5pC15/4cOQ="
+    }
+  ]
+}
