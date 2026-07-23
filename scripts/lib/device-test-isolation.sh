@@ -292,7 +292,8 @@ remagic_test_fingerprint() {
                 rm -f "$roots" "$listing" "$details" || true
                 return 1
             } ;;
-            *) find "$root" -xdev \( -type d -o -type f -o -type l \) -print \
+            *) remagic_acceptance_fs_command find \
+                "$root" -xdev \( -type d -o -type f -o -type l \) -print \
                 >>"$listing" || {
                     rm -f "$roots" "$listing" "$details" || true
                     return 1
@@ -330,7 +331,7 @@ remagic_test_fingerprint() {
                             return 1
                         }
                 elif [ -f "$path" ]; then
-                    digest_line=$(sha256sum "$path") || {
+                    digest_line=$(remagic_acceptance_fs_command sha256sum "$path") || {
                         rm -f "$roots" "$listing" "$details" || true
                         return 1
                     }
@@ -357,7 +358,7 @@ remagic_test_fingerprint() {
                 ;;
         esac
     done <"$listing"
-    final_line=$(sha256sum "$details") || {
+    final_line=$(remagic_acceptance_fs_command sha256sum "$details") || {
         rm -f "$roots" "$listing" "$details" || true
         return 1
     }

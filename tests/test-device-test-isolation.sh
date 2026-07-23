@@ -328,35 +328,10 @@ remagic_test_lock || fail 'partial terminal-root recovery failed'
 [ ! -e "$REMAGIC_TEST_ROOT" ] || fail 'partial terminal-root recovery retained test data'
 remagic_test_release_lock || fail 'could not release post-partial-terminal lock'
 
-REAL_CP=$(command -v cp)
-REAL_FIND=$(command -v find)
-REAL_MV=$(command -v mv)
-REAL_RM=$(command -v rm)
-REAL_SHA256SUM=$(command -v sha256sum)
-REAL_SYNC=$(command -v sync)
-cp() {
-    [ "${REMAGIC_FIXTURE_FAIL_COMMAND:-}" != cp ] || return 71
-    "$REAL_CP" "$@"
-}
-find() {
-    [ "${REMAGIC_FIXTURE_FAIL_COMMAND:-}" != find ] || return 71
-    "$REAL_FIND" "$@"
-}
-mv() {
-    [ "${REMAGIC_FIXTURE_FAIL_COMMAND:-}" != mv ] || return 71
-    "$REAL_MV" "$@"
-}
-rm() {
-    [ "${REMAGIC_FIXTURE_FAIL_COMMAND:-}" != rm ] || return 71
-    "$REAL_RM" "$@"
-}
-sha256sum() {
-    [ "${REMAGIC_FIXTURE_FAIL_COMMAND:-}" != sha256sum ] || return 71
-    "$REAL_SHA256SUM" "$@"
-}
-sync() {
-    [ "${REMAGIC_FIXTURE_FAIL_COMMAND:-}" != sync ] || return 71
-    "$REAL_SYNC" "$@"
+remagic_acceptance_fs_command() {
+    [ "$#" -gt 0 ] || return 1
+    [ "${REMAGIC_FIXTURE_FAIL_COMMAND:-}" != "$1" ] || return 71
+    command "$@"
 }
 
 # Lock ownership files remain intact if the atomic retirement rename fails.

@@ -5,6 +5,11 @@
 
 REMAGIC_ACCEPTANCE_FORMAT=remagic-acceptance-v1
 
+remagic_acceptance_fs_command() {
+    [ "$#" -gt 0 ] || return 1
+    command "$@"
+}
+
 remagic_acceptance_safe_path() {
     local acceptance_path acceptance_relative
     [ "$#" -eq 1 ] || return 1
@@ -113,7 +118,8 @@ remagic_acceptance_save_sessions() {
     rm -rf "$acceptance_new" || return 1
     mkdir -p "$acceptance_new" || return 1
     if [ -e "$REMAGIC_TEST_SESSION_ROOT" ] || [ -L "$REMAGIC_TEST_SESSION_ROOT" ]; then
-        cp -a "$REMAGIC_TEST_SESSION_ROOT" "$acceptance_new/value" || {
+        remagic_acceptance_fs_command cp -a \
+            "$REMAGIC_TEST_SESSION_ROOT" "$acceptance_new/value" || {
             rm -rf "$acceptance_new" || true
             return 1
         }
@@ -156,13 +162,16 @@ remagic_acceptance_restore_sessions() {
     fi
     acceptance_had_current=false
     if [ -e "$REMAGIC_TEST_SESSION_ROOT" ] || [ -L "$REMAGIC_TEST_SESSION_ROOT" ]; then
-        mv "$REMAGIC_TEST_SESSION_ROOT" "$acceptance_trash" || return 1
+        remagic_acceptance_fs_command mv \
+            "$REMAGIC_TEST_SESSION_ROOT" "$acceptance_trash" || return 1
         acceptance_had_current=true
     fi
     if [ -e "$acceptance_snapshot/present" ]; then
-        mv "$acceptance_stage" "$REMAGIC_TEST_SESSION_ROOT" || {
+        remagic_acceptance_fs_command mv \
+            "$acceptance_stage" "$REMAGIC_TEST_SESSION_ROOT" || {
             [ "$acceptance_had_current" = false ] || \
-                mv "$acceptance_trash" "$REMAGIC_TEST_SESSION_ROOT" || true
+                remagic_acceptance_fs_command mv \
+                    "$acceptance_trash" "$REMAGIC_TEST_SESSION_ROOT" || true
             return 1
         }
     fi
@@ -276,8 +285,8 @@ remagic_acceptance_restore_stock() {
 remagic_acceptance_remove_test_root() {
     [ "$#" -eq 0 ] || return 1
     remagic_acceptance_safe_path "$REMAGIC_TEST_ROOT" || return 1
-    rm -rf "$REMAGIC_TEST_ROOT" || return 1
-    sync || return 1
+    remagic_acceptance_fs_command rm -rf "$REMAGIC_TEST_ROOT" || return 1
+    remagic_acceptance_fs_command sync || return 1
     [ ! -e "$REMAGIC_TEST_ROOT" ] && [ ! -L "$REMAGIC_TEST_ROOT" ]
 }
 
@@ -294,13 +303,14 @@ remagic_acceptance_remove_lock() {
     [ ! -e "$acceptance_tombstone" ] && [ ! -L "$acceptance_tombstone" ] || return 1
     # Do not delete ownership evidence in place. The same-parent rename makes
     # the public lock either wholly present or wholly absent after a crash.
-    mv "$REMAGIC_TEST_LOCK" "$acceptance_tombstone" || return 1
-    sync || return 1
-    if ! rm -rf "$acceptance_tombstone"; then
+    remagic_acceptance_fs_command mv \
+        "$REMAGIC_TEST_LOCK" "$acceptance_tombstone" || return 1
+    remagic_acceptance_fs_command sync || return 1
+    if ! remagic_acceptance_fs_command rm -rf "$acceptance_tombstone"; then
         echo "acceptance recovery: released lock tombstone retained at $acceptance_tombstone" >&2
         return 0
     fi
-    sync || {
+    remagic_acceptance_fs_command sync || {
         echo "acceptance recovery: lock released but tombstone cleanup is not durable" >&2
         return 0
     }
