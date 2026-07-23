@@ -17,7 +17,7 @@ printf '%s  %s\n' "$EXPECTED" "$ARCHIVE" | sha256sum -c -
 
 BUILD_ROOT=$(mktemp -d /tmp/remagic-qtfb-shim.XXXXXX)
 trap 'rm -rf "$BUILD_ROOT"' EXIT
-bsdtar -xf "$ARCHIVE" -C "$BUILD_ROOT" --strip-components 1
+tar -xzf "$ARCHIVE" -C "$BUILD_ROOT" --strip-components=1
 # This baseline patch contains the standalone-socket QTFB connection change.
 # Later patches modify only the retired AppLoad runtime and are not applied.
 patch --batch --forward -p1 -d "$BUILD_ROOT" \
