@@ -35,8 +35,8 @@ kill_timeout_ms = 5500
 
 [background_service]
 kind = "managed"
-exec = "/home/root/apps/magicpaper/current/libexec/magicpaper-agent"
-working_dir = "/home/root/apps/magicpaper/current"
+exec = "/home/root/apps/remagic/scripts/magicpaper-agent-remagic"
+working_dir = "/home/root/apps/remagic/opt/magicpaper"
 restart = "on_failure"
 
 [data_schema]
