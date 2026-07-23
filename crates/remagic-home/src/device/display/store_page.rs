@@ -1,5 +1,8 @@
 use super::{Display, BLACK, DARK_GRAY, GRAY, WHITE};
-use crate::device::{store::CatalogApp, Action, Button};
+use crate::device::{
+    store::{CatalogApp, CatalogStatus, SystemUpdateInfo},
+    Action, Button,
+};
 use ab_glyph::FontArc;
 use remagic_core::AppId;
 use remagic_protocol::AppView;
@@ -44,6 +47,7 @@ impl Display {
         font: &FontArc,
         apps: &[AppView],
         catalog: &[CatalogApp],
+        system_update: &SystemUpdateInfo,
         busy: Option<&str>,
         error: Option<&str>,
     ) -> io::Result<Vec<Button>> {
@@ -81,6 +85,14 @@ impl Display {
                 name: (*name).into(),
                 summary: (*summary).into(),
                 version: "未知".into(),
+                status: if apps
+                    .iter()
+                    .any(|app| app.id.as_str() == *id && app.installed)
+                {
+                    CatalogStatus::Installed
+                } else {
+                    CatalogStatus::NotInstalled
+                },
             })
             .collect::<Vec<_>>();
         let entries = if catalog.is_empty() {
@@ -88,31 +100,104 @@ impl Display {
         } else {
             catalog
         };
+        let system_busy = busy == Some("__system__");
+        self.card(38, y, self.width - 76, 142);
+        self.text(font, "ReMagic 系统", 38.0, 72, y + 52, BLACK);
+        let system_status = if system_busy {
+            "正在下载、验证并安装…".to_owned()
+        } else if system_update.update_available {
+            format!(
+                "{} → {} · 轻点更新",
+                system_update.current_version, system_update.available_version
+            )
+        } else if system_update.available_version.is_empty() {
+            "轻点联网检查系统更新".to_owned()
+        } else {
+            format!("已是最新版本 {}", system_update.current_version)
+        };
+        self.text(font, &system_status, 23.0, 72, y + 103, DARK_GRAY);
+        buttons.push(Button {
+            x: 38,
+            y,
+            width: self.width - 76,
+            height: 142,
+            action: if system_busy
+                || (!system_update.update_available && !system_update.available_version.is_empty())
+            {
+                Action::Unavailable
+            } else {
+                Action::SystemUpdate
+            },
+        });
+        y += 166;
+
         for entry in entries {
-            let installed = apps.iter().find(|app| app.id.as_str() == entry.id);
             let is_busy = busy == Some(entry.id.as_str());
             let height = 176;
             self.card(38, y, self.width - 76, height);
             self.text(font, &entry.name, 41.0, 72, y + 58, BLACK);
-            self.text(font, &entry.summary, 24.0, 72, y + 99, DARK_GRAY);
+            self.text(
+                font,
+                &format!("{} · v{}", entry.summary, entry.version),
+                22.0,
+                72,
+                y + 99,
+                DARK_GRAY,
+            );
             let (status, action) = if is_busy {
                 ("正在下载、验证并安装…", Action::Unavailable)
-            } else if installed.is_some_and(|app| app.installed) {
-                (
-                    "已安装 · 轻点打开",
-                    Action::Launch(AppId::new(entry.id.clone()).expect("catalog app id")),
-                )
             } else {
-                ("未安装 · 轻点安装", Action::StoreInstall(entry.id.clone()))
+                match entry.status {
+                    CatalogStatus::UpdateAvailable => (
+                        "有新版本 · 轻点更新",
+                        Action::StoreUpgrade(entry.id.clone()),
+                    ),
+                    CatalogStatus::Installed | CatalogStatus::NeedsConfiguration => (
+                        "已安装 · 轻点打开",
+                        Action::Launch(AppId::new(entry.id.clone()).expect("catalog app id")),
+                    ),
+                    CatalogStatus::Incompatible => ("当前设备或系统不兼容", Action::Unavailable),
+                    CatalogStatus::NotInstalled => {
+                        ("未安装 · 轻点安装", Action::StoreInstall(entry.id.clone()))
+                    }
+                }
             };
             self.text(font, status, 24.0, 72, y + 142, BLACK);
             buttons.push(Button {
                 x: 38,
                 y,
-                width: self.width - 76,
+                width: if matches!(
+                    entry.status,
+                    CatalogStatus::Installed
+                        | CatalogStatus::NeedsConfiguration
+                        | CatalogStatus::UpdateAvailable
+                ) && !is_busy
+                {
+                    self.width - 244
+                } else {
+                    self.width - 76
+                },
                 height,
                 action,
             });
+            if matches!(
+                entry.status,
+                CatalogStatus::Installed
+                    | CatalogStatus::NeedsConfiguration
+                    | CatalogStatus::UpdateAvailable
+            ) && !is_busy
+            {
+                let remove = Button {
+                    x: self.width - 206,
+                    y: y + 111,
+                    width: 132,
+                    height: 48,
+                    action: Action::StoreUninstall(entry.id.clone()),
+                };
+                self.round_rect(remove.x, remove.y, remove.width, remove.height, GRAY);
+                self.text(font, "卸载", 22.0, remove.x + 40, remove.y + 33, BLACK);
+                buttons.push(remove);
+            }
             y += height + 26;
         }
         self.client.update_all()?;

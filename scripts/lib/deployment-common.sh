@@ -95,9 +95,10 @@ list_remagic_app_units() {
 
 list_legacy_display_units() {
     "$SYSTEMCTL" list-units --all --plain --no-legend \
-        'remagic-runtime*.service' 'riddle*.service' 'appload*.service' \
+        'remagic-runtime*.service' 'remagic-background*.service' \
+        'riddle*.service' 'appload*.service' \
         'rm-appload*.service' 'koreader.service' 'magicpaper*.service' 2>/dev/null \
-        | awk '$1 ~ /^(remagic-runtime.*|riddle.*|appload.*|rm-appload.*|koreader|magicpaper.*)\.service$/ { print $1 }'
+        | awk '$1 ~ /^(remagic-runtime.*|remagic-background.*|riddle.*|appload.*|rm-appload.*|koreader|magicpaper.*)\.service$/ { print $1 }'
 }
 
 stop_unit_confirmed() {

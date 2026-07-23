@@ -134,8 +134,8 @@ rollback_transaction() {
     echo "install-device.sh: rolling back transaction $(basename "$txn")" >&2
     stop_unit_confirmed magicpaper-agent.service || return 1
     stop_unit_confirmed remagicd.service || return 1
-    stop_alternative_display_owners || return 1
     stop_unit_confirmed paperweight.service || return 1
+    stop_alternative_display_owners || return 1
     assert_no_known_owner_processes || return 1
     remove_stale_qtfb_surfaces || return 1
     kind=$(sed -n '1p' "$txn/kind" 2>/dev/null || true)
@@ -772,8 +772,8 @@ if [ -x "$APP_ROOT/bin/remagicctl" ]; then
 fi
 stop_unit_confirmed magicpaper-agent.service
 stop_unit_confirmed remagicd.service
-stop_alternative_display_owners
 stop_unit_confirmed paperweight.service
+stop_alternative_display_owners
 assert_no_known_owner_processes
 remove_stale_qtfb_surfaces
 remove_manager_runtime_files

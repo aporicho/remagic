@@ -10,6 +10,7 @@ UI_FONT=${REMAGIC_UI_FONT:-/home/aporicho/Downloads/方正屏显雅宋.TTF}
 PI_RUNTIME=${REMAGIC_PI_RUNTIME_DIR:-}
 VERSION=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' \
     "$ROOT/Cargo.toml" | head -n 1)
+RELEASE_SEQUENCE=${REMAGIC_RELEASE_SEQUENCE:-1}
 OUT_ROOT=$ROOT/dist/system-release
 RELEASE_ROOT=$OUT_ROOT/remagic-system
 PAYLOAD=$RELEASE_ROOT/payload
@@ -211,6 +212,7 @@ install -m 0644 "$ROOT/scripts/system-release/common.sh" "$RELEASE_ROOT/common.s
 cat >"$RELEASE_ROOT/release.env" <<EOF
 REMAGIC_RELEASE_SCHEMA=1
 REMAGIC_VERSION=$VERSION
+REMAGIC_RELEASE_SEQUENCE=$RELEASE_SEQUENCE
 REMAGIC_API=5
 REMAGIC_PI_RUNTIME_SCHEMA=$pi_runtime_schema
 REMAGIC_PI_VERSION=$pi_version
@@ -257,7 +259,7 @@ ARCHIVE_URL=https://github.com/aporicho/remagic/releases/download/v$VERSION/$(ba
 ARCHIVE_SHA256=$archive_sha
 EOF
 "$ROOT/scripts/system-release/create-release-metadata.sh" \
-    "$ARCHIVE" "$VERSION" "${REMAGIC_RELEASE_SEQUENCE:-1}" \
+    "$ARCHIVE" "$VERSION" "$RELEASE_SEQUENCE" \
     "$OUT_ROOT/remagic-release-v1.json" >/dev/null
 printf '%s\n' "$ARCHIVE"
 printf '%s  %s\n' "$archive_sha" "$ARCHIVE"

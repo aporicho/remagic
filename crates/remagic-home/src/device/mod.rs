@@ -20,6 +20,8 @@ pub(super) enum Action {
     OpenStore,
     StoreInstall(String),
     StoreUpgrade(String),
+    StoreUninstall(String),
+    SystemUpdate,
     Unavailable,
     System,
     Sleep,
@@ -82,6 +84,7 @@ pub(super) async fn run(mut apps: Vec<AppView>) -> Result<(), Box<dyn std::error
     let mut pressed: Option<(Button, Vec<u32>)> = None;
     let mut store_error: Option<String> = None;
     let mut store_catalog = Vec::new();
+    let mut system_update = store::SystemUpdateInfo::default();
     let mut last_lock_poll = tokio::time::Instant::now();
     loop {
         for event in display.poll_touch_events()? {
@@ -101,6 +104,7 @@ pub(super) async fn run(mut apps: Vec<AppView>) -> Result<(), Box<dyn std::error
                             wallpapers: &mut wallpapers,
                             store_error: &mut store_error,
                             store_catalog: &mut store_catalog,
+                            system_update: &mut system_update,
                         },
                         &mut pressed,
                         x,
@@ -231,6 +235,8 @@ async fn execute_action(
         | Action::OpenStore
         | Action::StoreInstall(_)
         | Action::StoreUpgrade(_)
+        | Action::StoreUninstall(_)
+        | Action::SystemUpdate
         | Action::CycleWallpaper
         | Action::ToggleWallpaperFit
         | Action::ToggleLockClock

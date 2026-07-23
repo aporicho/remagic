@@ -17,6 +17,7 @@ pub(super) struct Context<'a> {
     pub(super) wallpapers: &'a mut Vec<WallpaperOption>,
     pub(super) store_error: &'a mut Option<String>,
     pub(super) store_catalog: &'a mut Vec<super::store::CatalogApp>,
+    pub(super) system_update: &'a mut super::store::SystemUpdateInfo,
 }
 
 pub(super) async fn handle(
@@ -65,10 +66,14 @@ async fn handle_welcome(
             if let Ok(catalog) = super::store::catalog().await {
                 *context.store_catalog = catalog;
             }
+            if let Ok(update) = super::store::system_update_info().await {
+                *context.system_update = update;
+            }
             *context.buttons = context.display.render_store(
                 context.font,
                 context.apps,
                 context.store_catalog,
+                context.system_update,
                 None,
                 context.store_error.as_deref(),
             )?;
@@ -100,6 +105,10 @@ async fn handle_store(
         (UiMode::Store, Action::StoreUpgrade(app_id)) => {
             upgrade_from_store(context, app_id).await?
         }
+        (UiMode::Store, Action::StoreUninstall(app_id)) => {
+            uninstall_from_store(context, app_id).await?
+        }
+        (UiMode::Store, Action::SystemUpdate) => system_update(context).await?,
         (UiMode::Store, Action::Launch(app_id)) => launch_from_store(context, app_id).await?,
         _ => return Ok(false),
     }
@@ -115,10 +124,14 @@ async fn enter_store(context: &mut Context<'_>) -> Result<(), Box<dyn std::error
             *context.store_error = Some(error.to_string());
         }
     }
+    if let Ok(update) = super::store::system_update_info().await {
+        *context.system_update = update;
+    }
     *context.buttons = context.display.render_store(
         context.font,
         context.apps,
         context.store_catalog,
+        context.system_update,
         None,
         context.store_error.as_deref(),
     )?;
@@ -142,6 +155,7 @@ async fn install_from_store(
         context.font,
         context.apps,
         context.store_catalog,
+        context.system_update,
         Some(app_id),
         None,
     )?;
@@ -180,6 +194,7 @@ async fn upgrade_from_store(
         context.font,
         context.apps,
         context.store_catalog,
+        context.system_update,
         Some(app_id),
         None,
     )?;
@@ -193,12 +208,44 @@ async fn upgrade_from_store(
     redraw_store(context).await
 }
 
+async fn uninstall_from_store(
+    context: &mut Context<'_>,
+    app_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    *context.store_error = None;
+    if let Err(error) = store::uninstall(app_id).await {
+        *context.store_error = Some(error.to_string());
+    }
+    if let Ok(catalog) = store::catalog().await {
+        *context.store_catalog = catalog;
+    }
+    redraw_store(context).await
+}
+
+async fn system_update(context: &mut Context<'_>) -> Result<(), Box<dyn std::error::Error>> {
+    *context.store_error = None;
+    if let Err(error) = store::install_system_update().await {
+        *context.store_error = Some(error.to_string());
+        return redraw_store(context).await;
+    }
+    *context.buttons = context.display.render_store(
+        context.font,
+        context.apps,
+        context.store_catalog,
+        context.system_update,
+        Some("__system__"),
+        None,
+    )?;
+    Ok(())
+}
+
 async fn redraw_store(context: &mut Context<'_>) -> Result<(), Box<dyn std::error::Error>> {
     refresh_apps(context.apps).await;
     *context.buttons = context.display.render_store(
         context.font,
         context.apps,
         context.store_catalog,
+        context.system_update,
         None,
         context.store_error.as_deref(),
     )?;

@@ -54,6 +54,26 @@ fn main() -> Result<(), String> {
             println!("{}", serde_json::to_string_pretty(&verified.release).map_err(|e| e.to_string())?);
             Ok(())
         }
+        Some("install") => {
+            let release_url = read_arg(&mut args, "RELEASE_URL")?;
+            let signature_url = read_arg(&mut args, "SIGNATURE_URL")?;
+            let device = parse_device(&read_arg(&mut args, "DEVICE")?)?;
+            let os = read_arg(&mut args, "OS_VERSION")?;
+            let minimum = read_arg(&mut args, "MIN_SEQUENCE")?
+                .parse()
+                .map_err(|_| "invalid minimum sequence".to_owned())?;
+            let root = PathBuf::from(format!("/tmp/remagic-update-{}", std::process::id()));
+            fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+            let release = root.join("release.json");
+            let signature = root.join("release.sig.json");
+            let archive = root.join("remagic-system.tar.gz");
+            download(&release_url, &release)?;
+            download(&signature_url, &signature)?;
+            let verified = verify_files(&release, &signature, device, &os, minimum)?;
+            download(&verified.release.archive.url, &archive)?;
+            verify_archive(&archive, &verified.release.archive)?;
+            apply_archive(&archive)
+        }
         Some("apply") => {
             let release = PathBuf::from(read_arg(&mut args, "RELEASE_JSON")?);
             let signature = PathBuf::from(read_arg(&mut args, "SIGNATURE_JSON")?);
@@ -67,7 +87,7 @@ fn main() -> Result<(), String> {
             verify_archive(&archive, &verified.release.archive)?;
             apply_archive(&archive)
         }
-        _ => Err("usage: remagic-update verify RELEASE_JSON SIGNATURE_JSON DEVICE OS MIN_SEQUENCE | check RELEASE_URL SIGNATURE_URL DEVICE OS MIN_SEQUENCE | apply RELEASE_JSON SIGNATURE_JSON ARCHIVE DEVICE OS MIN_SEQUENCE".into()),
+        _ => Err("usage: remagic-update verify RELEASE_JSON SIGNATURE_JSON DEVICE OS MIN_SEQUENCE | check RELEASE_URL SIGNATURE_URL DEVICE OS MIN_SEQUENCE | install RELEASE_URL SIGNATURE_URL DEVICE OS MIN_SEQUENCE | apply RELEASE_JSON SIGNATURE_JSON ARCHIVE DEVICE OS MIN_SEQUENCE".into()),
     }
 }
 

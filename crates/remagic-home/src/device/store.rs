@@ -11,7 +11,30 @@ pub(super) struct CatalogApp {
     pub(super) name: String,
     pub(super) summary: String,
     pub(super) version: String,
+    pub(super) status: CatalogStatus,
 }
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum CatalogStatus {
+    #[default]
+    NotInstalled,
+    Installed,
+    UpdateAvailable,
+    NeedsConfiguration,
+    Incompatible,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct SystemUpdateInfo {
+    pub(super) current_version: String,
+    pub(super) available_version: String,
+    pub(super) update_available: bool,
+}
+
+const SYSTEM_RELEASE_URL: &str =
+    "https://github.com/aporicho/remagic/releases/latest/download/remagic-release-v1.json";
+const SYSTEM_SIGNATURE_URL: &str =
+    "https://github.com/aporicho/remagic/releases/latest/download/remagic-release-v1.sig.json";
 
 pub(super) async fn catalog() -> Result<Vec<CatalogApp>, Box<dyn std::error::Error>> {
     let device = DeviceProfile::detect()?;
@@ -51,9 +74,145 @@ pub(super) async fn catalog() -> Result<Vec<CatalogApp>, Box<dyn std::error::Err
                 name: app.get("name")?.as_str()?.to_owned(),
                 summary: app.get("summary")?.as_str()?.to_owned(),
                 version: app.get("available_version")?.as_str()?.to_owned(),
+                status: match app
+                    .get("status")
+                    .and_then(|status| status.get("status"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    Some("installed") => CatalogStatus::Installed,
+                    Some("update_available") => CatalogStatus::UpdateAvailable,
+                    Some("needs_configuration") => CatalogStatus::NeedsConfiguration,
+                    Some("incompatible") => CatalogStatus::Incompatible,
+                    _ => CatalogStatus::NotInstalled,
+                },
             })
         })
         .collect())
+}
+
+pub(super) async fn system_update_info() -> Result<SystemUpdateInfo, Box<dyn std::error::Error>> {
+    let device = DeviceProfile::detect()?;
+    let product = product_name(device.product);
+    let minimum = installed_sequence();
+    let output = Command::new("/home/root/apps/remagic/bin/remagic-update")
+        .args([
+            "check",
+            SYSTEM_RELEASE_URL,
+            SYSTEM_SIGNATURE_URL,
+            product,
+            device.os_version.as_str(),
+            &minimum.to_string(),
+        ])
+        .env_clear()
+        .env(
+            "PATH",
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        )
+        .kill_on_drop(true)
+        .output()
+        .await?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr)
+            .trim()
+            .to_owned()
+            .into());
+    }
+    let release: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let available_version = release
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("未知")
+        .to_owned();
+    let sequence = release
+        .get("sequence")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(minimum);
+    Ok(SystemUpdateInfo {
+        current_version: installed_version(),
+        available_version,
+        update_available: sequence > minimum,
+    })
+}
+
+pub(super) async fn install_system_update() -> Result<(), Box<dyn std::error::Error>> {
+    let device = DeviceProfile::detect()?;
+    let product = product_name(device.product);
+    let minimum = installed_sequence();
+    let unit = format!("remagic-system-update-{}", std::process::id());
+    let output = Command::new("systemd-run")
+        .args([
+            "--collect",
+            "--unit",
+            &unit,
+            "/home/root/apps/remagic/bin/remagic-update",
+            "install",
+            SYSTEM_RELEASE_URL,
+            SYSTEM_SIGNATURE_URL,
+            product,
+            device.os_version.as_str(),
+            &minimum.to_string(),
+        ])
+        .output()
+        .await?;
+    output.status.success().then_some(()).ok_or_else(|| {
+        String::from_utf8_lossy(&output.stderr)
+            .trim()
+            .to_owned()
+            .into()
+    })
+}
+
+pub(super) async fn uninstall(app_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if !matches!(app_id, "magicpaper" | "koreader" | "upload") {
+        return Err(format!("应用商店没有这个应用：{app_id}").into());
+    }
+    let child = Command::new(STORE_BINARY)
+        .args(["uninstall", app_id])
+        .env_clear()
+        .env(
+            "PATH",
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        )
+        .env("HOME", "/home/root")
+        .env("REMAGIC_CONTROL_SOCKET", remagic_protocol::DEFAULT_SOCKET)
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(Duration::from_secs(15 * 60), child)
+        .await
+        .map_err(|_| "应用卸载超时")??;
+    output.status.success().then_some(()).ok_or_else(|| {
+        String::from_utf8_lossy(&output.stderr)
+            .trim()
+            .to_owned()
+            .into()
+    })
+}
+
+fn product_name(product: DeviceProduct) -> &'static str {
+    match product {
+        DeviceProduct::PaperPro => "paper_pro",
+        DeviceProduct::PaperProMove => "paper_pro_move",
+    }
+}
+
+fn installed_sequence() -> u64 {
+    std::fs::read_to_string("/home/root/apps/remagic/share/release.env")
+        .ok()
+        .and_then(|text| manifest_value(&text, "REMAGIC_RELEASE_SEQUENCE"))
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0)
+}
+
+fn installed_version() -> String {
+    std::fs::read_to_string("/home/root/apps/remagic/share/release.env")
+        .ok()
+        .and_then(|text| manifest_value(&text, "REMAGIC_VERSION"))
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned())
+}
+
+fn manifest_value(text: &str, key: &str) -> Option<String> {
+    text.lines()
+        .find_map(|line| line.strip_prefix(&format!("{key}=")).map(str::to_owned))
 }
 
 pub(super) async fn install(app_id: &str) -> Result<(), Box<dyn std::error::Error>> {

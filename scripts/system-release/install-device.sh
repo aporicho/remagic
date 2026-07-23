@@ -244,6 +244,7 @@ if [ -d "$APP_ROOT" ]; then
     mv "$APP_ROOT" "$BACKUP"
 fi
 mv "$STAGE" "$APP_ROOT"
+install -m 0644 "$RELEASE_FILE" "$APP_ROOT/share/release.env"
 
 # Remove only manifests from the retired monolithic layout. Store-installed
 # applications use their own `/home/root/apps/<id>/current` paths and survive.
