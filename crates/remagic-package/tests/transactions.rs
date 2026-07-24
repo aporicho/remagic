@@ -190,14 +190,10 @@ fn install_upgrade_rollback_and_uninstall_preserve_books() {
         0
     );
 
-    let second = fixture
-        .manager
-        .prepare(
-            &fixture.bundle("2.0.0", "user", &["paper_pro_move"]),
-            &device,
-        )
-        .unwrap();
+    let second_bundle = fixture.bundle("2.0.0", "user", &["paper_pro_move"]);
+    let second = fixture.manager.prepare(&second_bundle, &device).unwrap();
     let second = fixture.manager.install(second).unwrap();
+    let second_content = second.content_id.clone();
     assert_eq!(
         second.previous_content_id.as_deref(),
         Some(first_content.as_str())
@@ -214,6 +210,20 @@ fn install_upgrade_rollback_and_uninstall_preserve_books() {
         rolled_back.content_id
     )));
     assert!(!rolled_back_manifest.contains("/home/root/apps/demo/current"));
+
+    let promoted = fixture
+        .manager
+        .install(fixture.manager.prepare(&second_bundle, &device).unwrap())
+        .unwrap();
+    assert_eq!(promoted.content_id, second_content);
+    assert_eq!(
+        promoted.previous_content_id.as_deref(),
+        Some(first_content.as_str())
+    );
+    assert_eq!(
+        fs::read_link(fixture.root.join("apps/demo/current")).unwrap(),
+        Path::new("releases").join(&second_content)
+    );
 
     fixture
         .manager
@@ -249,6 +259,43 @@ fn reinstalling_the_current_content_is_an_idempotent_success() {
     );
     let installed_manifest = fs::read_to_string(fixture.root.join("manifests/demo.toml")).unwrap();
     assert!(!installed_manifest.contains("/home/root/apps/demo/current"));
+}
+
+#[test]
+fn rollback_target_must_match_the_verified_bundle_before_repromotion() {
+    let fixture = Fixture::new();
+    let device = DeviceProfile::for_product(DeviceProduct::PaperProMove, "3.27.3.0");
+    let first_bundle = fixture.bundle("1.0.0", "user", &["paper_pro_move"]);
+    let second_bundle = fixture.bundle("2.0.0", "user", &["paper_pro_move"]);
+    let first = fixture
+        .manager
+        .install(fixture.manager.prepare(&first_bundle, &device).unwrap())
+        .unwrap();
+    let second = fixture
+        .manager
+        .install(fixture.manager.prepare(&second_bundle, &device).unwrap())
+        .unwrap();
+    fixture
+        .manager
+        .rollback(&AppId::new("demo").unwrap(), None, &device)
+        .unwrap();
+
+    let executable = fixture
+        .root
+        .join("apps/demo/releases")
+        .join(&second.content_id)
+        .join("payload/bin/demo");
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(&executable, b"tampered\n").unwrap();
+    let error = fixture
+        .manager
+        .install(fixture.manager.prepare(&second_bundle, &device).unwrap())
+        .unwrap_err();
+    assert!(matches!(error, PackageError::FileMismatch(_)));
+    assert_eq!(
+        fs::read_link(fixture.root.join("apps/demo/current")).unwrap(),
+        Path::new("releases").join(first.content_id)
+    );
 }
 
 #[test]

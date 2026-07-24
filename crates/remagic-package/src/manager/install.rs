@@ -1,6 +1,7 @@
+use super::transaction::TransactionJournalV1;
 use super::{
     current_content_id, materialize_manifest_bytes, read_optional_text, InstallOutcome,
-    PackageError, PackageManager, TransactionJournalV1,
+    PackageError, PackageManager,
 };
 use crate::filesystem::{atomic_symlink, atomic_write, make_read_only, remove_tree};
 use crate::{InstalledPackageStateV1, PreparedPackage};
@@ -22,10 +23,10 @@ impl PackageManager {
         self.recover_for(&app_id)?;
         let paths = self.prepare_install_paths(&app_id, &prepared)?;
         if fs::symlink_metadata(&paths.release_root).is_ok() {
-            return self.finish_current_reinstall(app_id, &prepared, &paths.app_root);
+            return self.finish_existing_install(app_id, &prepared, &paths);
         }
 
-        let previous_content_id = self.begin_install(&app_id, &prepared, &paths)?;
+        let previous_content_id = self.begin_install(&app_id, &prepared, &paths, false)?;
         let outcome = self.publish_install(&app_id, &prepared, &paths, previous_content_id);
         if outcome.is_err() {
             let _ = self.recover_journal(&paths.journal);
@@ -59,36 +60,90 @@ impl PackageManager {
         })
     }
 
-    fn finish_current_reinstall(
+    fn finish_existing_install(
         &self,
         app_id: AppId,
         prepared: &PreparedPackage,
-        app_root: &Path,
+        paths: &InstallPaths,
     ) -> Result<InstallOutcome, PackageError> {
         let state = self.read_state(&app_id)?;
         let is_current = state.current_content_id == prepared.bundle.content_id
             && state.version == prepared.bundle.version
             && state.package == prepared.bundle.package
-            && current_content_id(&app_root.join("current"))
+            && current_content_id(&paths.app_root.join("current"))
                 == Some(prepared.bundle.content_id.clone());
-        if !is_current {
+        if is_current {
+            let manifest_bytes = materialize_manifest_bytes(
+                &prepared.manifest_bytes,
+                &app_id,
+                &prepared.bundle.content_id,
+            )?;
+            atomic_write(&self.manifest_path(&app_id), &manifest_bytes, 0o644)?;
             remove_tree(&prepared.stage_root)?;
-            return Err(PackageError::ReleaseExists(
-                prepared.bundle.content_id.clone(),
-            ));
+            return Ok(InstallOutcome {
+                app_id,
+                version: state.version,
+                content_id: state.current_content_id,
+                previous_content_id: state.previous_content_id,
+            });
         }
+        crate::bundle::verify_installed_release(
+            &paths.release_root,
+            &prepared.stage_root,
+            &prepared.bundle,
+        )?;
+        let previous_content_id = self.begin_install(&app_id, prepared, paths, true)?;
+        let outcome = self.publish_existing_install(&app_id, prepared, paths, previous_content_id);
+        if outcome.is_err() {
+            let _ = self.recover_journal(&paths.journal);
+        }
+        outcome
+    }
+
+    fn publish_existing_install(
+        &self,
+        app_id: &AppId,
+        prepared: &PreparedPackage,
+        paths: &InstallPaths,
+        previous_content_id: Option<String>,
+    ) -> Result<InstallOutcome, PackageError> {
         let manifest_bytes = materialize_manifest_bytes(
             &prepared.manifest_bytes,
-            &app_id,
+            app_id,
             &prepared.bundle.content_id,
         )?;
-        atomic_write(&self.manifest_path(&app_id), &manifest_bytes, 0o644)?;
+        atomic_write(&paths.manifest, &manifest_bytes, 0o644)?;
+        atomic_symlink(
+            Path::new("releases")
+                .join(&prepared.bundle.content_id)
+                .as_path(),
+            &paths.app_root.join("current"),
+        )?;
+        let state = InstalledPackageStateV1 {
+            schema: super::PACKAGE_STATE_SCHEMA_V1,
+            app_id: app_id.to_string(),
+            package: prepared.bundle.package.clone(),
+            current_content_id: prepared.bundle.content_id.clone(),
+            previous_content_id: previous_content_id
+                .clone()
+                .filter(|value| value != &prepared.bundle.content_id),
+            version: prepared.bundle.version.clone(),
+        };
+        atomic_write(
+            &paths.state,
+            &serde_json::to_vec_pretty(&state)
+                .map_err(|error| PackageError::State(error.to_string()))?,
+            0o600,
+        )?;
+        fs::remove_file(&paths.journal)
+            .map_err(|source| PackageError::Io(paths.journal.clone(), source))?;
         remove_tree(&prepared.stage_root)?;
+        self.remove_stale_releases(app_id, &state)?;
         Ok(InstallOutcome {
-            app_id,
-            version: state.version,
-            content_id: state.current_content_id,
-            previous_content_id: state.previous_content_id,
+            app_id: app_id.clone(),
+            version: prepared.bundle.version.clone(),
+            content_id: prepared.bundle.content_id.clone(),
+            previous_content_id,
         })
     }
 
@@ -97,6 +152,7 @@ impl PackageManager {
         app_id: &AppId,
         prepared: &PreparedPackage,
         paths: &InstallPaths,
+        target_preexisted: bool,
     ) -> Result<Option<String>, PackageError> {
         let previous_state_text = read_optional_text(&paths.state)?;
         let previous_state = previous_state_text
@@ -112,6 +168,7 @@ impl PackageManager {
             schema: 1,
             app_id: app_id.to_string(),
             target_content_id: prepared.bundle.content_id.clone(),
+            target_preexisted,
             previous_content_id: previous_content_id.clone(),
             previous_manifest: read_optional_text(&paths.manifest)?,
             previous_state: previous_state_text,

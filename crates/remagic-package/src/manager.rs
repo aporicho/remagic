@@ -3,7 +3,6 @@ use crate::filesystem::{atomic_symlink, atomic_write, remove_tree};
 use crate::state::PACKAGE_STATE_SCHEMA_V1;
 use crate::{InstalledPackageStateV1, PreparedPackage};
 use remagic_core::{AppId, AppKind, AppManifest, DeviceProfile};
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -61,16 +60,6 @@ pub struct InstallOutcome {
 pub struct UninstallOutcome {
     pub app_id: AppId,
     pub data_purged: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct TransactionJournalV1 {
-    schema: u32,
-    app_id: String,
-    target_content_id: String,
-    previous_content_id: Option<String>,
-    previous_manifest: Option<String>,
-    previous_state: Option<String>,
 }
 
 impl PackageManager {

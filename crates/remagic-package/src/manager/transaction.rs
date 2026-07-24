@@ -1,8 +1,21 @@
-use super::{remove_optional_file, PackageError, PackageManager, TransactionJournalV1};
+use super::{remove_optional_file, PackageError, PackageManager};
 use crate::filesystem::{atomic_symlink, atomic_write, remove_tree};
 use remagic_core::AppId;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct TransactionJournalV1 {
+    pub(super) schema: u32,
+    pub(super) app_id: String,
+    pub(super) target_content_id: String,
+    #[serde(default)]
+    pub(super) target_preexisted: bool,
+    pub(super) previous_content_id: Option<String>,
+    pub(super) previous_manifest: Option<String>,
+    pub(super) previous_state: Option<String>,
+}
 
 impl PackageManager {
     pub fn recover_all(&self) -> Result<(), PackageError> {
@@ -57,7 +70,9 @@ impl PackageManager {
             Some(text) => atomic_write(&self.state_path(&app_id), text.as_bytes(), 0o600)?,
             None => remove_optional_file(&self.state_path(&app_id))?,
         }
-        remove_tree(&app_root.join("releases").join(journal.target_content_id))?;
+        if !journal.target_preexisted {
+            remove_tree(&app_root.join("releases").join(journal.target_content_id))?;
+        }
         remove_optional_file(path)
     }
 }

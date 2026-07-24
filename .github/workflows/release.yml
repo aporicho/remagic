@@ -111,7 +111,7 @@ jobs:
           version=${GITHUB_REF_NAME#v}
           out=dist/system-release
           archive="$out/remagic-system-$version-universal-aarch64.tar.gz"
-          sha256sum -c "$archive.sha256"
+          (cd "$out" && sha256sum -c "$(basename "$archive.sha256")")
           if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
               --verify-tag --draft --title "ReMagic $version" --generate-notes

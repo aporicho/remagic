@@ -10,6 +10,9 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+mod installed;
+pub(crate) use installed::verify_installed_release;
+
 pub const PACKAGE_SCHEMA_V1: u32 = 1;
 const MAX_FILES: usize = 100_000;
 const MAX_EXPANDED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
