@@ -28,6 +28,7 @@ bash tests/test-app-failure-bridge.sh
 设备文件优先通过 USB 入口传输：
 
 ```sh
+./scripts/paper-pro-move ssh 'umask 077; mkdir -p /run/remagic-dev'
 ./scripts/paper-pro-move push ./artifact /run/remagic-dev/artifact
 ./scripts/paper-pro-move ssh /run/remagic-dev/test.sh
 ```
@@ -35,6 +36,18 @@ bash tests/test-app-failure-bridge.sh
 不得把未验证文件写入书库、应用数据目录或内容寻址 release。需要由 systemd 调用的
 临时 helper 必须通过 `/run/systemd/system` 的运行时 drop-in 指向 `/run/remagic-dev`，
 验证结束后恢复原 unit；禁止直接修改 `/home/root/apps/*/current` 中的正式内容。
+仓库提供 `testing/systemd/remagic-app-failed-dev.conf`。先创建对应的 runtime drop-in
+目录并把它上传为 `90-remagic-dev.conf`，执行 `systemctl daemon-reload` 后测试；结束时
+用 `unlink` 删除该文件并再次 `daemon-reload`。runtime drop-in 不得进入正式发布包。
+
+```sh
+./scripts/paper-pro-move ssh 'mkdir -p /run/systemd/system/remagic-app-failed@.service.d'
+./scripts/paper-pro-move push testing/systemd/remagic-app-failed-dev.conf /run/systemd/system/remagic-app-failed@.service.d/90-remagic-dev.conf
+./scripts/paper-pro-move ssh 'systemctl daemon-reload'
+# 完成测试后：
+./scripts/paper-pro-move ssh 'unlink /run/systemd/system/remagic-app-failed@.service.d/90-remagic-dev.conf'
+./scripts/paper-pro-move ssh 'systemctl daemon-reload'
+```
 
 ### 慢循环：合并和交付
 

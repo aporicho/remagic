@@ -2,6 +2,7 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ISOLATION=$ROOT/scripts/lib/device-test-isolation.sh
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 
@@ -9,6 +10,15 @@ fail() {
     echo "device-test-isolation fixture: $*" >&2
     exit 1
 }
+
+for path in \
+    /home/root/apps/koreader/current \
+    /home/root/.config/koreader-for-remagic \
+    /home/root/.cache/koreader-for-remagic; do
+    grep -Fq "$path" "$ISOLATION" || fail "default protection omits $path"
+done
+! grep -Fq '/home/root/apps/koreader:' "$ISOLATION" \
+    || fail "default protection reintroduced the immutable KOReader payload"
 
 mkdir -p "$TMP/bin" "$TMP/manifests" "$TMP/templates" "$TMP/protected-a" "$TMP/protected-b"
 mkdir -p "$TMP/sessions"
@@ -87,7 +97,7 @@ export REMAGIC_FIXTURE_IP_DENY=any
 export REMAGIC_FIXTURE_PAPERWEIGHT_LOAD=not-found
 
 # shellcheck source=../scripts/lib/device-test-isolation.sh
-. "$ROOT/scripts/lib/device-test-isolation.sh"
+. "$ISOLATION"
 
 # Sourced helpers must not overwrite caller state, even when remagicctl returns
 # a JSON document that is not a valid shell exit status.

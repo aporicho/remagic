@@ -12,12 +12,21 @@ case $health_attempts in
 esac
 [ "$health_attempts" -le 100 ] || health_attempts=100
 
-daemon_responds() {
+daemon_reconciled() {
     attempts=$health_attempts
     while [ "$attempts" -gt 0 ]; do
-        if "$ctl" status >/dev/null 2>&1; then
-            return 0
-        fi
+        reply=$("$ctl" status 2>/dev/null || true)
+        compact=$(printf '%s' "$reply" | tr -d '[:space:]')
+        case $compact in
+            *\"type\":\"status\"*)
+                case $compact in
+                    *\"domain\":\{\"launching\":\"$app\"\}*|\
+                    *\"domain\":\{\"foreground\":\"$app\"\}*|\
+                    *\"domain\":\{\"parking\":\"$app\"\}*) ;;
+                    *) return 0 ;;
+                esac
+                ;;
+        esac
         attempts=$((attempts - 1))
         [ "$attempts" -eq 0 ] || sleep 0.1
     done
@@ -25,9 +34,16 @@ daemon_responds() {
 }
 
 case $app in
-    ''|*[!a-z0-9-]*|-*|*-) exec "$recover" ;;
+    ''|*[!a-z0-9-]*|-*|*-) app= ;;
 esac
-[ "${#app}" -le 64 ] || exec "$recover"
+[ "${#app}" -le 64 ] || app=
+
+if [ -z "$app" ]; then
+    if daemon_reconciled; then
+        exit 0
+    fi
+    exec "$recover"
+fi
 
 status=$runtime_root/$app/lifecycle-status.json
 generation=$(sed -n \
@@ -46,9 +62,9 @@ esac
 # Application OnFailure is an evidence bridge, not the owner of the whole
 # display domain. A pre-ready child can exit before lifecycle-status exists,
 # while the daemon is already performing its synchronous launch rollback.
-# Likewise a callback can race that serialized transition. If the daemon still
-# answers, its launch transaction or 750 ms synthetic supervisor owns recovery.
-if daemon_responds; then
+# Likewise a callback can race that serialized transition. Wait for bounded,
+# observable convergence; socket liveness alone never proves display recovery.
+if daemon_reconciled; then
     exit 0
 fi
 exec "$recover"

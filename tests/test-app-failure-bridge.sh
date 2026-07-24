@@ -16,7 +16,11 @@ case ${1:-} in
         ;;
     status)
         printf '%s\n' "$*" >"$REMAGIC_TEST_HEALTH_CALL"
-        exit "${REMAGIC_TEST_HEALTH_STATUS:-0}"
+        [ "${REMAGIC_TEST_HEALTH_STATUS:-0}" -eq 0 ] || exit "$REMAGIC_TEST_HEALTH_STATUS"
+        output=${REMAGIC_TEST_HEALTH_OUTPUT:-}
+        [ -n "$output" ] || output='{"type":"status","domain":"manager"}'
+        printf '%s\n' "$output"
+        exit 0
         ;;
     *) exit 2 ;;
 esac
@@ -53,8 +57,8 @@ REMAGIC_TEST_RECOVERED=$TMP/recovered \
 grep -Fxq status "$TMP/health-call"
 [ ! -e "$TMP/recovered" ]
 
-# A generation report may lose a race with launch rollback. A responsive
-# daemon still owns the application failure through synthetic supervision.
+# A generation report may lose a race with launch rollback. The daemon still
+# owns the application failure if its state observably converges.
 printf '%s\n' '{"generation":43}' >"$TMP/runtime/magicpaper/lifecycle-status.json"
 REMAGIC_CTL=$TMP/ctl \
 REMAGIC_RECOVER=$TMP/recover \
@@ -69,8 +73,23 @@ grep -Fxq 'runtime-exited magicpaper --generation 43 --exit-code 1 --crashed' \
 grep -Fxq status "$TMP/health-call"
 [ ! -e "$TMP/recovered" ]
 
-# Only a persistently unavailable manager control plane permits the emergency
-# whole-domain recovery helper.
+# Liveness is not convergence: a daemon that still reports the dead app as
+# foreground must fall back to whole-domain recovery after the bounded wait.
+REMAGIC_CTL=$TMP/ctl \
+REMAGIC_RECOVER=$TMP/recover \
+REMAGIC_RUNTIME_ROOT=$TMP/runtime \
+REMAGIC_TEST_CALL=$TMP/call \
+REMAGIC_TEST_REPORT_STATUS=1 \
+REMAGIC_TEST_HEALTH_CALL=$TMP/health-call \
+REMAGIC_TEST_HEALTH_OUTPUT='{"type":"status","domain":{"foreground":"magicpaper"}}' \
+REMAGIC_FAILURE_HEALTH_ATTEMPTS=1 \
+REMAGIC_TEST_RECOVERED=$TMP/recovered \
+    "$ROOT/scripts/remagic-app-failed" magicpaper
+[ -e "$TMP/recovered" ]
+
+# Only a persistently unavailable manager control plane also permits the
+# emergency whole-domain recovery helper.
+rm -f "$TMP/recovered"
 REMAGIC_CTL=$TMP/ctl \
 REMAGIC_RECOVER=$TMP/recover \
 REMAGIC_RUNTIME_ROOT=$TMP/runtime \
@@ -82,6 +101,18 @@ REMAGIC_FAILURE_HEALTH_ATTEMPTS=1 \
 REMAGIC_TEST_RECOVERED=$TMP/recovered \
     "$ROOT/scripts/remagic-app-failed" magicpaper
 [ -e "$TMP/recovered" ]
+
+# A malformed systemd instance cannot claim display ownership; a healthy
+# manager remains the only recovery authority.
+rm -f "$TMP/recovered"
+REMAGIC_CTL=$TMP/ctl \
+REMAGIC_RECOVER=$TMP/recover \
+REMAGIC_RUNTIME_ROOT=$TMP/runtime \
+REMAGIC_TEST_CALL=$TMP/call \
+REMAGIC_TEST_HEALTH_CALL=$TMP/health-call \
+REMAGIC_TEST_RECOVERED=$TMP/recovered \
+    "$ROOT/scripts/remagic-app-failed" 'bad/app'
+[ ! -e "$TMP/recovered" ]
 
 grep -Fxq 'OnFailure=remagic-app-failed@%i.service' \
     "$ROOT/systemd/remagic-app@.service"
