@@ -6,10 +6,22 @@ TMP=$(mktemp -d /tmp/remagic-dual-usb-test.XXXXXX)
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT HUP INT TERM
 
+# A caller such as `paper-pro deploy` legitimately exports its selected real
+# interface. This fixture must remain hermetic when the complete check suite is
+# run inside that deployment process.
+unset REMAGIC_USB_INTERFACE REMAGIC_USB_HOST REMAGIC_USB_PROXY REMAGIC_USB_ALIAS
+
 PYTHONPYCACHEPREFIX=$TMP/pycache python3 -m py_compile \
     "$ROOT/scripts/lib/usb-tcp-proxy.py"
 "$ROOT/scripts/paper-pro" --help | grep -q 'Paper Pro' || true
 "$ROOT/scripts/paper-pro-move" --help | grep -q 'install'
+
+for name in REMAGIC_USB_INTERFACE REMAGIC_USB_HOST REMAGIC_USB_PROXY REMAGIC_USB_ALIAS; do
+    grep -q -- "-u $name" "$ROOT/scripts/deploy-usb.sh" || {
+        echo "deploy build leaks $name into host checks" >&2
+        exit 1
+    }
+done
 
 DEVICE_LABEL='fixture'
 DEVICE_MACHINE='reMarkable Ferrari'

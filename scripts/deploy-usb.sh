@@ -33,9 +33,15 @@ fi
 if [ "${REMAGIC_SKIP_BUILD:-0}" != 1 ]; then
     if [ ! -x "$PI_RUNTIME/bin/node" ] || [ ! -x "$PI_RUNTIME/bin/pi" ] || \
        [ ! -f "$PI_RUNTIME/runtime.env" ]; then
-        REMAGIC_PI_RUNTIME_OUT="$PI_RUNTIME" "$ROOT/scripts/build-pi-runtime.sh"
+        env -u REMAGIC_USB_INTERFACE -u REMAGIC_USB_HOST \
+            -u REMAGIC_USB_PROXY -u REMAGIC_USB_ALIAS \
+            REMAGIC_PI_RUNTIME_OUT="$PI_RUNTIME" \
+            "$ROOT/scripts/build-pi-runtime.sh"
     fi
-    REMAGIC_PI_RUNTIME_DIR="$PI_RUNTIME" "$ROOT/scripts/build-system-release.sh"
+    env -u REMAGIC_USB_INTERFACE -u REMAGIC_USB_HOST \
+        -u REMAGIC_USB_PROXY -u REMAGIC_USB_ALIAS \
+        REMAGIC_PI_RUNTIME_DIR="$PI_RUNTIME" \
+        "$ROOT/scripts/build-system-release.sh"
 elif [ ! -f "$ARCHIVE" ] || [ ! -f "$CHECKSUM" ]; then
     echo "REMAGIC_SKIP_BUILD=1 requested, but no complete system release exists" >&2
     exit 1
