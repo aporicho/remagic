@@ -17,6 +17,20 @@ DEVICE_ALIAS='fixture-usb'
 # shellcheck source=scripts/lib/usb-device.sh
 . "$ROOT/scripts/lib/usb-device.sh"
 
+SSH_CAPTURE=$TMP/probe-ssh-arguments
+ssh() {
+    printf '%s\n' "$@" >"$SSH_CAPTURE"
+    printf '%s\n' 'reMarkable Ferrari'
+}
+[ "$(usb_probe_machine usb-pro)" = 'reMarkable Ferrari' ]
+grep -qx 'UserKnownHostsFile=/dev/null' "$SSH_CAPTURE"
+grep -qx 'GlobalKnownHostsFile=/dev/null' "$SSH_CAPTURE"
+grep -qx 'StrictHostKeyChecking=no' "$SSH_CAPTURE"
+if grep -q '^HostKeyAlias=' "$SSH_CAPTURE"; then
+    echo 'discovery probe persisted a host key against a USB port' >&2
+    exit 1
+fi
+
 usb_interfaces() {
     printf '%s\n' usb-move usb-pro
 }

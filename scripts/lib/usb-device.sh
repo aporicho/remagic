@@ -53,8 +53,25 @@ usb_safe_interface() {
 
 usb_probe_machine() {
     local interface=$1
-    usb_ssh_options "$interface" "remagic-usb-probe-$interface"
-    ssh -n "${USB_SSH_OPTIONS[@]}" -o BatchMode=yes root@remagic-device \
+    # USB interface names describe the host port, not the tablet. Either
+    # device may appear on a previously used interface after cables are moved,
+    # so a persistent host-key alias derived from the interface would reject a
+    # legitimate port swap. This probe only discovers the model over a local
+    # link; the selected device is authenticated again below with its stable
+    # per-model alias before any requested operation is run.
+    local probe_options=(
+        -F /dev/null
+        -o "HostName=$USB_HOST"
+        -o "ProxyCommand=$USB_PROXY $interface %h %p"
+        -o ConnectTimeout=6
+        -o ControlMaster=no
+        -o ControlPath=none
+        -o UserKnownHostsFile=/dev/null
+        -o GlobalKnownHostsFile=/dev/null
+        -o StrictHostKeyChecking=no
+        -o LogLevel=ERROR
+    )
+    ssh -n "${probe_options[@]}" -o BatchMode=yes root@remagic-device \
         'tr -d "\000" </sys/devices/soc0/machine' 2>/dev/null
 }
 
