@@ -10,7 +10,7 @@ UI_FONT=${REMAGIC_UI_FONT:-/home/aporicho/Downloads/方正屏显雅宋.TTF}
 PI_RUNTIME=${REMAGIC_PI_RUNTIME_DIR:-}
 VERSION=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' \
     "$ROOT/Cargo.toml" | head -n 1)
-RELEASE_SEQUENCE=${REMAGIC_RELEASE_SEQUENCE:-1}
+RELEASE_SEQUENCE=${REMAGIC_RELEASE_SEQUENCE:-$(tr -d '[:space:]' <"$ROOT/release/sequence")}
 OUT_ROOT=$ROOT/dist/system-release
 RELEASE_ROOT=$OUT_ROOT/remagic-system
 PAYLOAD=$RELEASE_ROOT/payload
@@ -19,6 +19,10 @@ BUILD_ROOT=$(mktemp -d /tmp/remagic-system-build.XXXXXX)
 trap 'rm -rf "$BUILD_ROOT"' EXIT
 
 [ -n "$VERSION" ] || { echo "cannot determine ReMagic version" >&2; exit 1; }
+[[ "$RELEASE_SEQUENCE" =~ ^[1-9][0-9]*$ ]] || {
+    echo "ReMagic release sequence must be a positive integer" >&2
+    exit 1
+}
 [ -s "$ROOT/runtime/pi/extensions/remagic-tools.js" ] && \
     [ -x "$ROOT/scripts/remagic-configure-provider" ] || {
     echo "ReMagic Pi safety extension or provider helper is missing" >&2

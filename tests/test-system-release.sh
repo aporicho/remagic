@@ -118,6 +118,15 @@ if (
 fi
 
 grep -q 'STORE_PACKAGE=packages/' "$ROOT/scripts/build-system-release.sh"
+grep -Fq 'release/sequence' "$ROOT/scripts/build-system-release.sh" || {
+    echo "local system builds do not inherit the repository release sequence" >&2
+    exit 1
+}
+grep -Fq 'ReMagic release sequence must be a positive integer' \
+    "$ROOT/scripts/build-system-release.sh" || {
+    echo "system release does not validate its monotonic sequence" >&2
+    exit 1
+}
 grep -Fq 'testing/manifests/$test_manifest' "$ROOT/scripts/build-system-release.sh" || {
     echo "system release does not ship isolated acceptance manifests" >&2
     exit 1
