@@ -84,6 +84,23 @@ Linux 或 macOS 通过 USB 连接设备后运行：
 curl -fsSL https://raw.githubusercontent.com/aporicho/remagic/main/install.sh | sh
 ```
 
+开发时可同时连接两台同为 `10.11.99.1` 的设备。仓库提供按硬件身份自动匹配的入口，
+不会依赖 USB 网卡名或主路由优先级：
+
+```sh
+./scripts/paper-pro probe
+./scripts/paper-pro-move probe
+./scripts/paper-pro ssh systemctl status remagicd
+./scripts/paper-pro-move push ./file /tmp/file
+./scripts/paper-pro install
+./scripts/paper-pro deploy
+./scripts/paper-pro-move deploy
+```
+
+两条入口还支持 `pull REMOTE LOCAL`；`install` 安装最新正式版，`deploy` 部署当前
+源码；省略子命令时等同于 `ssh`。连接底层固定绑定各自
+USB 物理接口，并在执行前核验 Ferrari/Chiappa 身份，避免同 IP 双机部署错位。
+
 主机脚本自动识别 Paper Pro / Paper Pro Move、验证 3.27.x、下载并校验 release，
 再通过 SSH 传入设备。设备安装器会：
 

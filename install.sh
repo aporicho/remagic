@@ -4,8 +4,51 @@ set -eu
 HOST=${REMAGIC_HOST:-10.11.99.1}
 SSH_TARGET=${REMAGIC_SSH_TARGET:-root@$HOST}
 INDEX_URL=${REMAGIC_RELEASE_INDEX_URL:-https://github.com/aporicho/remagic/releases/latest/download/remagic-release.env}
+USB_INTERFACE=${REMAGIC_USB_INTERFACE:-}
+USB_PROXY=${REMAGIC_USB_PROXY:-}
+USB_ALIAS=${REMAGIC_USB_ALIAS:-remagic-usb}
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/remagic-install.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
+
+if [ -n "$USB_INTERFACE" ]; then
+    case "$USB_INTERFACE" in
+        *[!A-Za-z0-9_.:-]*|'')
+            echo "ReMagic: invalid REMAGIC_USB_INTERFACE" >&2
+            exit 1
+            ;;
+    esac
+    [ -n "$USB_PROXY" ] && [ -x "$USB_PROXY" ] || {
+        echo "ReMagic: REMAGIC_USB_PROXY must name an executable proxy" >&2
+        exit 1
+    }
+    SSH_TARGET=${REMAGIC_SSH_TARGET:-root@remagic-device}
+fi
+
+device_ssh() {
+    if [ -n "$USB_INTERFACE" ]; then
+        ssh -F /dev/null \
+            -o "HostName=$HOST" \
+            -o "HostKeyAlias=$USB_ALIAS" \
+            -o "ProxyCommand=$USB_PROXY $USB_INTERFACE %h %p" \
+            -o ControlMaster=no -o ControlPath=none \
+            -o StrictHostKeyChecking=accept-new "$@"
+    else
+        ssh -F /dev/null "$@"
+    fi
+}
+
+device_scp() {
+    if [ -n "$USB_INTERFACE" ]; then
+        scp -F /dev/null \
+            -o "HostName=$HOST" \
+            -o "HostKeyAlias=$USB_ALIAS" \
+            -o "ProxyCommand=$USB_PROXY $USB_INTERFACE %h %p" \
+            -o ControlMaster=no -o ControlPath=none \
+            -o StrictHostKeyChecking=accept-new "$@"
+    else
+        scp -F /dev/null "$@"
+    fi
+}
 
 for command in curl ssh scp tar; do
     command -v "$command" >/dev/null 2>&1 || {
@@ -23,7 +66,7 @@ else
 fi
 
 echo "ReMagic: checking the connected tablet…"
-identity=$(ssh -F /dev/null -o BatchMode=yes -o ConnectTimeout=8 "$SSH_TARGET" '
+identity=$(device_ssh -o BatchMode=yes -o ConnectTimeout=8 "$SSH_TARGET" '
     set -eu
     machine=$(tr -d "\000\r\n" </sys/devices/soc0/machine)
     model=$(tr -d "\000\r\n" </proc/device-tree/model)
@@ -87,8 +130,8 @@ actual=$($SHA_COMMAND "$archive" | awk '{print $1}')
 
 remote=/tmp/remagic-system-$version.tar.gz
 echo "ReMagic: transferring the verified release…"
-scp -F /dev/null -O "$archive" "$SSH_TARGET:$remote"
-ssh -F /dev/null "$SSH_TARGET" "
+device_scp -O "$archive" "$SSH_TARGET:$remote"
+device_ssh "$SSH_TARGET" "
     set -eu
     archive='$remote'
     expected='$archive_sha'

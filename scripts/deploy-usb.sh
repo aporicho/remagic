@@ -5,6 +5,27 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 ARCHIVE="$ROOT/dist/remagic-aarch64.tar.gz"
 CHECKSUM="$ARCHIVE.sha256"
 HOST=${REMAGIC_HOST:-10.11.99.1}
+USB_INTERFACE=${REMAGIC_USB_INTERFACE:-}
+USB_ALIAS=${REMAGIC_USB_ALIAS:-remagic-usb}
+SSH_OPTIONS=(-F /dev/null)
+
+if [ -n "$USB_INTERFACE" ]; then
+    USB_PROXY=$ROOT/scripts/lib/usb-tcp-proxy.py
+    [ -x "$USB_PROXY" ] || {
+        echo "missing executable USB proxy: $USB_PROXY" >&2
+        exit 1
+    }
+    HOST=${REMAGIC_USB_HOST:-$HOST}
+    SSH_OPTIONS+=(
+        -o "HostName=$HOST"
+        -o "HostKeyAlias=$USB_ALIAS"
+        -o "ProxyCommand=$USB_PROXY $USB_INTERFACE %h %p"
+        -o ControlMaster=no
+        -o ControlPath=none
+        -o StrictHostKeyChecking=accept-new
+    )
+    HOST=remagic-device
+fi
 
 if [ "${REMAGIC_SKIP_BUILD:-0}" != 1 ]; then
     "$ROOT/scripts/build-bundle.sh"
@@ -18,6 +39,6 @@ fi
     sha256sum -c remagic-aarch64.tar.gz.sha256
 )
 
-scp -F /dev/null -O "$ARCHIVE" "$CHECKSUM" "root@$HOST:/tmp/"
-ssh -F /dev/null "root@$HOST" \
+scp "${SSH_OPTIONS[@]}" -O "$ARCHIVE" "$CHECKSUM" "root@$HOST:/tmp/"
+ssh "${SSH_OPTIONS[@]}" "root@$HOST" \
     'set -eu; txn=/tmp/remagic-install.$$.new; cleanup() { rm -rf "$txn"; }; trap cleanup EXIT HUP INT TERM; cd /tmp; sha256sum -c remagic-aarch64.tar.gz.sha256; mkdir "$txn"; tar -xzf /tmp/remagic-aarch64.tar.gz -C "$txn"; "$txn/remagic/scripts/install-device.sh"'

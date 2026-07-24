@@ -1,0 +1,12 @@
+#!/bin/bash
+set -euo pipefail
+
+DEVICE_LABEL="Paper Pro"
+DEVICE_MACHINE="reMarkable Ferrari"
+DEVICE_ALIAS="remagic-paper-pro-usb"
+
+SOURCE=${BASH_SOURCE[0]}
+ROOT=$(CDPATH= cd -- "$(dirname -- "$SOURCE")/.." && pwd)
+# shellcheck source=scripts/lib/usb-device.sh
+. "$ROOT/scripts/lib/usb-device.sh"
+usb_main "$@"
