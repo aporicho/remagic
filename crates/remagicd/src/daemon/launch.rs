@@ -17,7 +17,7 @@ mod routing;
 mod schema;
 
 use background::should_quiesce_background;
-use context::LaunchContext;
+use context::{ensure_foreground_capable, LaunchContext};
 use routing::{launch_route, LaunchRoute};
 
 impl Daemon {
@@ -143,6 +143,7 @@ impl Daemon {
             .get(&id)
             .cloned()
             .ok_or_else(|| format!("unknown application {id}"))?;
+        ensure_foreground_capable(&manifest)?;
         if !manifest.exec.exists() {
             return Err(format!(
                 "application executable is missing: {}",
