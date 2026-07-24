@@ -119,6 +119,7 @@ while IFS= read -r -d '' path; do
 done < <(
     find . \
         \( -path './.git' -o -path './target' -o -path '*/target' \
+           -o -path './node_modules' -o -path '*/node_modules' \
            -o -path './dist' -o -path './vendor' -o -path './third_party' \) -prune -o \
         -type f \( -name '*.rs' -o -name '*.c' -o -name '*.h' \
                      -o -name '*.lua' -o -name '*.sh' \
