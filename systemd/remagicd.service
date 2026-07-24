@@ -18,6 +18,10 @@ KillSignal=SIGINT
 TimeoutStopSec=15
 RuntimeDirectory=remagic
 RuntimeDirectoryMode=0700
+# remagic-agentd.socket owns agent.sock inside this shared runtime directory.
+# Removing the directory when remagicd is stopped would unlink the still-live
+# socket while systemd continued to report its socket unit as active.
+RuntimeDirectoryPreserve=yes
 UMask=0077
 
 [Install]

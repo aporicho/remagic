@@ -19,6 +19,7 @@ capabilities = [
   "input:mode-v2",
   "ink:direct-v1",
   "lifecycle:v2",
+  "agent:pi-v1",
 ]
 supports_open_path = false
 

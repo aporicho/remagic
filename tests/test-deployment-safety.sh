@@ -511,6 +511,14 @@ grep -q '^Environment=REMAGIC_AGENT_SOCKET=/run/remagic/agent.sock' \
     echo "application service omitted the Pi agent socket" >&2
     exit 1
 }
+grep -q '^RuntimeDirectoryPreserve=yes$' "$ROOT/systemd/remagicd.service" || {
+    echo "remagicd can unlink the shared Pi agent socket when it stops" >&2
+    exit 1
+}
+grep -q '"agent:pi-v1"' "$ROOT/testing/manifests/magicpaper.toml" || {
+    echo "device acceptance does not exercise the production Pi agent preflight" >&2
+    exit 1
+}
 grep -q '^Wants=remagic-agentd.socket$' "$ROOT/systemd/remagic-app@.service" || {
     echo "application service does not request the optional Pi socket" >&2
     exit 1
