@@ -165,7 +165,7 @@ impl Daemon {
             token.generation,
             token.foreground_epoch,
             input.mode.ink_enabled(),
-            true,
+            false,
         )
         .await?;
         self.state

@@ -237,13 +237,16 @@ async fn wait_for_foreground_submission(
             ));
         }
         if snapshot.has_presented(key, generation, foreground_epoch) {
-            let expected_intent = if full_refresh { "full" } else { "content" };
             let submitted = snapshot.recent_submissions.iter().any(|submission| {
                 submission.sequence > baseline_sequence
                     && submission.key == key
                     && submission.generation == generation
                     && submission.foreground_epoch == foreground_epoch
-                    && submission.intent == expected_intent
+                    && (if full_refresh {
+                        submission.intent == "full"
+                    } else {
+                        matches!(submission.intent.as_str(), "mono_quality" | "content")
+                    })
                     && submission.reason == "foreground_switch"
                     && submission.surface_sequence > 0
                     && submission.visible_signature != 0

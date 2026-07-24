@@ -53,6 +53,7 @@ impl Display {
         wallpapers: &[WallpaperOption],
         requested_page: usize,
     ) -> io::Result<(Vec<Button>, usize)> {
+        self.use_color_content()?;
         self.fill(WHITE);
         let pages = wallpapers.len().max(1).div_ceil(WALLPAPERS_PER_PAGE);
         let page = requested_page.min(pages - 1);
@@ -68,7 +69,6 @@ impl Display {
         );
         self.render_browser_footer(font, settings, page, pages, &mut buttons);
         self.client.update_all()?;
-        self.client.request_full_refresh()?;
         Ok((buttons, page))
     }
 

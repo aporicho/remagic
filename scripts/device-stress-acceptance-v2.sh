@@ -94,7 +94,8 @@ assert_exact_foreground_submission_since() {
                 return ("u" ca) > ("u" cb)
             }
             NR > 1 && ugt($1, baseline) && ueq($3, key) &&
-                ueq($4, generation) && ueq($5, epoch) && $6 == "full" &&
+                ueq($4, generation) && ueq($5, epoch) &&
+                ($6 == "mono_quality" || $6 == "content") &&
                 $7 == "foreground_switch" { count++ }
             END { print count + 0 }
         ')
@@ -111,7 +112,8 @@ assert_exact_foreground_submission_since() {
             }
             function unz(v) { return v ~ /^[0-9]+$/ && v ~ /[1-9]/ }
             NR > 1 && ugt($1, baseline) && ueq($3, key) &&
-                ueq($4, generation) && ueq($5, epoch) && $6 == "full" &&
+                ueq($4, generation) && ueq($5, epoch) &&
+                ($6 == "mono_quality" || $6 == "content") &&
                 $7 == "foreground_switch" && unz($2) && unz($8) &&
                 unz($9) && $10 == "true" { count++ }
             END { print count + 0 }
@@ -189,15 +191,15 @@ unit_fd_count() {
     done | awk '{ total += $1 } END { print total + 0 }'
 }
 
-assert_single_refresh() {
+assert_no_full_refresh() {
     local before label after
     [ "$#" -eq 2 ] || return 1
     before=$1 label=$2
     wait_queue_empty
     sleep 0.2
     after=$(display_number full_refresh_count)
-    remagic_test_u64_is_next "$before" "$after" \
-        || fail "$label full-refresh count was $before then $after instead of one increment"
+    [ "$after" = "$before" ] \
+        || fail "$label unexpectedly changed full-refresh count from $before to $after"
 }
 
 cleanup() {
@@ -279,7 +281,7 @@ while [ "$cycle" -le "$CYCLES" ]; do
         || fail "MagicPaper restarted in cycle $cycle"
     [ "$(display_number foreground_key)" = "$magic_key" ] \
         || fail "MagicPaper surface changed in cycle $cycle"
-    assert_single_refresh "$before_full" "MagicPaper cycle $cycle"
+    assert_no_full_refresh "$before_full" "MagicPaper cycle $cycle"
     assert_exact_foreground_submission_since "$before_sequence" "$magic_key" \
         "$(display_number generation)" "$(display_number foreground_epoch)" \
         "MagicPaper cycle $cycle"
@@ -308,7 +310,7 @@ while [ "$cycle" -le "$CYCLES" ]; do
         || fail "KOReader restarted in cycle $cycle"
     [ "$(display_number foreground_key)" = "$koreader_key" ] \
         || fail "KOReader surface changed in cycle $cycle"
-    assert_single_refresh "$before_full" "KOReader cycle $cycle"
+    assert_no_full_refresh "$before_full" "KOReader cycle $cycle"
     assert_exact_foreground_submission_since "$before_sequence" "$koreader_key" \
         "$(display_number generation)" "$(display_number foreground_epoch)" \
         "KOReader cycle $cycle"

@@ -10,7 +10,9 @@ const MESSAGE_INITIALIZE: u8 = 0;
 const MESSAGE_UPDATE: u8 = 1;
 const MESSAGE_TERMINATE: u8 = 3;
 const MESSAGE_USERINPUT: u8 = 4;
-const MESSAGE_REQUEST_FULL_REFRESH: u8 = 6;
+const MESSAGE_SET_REFRESH_MODE: u8 = 5;
+pub(crate) const REFRESH_MODE_CONTENT: i32 = 3;
+pub(crate) const REFRESH_MODE_UI: i32 = 4;
 const UPDATE_ALL: i32 = 0;
 const UPDATE_PARTIAL: i32 = 1;
 const INPUT_TOUCH_PRESS: i32 = 0x10;
@@ -108,9 +110,10 @@ impl Client {
         Ok(())
     }
 
-    pub fn request_full_refresh(&self) -> io::Result<()> {
+    pub fn set_refresh_mode(&self, mode: i32) -> io::Result<()> {
         let mut packet = [0_u8; CLIENT_SIZE];
-        packet[0] = MESSAGE_REQUEST_FULL_REFRESH;
+        packet[0] = MESSAGE_SET_REFRESH_MODE;
+        packet[4..8].copy_from_slice(&mode.to_le_bytes());
         send_packet(self.fd, &packet)
     }
 

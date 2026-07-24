@@ -131,6 +131,55 @@ fn memory_runtime() -> (PanelRuntime<MemoryBackend>, Arc<SharedSurface>) {
     (runtime, surface)
 }
 
+#[test]
+fn foreground_switches_use_mono_quality_unless_color_is_explicit() {
+    let (_tx, rx) = mpsc::channel();
+    let mut runtime = PanelRuntime::new(MemoryBackend::new(960, 1696).unwrap(), rx);
+    let mono = test_surface(18);
+    mono.mark_commit();
+    runtime
+        .handle(PanelCommand::RegisterSurface(Arc::clone(&mono)))
+        .unwrap();
+    runtime
+        .handle(PanelCommand::SetForeground {
+            lease: lease(18, 1, 1),
+            full_refresh: false,
+        })
+        .unwrap();
+    assert_eq!(
+        runtime.backend.submissions().last().unwrap().intent,
+        RefreshIntent::MonoQuality
+    );
+
+    let color = test_surface(19);
+    color.set_refresh_mode(crate::protocol::REFRESH_MODE_CONTENT);
+    color.mark_commit();
+    runtime
+        .handle(PanelCommand::RegisterSurface(Arc::clone(&color)))
+        .unwrap();
+    runtime
+        .handle(PanelCommand::SetForeground {
+            lease: lease(19, 1, 2),
+            full_refresh: false,
+        })
+        .unwrap();
+    assert_eq!(
+        runtime.backend.submissions().last().unwrap().intent,
+        RefreshIntent::Content
+    );
+
+    runtime
+        .handle(PanelCommand::SetForeground {
+            lease: lease(18, 2, 3),
+            full_refresh: true,
+        })
+        .unwrap();
+    assert_eq!(
+        runtime.backend.submissions().last().unwrap().intent,
+        RefreshIntent::Full
+    );
+}
+
 fn pen_frame(
     sequence: u64,
     phase: PenPhase,

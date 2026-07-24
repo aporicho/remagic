@@ -328,7 +328,7 @@ impl HostState {
             REFRESH_MODE_UFAST => RefreshIntent::Ink,
             REFRESH_MODE_FAST => RefreshIntent::MonoQuality,
             REFRESH_MODE_CONTENT => RefreshIntent::Content,
-            _ => RefreshIntent::Ui,
+            _ => RefreshIntent::MonoQuality,
         };
         drop(surfaces);
         self.damage(key, rect, intent)

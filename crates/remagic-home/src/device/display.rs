@@ -56,6 +56,7 @@ impl Display {
     }
 
     pub(super) fn render(&mut self, font: &FontArc, apps: &[AppView]) -> io::Result<Vec<Button>> {
+        self.use_mono_ui()?;
         self.fill(WHITE);
         let mut buttons = Vec::new();
         self.render_header(font, &mut buttons);
@@ -65,6 +66,15 @@ impl Display {
         self.render_sleep_button(font, &mut buttons);
         self.client.update_all()?;
         Ok(buttons)
+    }
+
+    fn use_mono_ui(&self) -> io::Result<()> {
+        self.client.set_refresh_mode(crate::qtfb::REFRESH_MODE_UI)
+    }
+
+    fn use_color_content(&self) -> io::Result<()> {
+        self.client
+            .set_refresh_mode(crate::qtfb::REFRESH_MODE_CONTENT)
     }
 
     fn render_header(&mut self, font: &FontArc, buttons: &mut Vec<Button>) {

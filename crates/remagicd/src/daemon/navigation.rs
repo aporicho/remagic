@@ -65,7 +65,7 @@ impl Daemon {
         display_host::wait_ready().await?;
         self.controller.start(HOME_UNIT).await?;
         display_host::wait_surface(display_host::HOME_SURFACE_KEY, Duration::from_secs(8)).await?;
-        self.show_manager_surface(true).await?;
+        self.show_manager_surface(false).await?;
         self.state
             .write()
             .await

@@ -9,6 +9,7 @@ impl Display {
         font: &FontArc,
         device_name: &str,
     ) -> io::Result<Vec<Button>> {
+        self.use_mono_ui()?;
         self.fill(WHITE);
         self.centered_text(font, "ReMagic 已就绪", 58.0, self.height / 4, BLACK);
         self.centered_text(font, device_name, 27.0, self.height / 4 + 54, DARK_GRAY);

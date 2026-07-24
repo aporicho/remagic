@@ -86,7 +86,7 @@ impl<B: PanelBackend> PanelRuntime<B> {
             REFRESH_MODE_FAST => RefreshIntent::MonoQuality,
             REFRESH_MODE_ANIMATE => RefreshIntent::Ui,
             REFRESH_MODE_CONTENT => RefreshIntent::Content,
-            _ => RefreshIntent::Ui,
+            _ => RefreshIntent::MonoQuality,
         }
     }
 

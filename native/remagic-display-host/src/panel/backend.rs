@@ -138,7 +138,10 @@ impl PanelBackend for QuillBackend {
                 RefreshIntent::MonoQuality => {
                     quill_swap_mono_quality(rect.x, rect.y, rect.width, rect.height)
                 }
-                RefreshIntent::Ui | RefreshIntent::Content => {
+                RefreshIntent::Ui => {
+                    quill_swap_mono_quality(rect.x, rect.y, rect.width, rect.height)
+                }
+                RefreshIntent::Content => {
                     quill_swap_color(rect.x, rect.y, rect.width, rect.height)
                 }
                 RefreshIntent::Full => {

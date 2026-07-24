@@ -11,6 +11,7 @@ impl Display {
         settings: &HomeSettings,
         wallpapers: &[WallpaperOption],
     ) -> io::Result<Vec<Button>> {
+        self.use_mono_ui()?;
         self.fill(WHITE);
         let mut buttons = Vec::new();
         self.text(font, "设置", 54.0, 48, 82, BLACK);

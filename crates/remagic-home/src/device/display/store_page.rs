@@ -51,6 +51,7 @@ impl Display {
         busy: Option<&str>,
         error: Option<&str>,
     ) -> io::Result<Vec<Button>> {
+        self.use_mono_ui()?;
         self.fill(WHITE);
         let mut buttons = Vec::new();
         let mut y = self.render_store_header(font, &mut buttons, error.is_some());

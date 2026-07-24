@@ -12,6 +12,7 @@ impl Display {
         wallpapers: &[WallpaperOption],
         preview: bool,
     ) -> io::Result<Vec<Button>> {
+        self.use_color_content()?;
         super::wallpaper::draw(self, settings, settings.wallpaper(wallpapers));
         let mut buttons = Vec::new();
         if preview {
@@ -28,7 +29,6 @@ impl Display {
             });
         }
         self.client.update_all()?;
-        self.client.request_full_refresh()?;
         Ok(buttons)
     }
 }

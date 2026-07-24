@@ -205,11 +205,16 @@ impl<B: PanelBackend> PanelRuntime<B> {
     }
 
     fn set_foreground(&mut self, lease: PanelLease, full_refresh: bool) -> io::Result<()> {
-        let intent = if full_refresh {
-            RefreshIntent::Full
-        } else {
-            RefreshIntent::Content
-        };
+        let surface = self
+            .surfaces
+            .get(&lease.key)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "foreground surface is not connected",
+                )
+            })?;
+        let intent = foreground_intent(surface, full_refresh);
         self.set_foreground_with(lease, intent, SubmissionReason::ForegroundSwitch)
     }
 
@@ -283,11 +288,7 @@ impl<B: PanelBackend> PanelRuntime<B> {
             enabled: ink_enabled,
             region: None,
         };
-        let intent = if full_refresh {
-            RefreshIntent::Full
-        } else {
-            RefreshIntent::Content
-        };
+        let intent = foreground_intent(&surface, full_refresh);
         if let Err(error) = self.present_surface(
             lease,
             surface.full_rect(),
@@ -460,6 +461,19 @@ impl<B: PanelBackend> PanelRuntime<B> {
         self.abort_ink();
         self.foreground = None;
         self.ink = InkLease::default();
+    }
+}
+
+fn foreground_intent(surface: &SharedSurface, full_refresh: bool) -> RefreshIntent {
+    if full_refresh {
+        RefreshIntent::Full
+    } else if surface.refresh_mode() == crate::protocol::REFRESH_MODE_CONTENT {
+        RefreshIntent::Content
+    } else {
+        // A foreground switch covers the entire panel. Never promote ordinary
+        // UI to a color waveform, and never inherit UFAST from a parked pen
+        // stroke: both cases need a clean monochrome-quality frame.
+        RefreshIntent::MonoQuality
     }
 }
 
