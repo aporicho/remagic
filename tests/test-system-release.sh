@@ -152,8 +152,8 @@ grep -Fq 'BindsTo=remagicd.service' "$ROOT/systemd/remagic-agentd.service" || {
     echo "Pi agent broker is not lifecycle-bound to the manager" >&2
     exit 1
 }
-grep -Fq 'REMAGIC_API=5' "$ROOT/scripts/build-system-release.sh" || {
-    echo "system release did not publish ReMagic API 5" >&2
+grep -Fq 'REMAGIC_API=6' "$ROOT/scripts/build-system-release.sh" || {
+    echo "system release did not publish ReMagic API 6" >&2
     exit 1
 }
 grep -Fq 'REMAGIC_PI_RUNTIME_DIR must name a self-contained Pi runtime' \

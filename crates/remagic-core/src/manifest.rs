@@ -87,7 +87,7 @@ pub enum UninstallPolicy {
 
 pub const MANIFEST_SCHEMA_V1: u32 = 1;
 pub const MANIFEST_SCHEMA_V2: u32 = 2;
-pub const REMAGIC_APP_API_VERSION: u32 = 5;
+pub const REMAGIC_APP_API_VERSION: u32 = 6;
 pub const MAX_STARTUP_TIMEOUT_MS: u64 = 1_450_000;
 
 fn default_required_remagic_api() -> u32 {

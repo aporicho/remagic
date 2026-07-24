@@ -289,11 +289,11 @@ mod tests {
         let context = StoreContext {
             product: "paper_pro_move",
             os_version: "3.27.3.0".into(),
-            api: "5".into(),
+            api: "6".into(),
         };
         assert_eq!(
             install_arguments("upgrade", "koreader", &context),
-            ["upgrade", "koreader", "paper_pro_move", "3.27.3.0", "5"]
+            ["upgrade", "koreader", "paper_pro_move", "3.27.3.0", "6"]
         );
     }
 }

@@ -25,14 +25,12 @@ impl Daemon {
                 }
             }
             DomainState::Foreground(app) => self.park(app, false, true).await,
-            // The physical wake press is consumed by the wake guard. A later
-            // deliberate single press while the lock page is awake puts the
-            // same frozen lock transaction back to sleep.
-            DomainState::Sleeping => {
-                let sleep = self.sleep_transaction.snapshot();
-                self.resuspend_locked(sleep.epoch, sleep.revision, interrupt_epoch)
-                    .await
-            }
+            // A real resume press is consumed by the wake guard and reaches
+            // Home through `finish_physical_resume`. When suspend is blocked
+            // (most commonly by an attached charger), the next deliberate
+            // single press arrives here instead. Both cases must request the
+            // same fenced Home-rendered unlock transaction.
+            DomainState::Sleeping => retain_sleeping_unlock(self.request_home_unlock().await),
             _ => Ok(()),
         }
     }
@@ -65,7 +63,7 @@ impl Daemon {
         display_host::wait_ready().await?;
         self.controller.start(HOME_UNIT).await?;
         display_host::wait_surface(display_host::HOME_SURFACE_KEY, Duration::from_secs(8)).await?;
-        self.show_manager_surface(false).await?;
+        self.show_manager_surface().await?;
         self.state
             .write()
             .await
@@ -194,16 +192,19 @@ impl Daemon {
     pub(super) async fn restart_runtime_and_wait(&self) -> Result<(), String> {
         self.controller.restart(HOME_UNIT).await?;
         display_host::wait_surface(display_host::HOME_SURFACE_KEY, Duration::from_secs(8)).await?;
-        self.show_manager_surface(false).await
+        self.show_manager_surface().await
     }
 
-    pub(super) async fn show_manager_surface(&self, full_refresh: bool) -> Result<(), String> {
+    /// Transfer visible ownership to Home with exactly one full panel update.
+    /// Callers must avoid this helper when Home already owns the foreground;
+    /// `ensure_manager_surface` provides that idempotent guard.
+    pub(super) async fn show_manager_surface(&self) -> Result<(), String> {
         display_host::wait_surface(display_host::HOME_SURFACE_KEY, Duration::from_secs(8)).await?;
         display_host::set_foreground(
             display_host::HOME_SURFACE_KEY,
             self.allocate_generation(),
             self.allocate_foreground_epoch(),
-            full_refresh,
+            true,
         )
         .await?;
         self.power.set_presentation(PresentationState::Home).await;
@@ -227,7 +228,7 @@ impl Daemon {
         {
             return Ok(());
         }
-        self.show_manager_surface(false).await
+        self.show_manager_surface().await
     }
 
     pub(super) async fn ensure_manager_or_restore(&self) -> Result<(), String> {
@@ -252,5 +253,21 @@ impl Daemon {
 
     pub(super) fn allocate_sleep_epoch(&self) -> u64 {
         self.next_sleep_epoch.fetch_add(1, Ordering::Relaxed).max(1)
+    }
+}
+
+fn retain_sleeping_unlock(result: Result<(), String>) -> Result<(), String> {
+    result.map_err(|error| sleep::retained_lock_error(&error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_home_notification_remains_a_retryable_sleeping_lock() {
+        let error = retain_sleeping_unlock(Err("Home socket is absent".into())).unwrap_err();
+        assert!(sleep::is_retained_lock_error(&error));
+        assert!(error.contains("Home socket is absent"));
     }
 }

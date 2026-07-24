@@ -1,4 +1,4 @@
-//! Version-one application-to-manager request protocol.
+//! Versioned application-to-manager request protocol.
 //!
 //! This newline-delimited JSON channel is intentionally separate from the
 //! length-prefixed manager control protocol. Applications use it for narrowly
@@ -43,6 +43,11 @@ pub enum RuntimeAppCommand {
         app: AppId,
         #[serde(default)]
         open_path: Option<PathBuf>,
+        /// Version two binds the handoff to the caller's exact foreground
+        /// lease. It remains optional on the wire so version-one clients keep
+        /// their original request shape.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token: Option<AppToken>,
     },
     SetInputMode {
         /// Exact process and foreground-lease identity received over the
@@ -85,7 +90,7 @@ pub struct RuntimeAppReply {
 }
 
 impl RuntimeAppReply {
-    pub fn open_accepted() -> Self {
+    pub fn legacy_open_accepted() -> Self {
         Self {
             ok: true,
             status: Some("accepted".into()),
@@ -95,6 +100,13 @@ impl RuntimeAppReply {
             ink_enabled: None,
             lease: None,
             error: None,
+        }
+    }
+
+    pub fn open_accepted(request_id: String) -> Self {
+        Self {
+            request_id: Some(request_id),
+            ..Self::legacy_open_accepted()
         }
     }
 
@@ -171,15 +183,47 @@ mod tests {
             RuntimeAppCommand::OpenApp {
                 app,
                 open_path: Some(path),
+                token: None,
             } if app.as_str() == "koreader" && path == std::path::Path::new("/home/root/book.epub")
         ));
         assert_eq!(
-            serde_json::to_value(RuntimeAppReply::open_accepted()).unwrap(),
+            serde_json::to_value(RuntimeAppReply::legacy_open_accepted()).unwrap(),
             serde_json::json!({"ok": true, "status": "accepted"})
         );
         assert_eq!(
-            serde_json::to_string(&RuntimeAppReply::open_accepted()).unwrap(),
+            serde_json::to_string(&RuntimeAppReply::legacy_open_accepted()).unwrap(),
             r#"{"ok":true,"status":"accepted"}"#
+        );
+    }
+
+    #[test]
+    fn version_two_open_app_carries_exact_foreground_token_and_correlates_ack() {
+        let request: RuntimeAppRequest = serde_json::from_str(
+            r#"{"version":2,"request_id":"open-42","command":"open_app","token":{"app_id":"magicpaper","generation":7,"foreground_epoch":11,"lease_id":13},"app":"koreader","open_path":"/home/root/book.epub"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            request.command,
+            RuntimeAppCommand::OpenApp {
+                app,
+                open_path: Some(path),
+                token: Some(AppToken {
+                    app_id,
+                    generation: 7,
+                    foreground_epoch: 11,
+                    lease_id: Some(13),
+                }),
+            } if app.as_str() == "koreader"
+                && app_id.as_str() == "magicpaper"
+                && path == std::path::Path::new("/home/root/book.epub")
+        ));
+        assert_eq!(
+            serde_json::to_value(RuntimeAppReply::open_accepted("open-42".into())).unwrap(),
+            serde_json::json!({
+                "ok": true,
+                "status": "accepted",
+                "request_id": "open-42",
+            })
         );
     }
 

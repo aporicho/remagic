@@ -16,7 +16,7 @@ env:
   SDK_URL: https://storage.googleapis.com/remarkable-codex-toolchain/3.27.0.97/chiappa/remarkable-production-image-5.7.119-chiappa-public-x86_64-toolchain.sh
   SDK_SHA256: f22794bc6bb6729e648a7404a561e870d537818bd62a2f9950522f0cf15b4130
   SDK_DIR: /home/runner/remagic-sdk-chiappa-3.27
-  STORE_REF: a566546bf3d4eccc43377d3782029373512e0480
+  STORE_REF: 9e3a13e33edfa83a924cbaae41f76c2c9a6a3384
   QUILL_REF: 39262ee0bef69915e3ead3ac218d5973916f422a
   UI_FONT_SHA256: dbbdf59d7035d980abecf4f820e615b72107865a00f6eb41a1bbb9d9d1492fd1
 
@@ -100,9 +100,19 @@ jobs:
           test -n "$REMAGIC_SYSTEM_SIGNING_KEY_VALUE"
           umask 077
           key="$RUNNER_TEMP/remagic-system-signing.pem"
+          cleanup_key() {
+            if [ -f "$key" ]; then
+              chmod 0600 "$key" || true
+              shred -u "$key" 2>/dev/null || rm -f "$key"
+            fi
+          }
+          trap cleanup_key EXIT INT TERM
           printf '%s\n' "$REMAGIC_SYSTEM_SIGNING_KEY_VALUE" > "$key"
+          unset REMAGIC_SYSTEM_SIGNING_KEY_VALUE
           REMAGIC_SYSTEM_SIGNING_KEY="$key" \
             scripts/system-release/sign-release.sh dist/system-release/remagic-release-v1.json
+          cleanup_key
+          trap - EXIT INT TERM
       - name: Publish verified assets
         working-directory: remagic
         env:
@@ -116,9 +126,30 @@ jobs:
             gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
               --verify-tag --draft --title "ReMagic $version" --generate-notes
           fi
-          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
-            "$archive" "$archive.sha256" \
-            "$out/remagic-release-v1.json" "$out/remagic-release-v1.sig.json" \
+          asset_dir=$(mktemp -d "$RUNNER_TEMP/remagic-release-assets.XXXXXX")
+          trap 'rm -rf "$asset_dir"' EXIT
+          published=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name')
+          for asset in \
+            "$archive" \
+            "$archive.sha256" \
+            "$out/remagic-release-v1.json" \
+            "$out/remagic-release-v1.sig.json" \
             "$out/remagic-release.env"
+          do
+            name=$(basename "$asset")
+            if printf '%s\n' "$published" | grep -Fxq "$name"; then
+              remote="$asset_dir/$name"
+              gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+                --pattern "$name" --output "$remote"
+              cmp -s "$asset" "$remote" || {
+                echo "release asset $name already exists with different bytes" >&2
+                exit 1
+              }
+              echo "release asset $name already matches"
+            else
+              gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" "$asset"
+            fi
+          done
           gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
             --draft=false --latest

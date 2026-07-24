@@ -29,7 +29,7 @@ store_package=$(require_safe_release_value STORE_PACKAGE "$RELEASE_FILE")
 pi_runtime_schema=$(require_safe_release_value REMAGIC_PI_RUNTIME_SCHEMA "$RELEASE_FILE")
 pi_version=$(require_safe_release_value REMAGIC_PI_VERSION "$RELEASE_FILE")
 node_version=$(require_safe_release_value REMAGIC_NODE_VERSION "$RELEASE_FILE")
-[ "$schema" = 1 ] && [ "$api" = 5 ] || {
+[ "$schema" = 1 ] && [ "$api" = 6 ] || {
     echo "ReMagic release schema/API is unsupported" >&2
     exit 1
 }

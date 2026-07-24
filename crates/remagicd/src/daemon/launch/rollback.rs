@@ -55,7 +55,7 @@ impl Daemon {
             .await
             .apply(Transition::AppExited(context.id.clone()))
             .map_err(|error| format!("could not roll back launch state: {error}"))?;
-        self.show_manager_surface(false)
+        self.show_manager_surface()
             .await
             .map_err(|error| format!("could not restore manager surface: {error}"))?;
         let schema_safe = schema::background_restore_is_safe(context);

@@ -48,8 +48,9 @@ impl Daemon {
             self.schedule_blocked_resuspend(self.sleep_transaction.snapshot(), interaction_epoch);
             // The lock page and input fence were already committed. A power
             // inhibitor is not permission to expose Home again: retain the
-            // retryable Sleeping domain and let the explicit lock-page button
-            // perform the only unlock.
+            // retryable Sleeping domain. A later single power press asks Home
+            // to render the replacement manager frame and perform the normal
+            // fenced unlock, even while the charger remains attached.
             return Err(sleep::retained_lock_error(&error));
         }
         let guard_result = self.resume_wake_guard().await;
@@ -196,27 +197,22 @@ impl Daemon {
         }
         let awake = self.sleep_transaction.mark_awake(sleep_epoch)?;
         self.schedule_locked_resuspend(awake);
-        self.notify_home_resume().await;
+        if let Err(error) = self.request_home_unlock().await {
+            // The panel remains safely locked. Notification loss is
+            // recoverable UI state, so the next single press may retry it.
+            warn!(%error, "Home resume notification was lost");
+        }
         Ok(())
     }
 
-    async fn notify_home_resume(&self) {
-        let result = async {
-            let socket = tokio::net::UnixDatagram::unbound()
-                .map_err(|error| format!("cannot create Home resume socket: {error}"))?;
-            socket
-                .send_to(b"resume_unlock\n", super::super::HOME_EVENT_SOCKET)
-                .await
-                .map_err(|error| format!("cannot notify Home after resume: {error}"))?;
-            Ok::<(), String>(())
-        }
-        .await;
-        if let Err(error) = result {
-            // The panel remains safely locked and the visible unlock region
-            // is still available. Notification loss is recoverable UI state,
-            // not a reason to tear down the managed domain.
-            warn!(%error, "Home resume notification was lost");
-        }
+    pub(in crate::daemon) async fn request_home_unlock(&self) -> Result<(), String> {
+        let socket = tokio::net::UnixDatagram::unbound()
+            .map_err(|error| format!("cannot create Home resume socket: {error}"))?;
+        socket
+            .send_to(b"resume_unlock\n", super::super::HOME_EVENT_SOCKET)
+            .await
+            .map_err(|error| format!("cannot notify Home to unlock: {error}"))?;
+        Ok(())
     }
 
     fn schedule_locked_resuspend(&self, sleep: sleep::SleepSnapshot) {

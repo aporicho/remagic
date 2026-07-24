@@ -99,7 +99,7 @@ impl Daemon {
             .ok_or_else(|| format!("park ownership for {id} changed before display handoff"))?;
         utils::set_foreground_marker(None)?;
         if show_manager {
-            self.show_manager_surface(false).await?
+            self.show_manager_surface().await?
         } else {
             display_host::clear_foreground().await?
         }

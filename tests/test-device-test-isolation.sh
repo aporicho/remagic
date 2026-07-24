@@ -120,6 +120,7 @@ fi
 for acceptance_script in \
     "$ROOT/scripts/device-acceptance-v2.sh" \
     "$ROOT/scripts/device-fault-acceptance-v2.sh" \
+    "$ROOT/scripts/device-handoff-acceptance-v2.sh" \
     "$ROOT/scripts/device-stress-acceptance-v2.sh"; do
     grep -Fq 'trap '\''cleanup "$?"'\'' EXIT' "$acceptance_script" || \
         fail "EXIT trap does not pass its status: $acceptance_script"

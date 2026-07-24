@@ -6,6 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{info, warn};
 
+mod detached;
+
 impl Daemon {
     pub(super) async fn request(&self, request: Request) -> Response {
         match request {
@@ -218,6 +220,15 @@ impl Daemon {
             // press must also preempt any in-flight cold application launch.
             Event::LongPower => self.restore_system().await,
             Event::Launch(id, path) => self.launch(id, path, interrupt_epoch, &request_fence).await,
+            Event::RuntimeLaunch {
+                authority,
+                app_id,
+                open_path,
+            } => {
+                self.validate_runtime_launch_authority(&authority).await?;
+                self.launch(app_id, open_path, interrupt_epoch, &request_fence)
+                    .await
+            }
             Event::OpenManager => self.open_manager().await,
             #[cfg(test)]
             Event::EnsureManager => self.handle_ensure_manager().await,

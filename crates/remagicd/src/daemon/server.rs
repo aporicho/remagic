@@ -245,8 +245,10 @@ async fn recover_after_failure(
         DomainState::System | DomainState::Foreground(_) => Ok(()),
         DomainState::Manager => daemon.ensure_manager_or_restore().await,
         DomainState::Sleeping
-            if sleep::is_retained_lock_error(error)
-                && retained_sleep_lock_is_healthy(daemon).await =>
+            if should_retain_sleeping_failure(
+                error,
+                retained_sleep_lock_is_healthy(daemon).await,
+            ) =>
         {
             Ok(())
         }
@@ -257,6 +259,10 @@ async fn recover_after_failure(
         | DomainState::Sleeping
         | DomainState::Recovering => daemon.restore_system().await,
     }
+}
+
+fn should_retain_sleeping_failure(error: &str, healthy_lock: bool) -> bool {
+    sleep::is_retained_lock_error(error) && healthy_lock
 }
 
 async fn retained_sleep_lock_is_healthy(daemon: &Daemon) -> bool {
@@ -292,4 +298,21 @@ async fn serve_control_client(
         write_frame(&mut stream, &daemon.request(request).await).await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::should_retain_sleeping_failure;
+    use crate::daemon::sleep;
+
+    #[test]
+    fn healthy_notification_failure_never_selects_stock_restore() {
+        let failure = sleep::retained_lock_error("Home datagram failed");
+        assert!(should_retain_sleeping_failure(&failure, true));
+        assert!(!should_retain_sleeping_failure(&failure, false));
+        assert!(!should_retain_sleeping_failure(
+            "Home datagram failed",
+            true
+        ));
+    }
 }

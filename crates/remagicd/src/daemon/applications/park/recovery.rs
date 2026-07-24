@@ -165,7 +165,7 @@ impl Daemon {
             token.generation,
             token.foreground_epoch,
             input.mode.ink_enabled(),
-            false,
+            true,
         )
         .await?;
         self.state
@@ -219,6 +219,6 @@ impl Daemon {
             }
         }
         utils::set_foreground_marker(None)?;
-        self.show_manager_surface(false).await
+        self.show_manager_surface().await
     }
 }

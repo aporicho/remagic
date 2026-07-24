@@ -203,12 +203,19 @@ ssh -F /dev/null root@10.11.99.1 /home/root/apps/remagic/share/testing/device-ac
 ssh -F /dev/null root@10.11.99.1 /home/root/apps/remagic/share/testing/device-fault-acceptance-v2.sh
 ssh -F /dev/null root@10.11.99.1 /home/root/apps/remagic/share/testing/device-stress-acceptance-v2.sh
 ssh -F /dev/null root@10.11.99.1 /home/root/apps/remagic/share/testing/device-lock-acceptance-v2.sh
+ssh -F /dev/null root@10.11.99.1 /home/root/apps/remagic/share/testing/device-handoff-acceptance-v2.sh
 ```
 
 它们覆盖真实首帧、按压反馈、暂停/召回/关闭、MagicPaper↔KOReader 暖切换、
 surface fence、完整刷新计数、进程/cgroup/显示宿主故障恢复与 suspend/resume。
+独立 handoff 验收会用隔离的一次性手写事件验证 `read` 在五秒内召回同一 KOReader
+进程、冻结 MagicPaper、只产生一次全刷，并收到关联的 Runtime App v2 ACK。
 正式 stable 发布必须在 Ferrari 和 Chiappa 两台实机均通过；只有一台设备时只能发布
 预发布版本。
+
+锁屏脚本默认在 USB 连接状态自动验证“充电阻止 suspend 后，下一次单按仍可直接
+解锁”，无需人工按键。真实 suspend/resume 仍需拔线并由用户配合，运行时设置
+`REMAGIC_REAL_SUSPEND=1`；这条路径不能由插线测试替代。
 
 功耗验收必须跨越一次真实的无 USB 区间，不能用“插线等待”代替。两台设备分别执行：
 

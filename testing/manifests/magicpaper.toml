@@ -75,6 +75,7 @@ mode = "deny"
 [environment]
 MAGICPAPER_SYSTEMD_MANAGED = "1"
 MAGICPAPER_TEST_MODE = "1"
+MAGICPAPER_TEST_EVENT_FILE = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/test-event"
 MAGICPAPER_CONFIG = "/home/root/.local/state/remagic/acceptance/current/magicpaper/config/oracle.env"
 MAGICPAPER_DATA_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data"
 MAGICPAPER_AGENT_QUEUE_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/agent"

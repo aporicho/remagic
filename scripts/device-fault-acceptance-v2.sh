@@ -51,6 +51,45 @@ wait_domain() {
     fail "manager domain did not match $pattern"
 }
 
+display_number() {
+    local field
+    [ "$#" -eq 1 ] || return 1
+    field=$1
+    "$CTL" display-status 2>/dev/null \
+        | sed -n "s/.*\"$field\": \([0-9][0-9]*\).*/\1/p" | sed -n '1p'
+}
+
+wait_panel_settled() {
+    local attempts stable
+    attempts=0 stable=0
+    while [ "$attempts" -lt 160 ]; do
+        if [ "$(display_number queue_depth)" = 0 ]; then
+            stable=$((stable + 1))
+            [ "$stable" -ge 4 ] && return 0
+        else
+            stable=0
+        fi
+        sleep 0.05
+        attempts=$((attempts + 1))
+    done
+    fail "panel command queue did not settle"
+}
+
+full_refresh_checkpoint() {
+    wait_panel_settled
+    display_number full_refresh_count
+}
+
+assert_one_full_refresh_since() {
+    local before label after
+    [ "$#" -eq 2 ] || return 1
+    before=$1 label=$2
+    wait_panel_settled
+    after=$(display_number full_refresh_count)
+    [ "$after" -eq $((before + 1)) ] \
+        || fail "$label changed full-refresh count from $before to $after"
+}
+
 main_pid() {
     systemctl show --property=MainPID --value "$1"
 }
@@ -134,6 +173,29 @@ wait_unit xochitl.service active
 wait_domain '"domain": "manager"'
 assert_managed_wakelock
 
+echo "[v2-fault] failed cold launch rolls back with exactly one full refresh"
+fault_manifest=$REMAGIC_TEST_ROOT/manifests/magicpaper.toml
+saved_manifest=$REMAGIC_TEST_ROOT/magicpaper.toml.before-launch-fault
+fault_root=$REMAGIC_TEST_ROOT/fail-launch
+mkdir -p "$fault_root"
+printf '%s\n' '#!/bin/sh' 'exit 17' >"$fault_root/fail-launch"
+chmod 0700 "$fault_root/fail-launch"
+cp "$fault_manifest" "$saved_manifest"
+sed -e "s|^exec = .*|exec = \"$fault_root/fail-launch\"|" \
+    -e "s|^working_dir = .*|working_dir = \"$fault_root\"|" \
+    "$saved_manifest" >"$fault_manifest.tmp"
+mv "$fault_manifest.tmp" "$fault_manifest"
+"$CTL" reload >/dev/null
+before_full=$(full_refresh_checkpoint)
+if "$CTL" launch magicpaper >/dev/null 2>&1; then
+    fail "failing MagicPaper executable was acknowledged as a successful launch"
+fi
+wait_domain '"domain": "manager"'
+wait_not_active 'remagic-app@magicpaper.service'
+assert_one_full_refresh_since "$before_full" "cold-launch rollback"
+mv "$saved_manifest" "$fault_manifest"
+"$CTL" reload >/dev/null
+
 echo "[v2-fault] Home process crash is restarted and rebound"
 old_home=$(main_pid remagic-home.service)
 [ "$old_home" -gt 1 ] || fail "Home has no live PID"
@@ -163,16 +225,37 @@ echo "[v2-fault] application child crash returns to Home"
 wait_domain '"foreground": "magicpaper"'
 magic_child=$(child_pid 'remagic-app@magicpaper.service') \
     || fail "MagicPaper child PID was not found"
+
+echo "[v2-fault] failed park restores the same foreground with exactly one full refresh"
+before_full=$(full_refresh_checkpoint)
+kill -STOP "$magic_child"
+( sleep 4; kill -CONT "$magic_child" 2>/dev/null || true ) &
+resume_helper=$!
+if "$CTL" park >/dev/null 2>&1; then
+    kill -CONT "$magic_child" 2>/dev/null || true
+    wait "$resume_helper" || true
+    fail "stopped MagicPaper unexpectedly completed its park handshake"
+fi
+wait "$resume_helper" || true
+wait_domain '"foreground": "magicpaper"'
+[ "$(child_pid 'remagic-app@magicpaper.service')" = "$magic_child" ] \
+    || fail "park recovery replaced the MagicPaper process"
+assert_one_full_refresh_since "$before_full" "failed-park foreground recovery"
+
+before_full=$(full_refresh_checkpoint)
 kill -KILL "$magic_child"
 wait_domain '"domain": "manager"'
 wait_not_active 'remagic-app@magicpaper.service'
+assert_one_full_refresh_since "$before_full" "MagicPaper crash recovery"
 
 echo "[v2-fault] total runner loss is detected without its exit callback"
 "$CTL" launch magicpaper >/dev/null
 wait_domain '"foreground": "magicpaper"'
+before_full=$(full_refresh_checkpoint)
 systemctl kill --kill-who=all --signal=KILL 'remagic-app@magicpaper.service'
 wait_not_active 'remagic-app@magicpaper.service'
 wait_domain '"domain": "manager"'
+assert_one_full_refresh_since "$before_full" "runner-loss recovery"
 
 echo "[v2-fault] stale exit token cannot evict a live replacement"
 "$CTL" launch koreader >/dev/null
@@ -197,9 +280,11 @@ wait_domain '"foreground": "koreader"'
 echo "[v2-fault] KOReader process crash is supervised independently"
 koreader_child=$(child_pid 'remagic-app@koreader.service') \
     || fail "KOReader child PID was not found"
+before_full=$(full_refresh_checkpoint)
 kill -KILL "$koreader_child"
 wait_domain '"domain": "manager"'
 wait_not_active 'remagic-app@koreader.service'
+assert_one_full_refresh_since "$before_full" "KOReader crash recovery"
 "$CTL" launch koreader >/dev/null
 wait_domain '"foreground": "koreader"'
 

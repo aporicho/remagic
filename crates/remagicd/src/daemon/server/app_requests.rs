@@ -1,4 +1,4 @@
-use crate::daemon::{Daemon, Event};
+use crate::daemon::{Daemon, Event, RuntimeLaunchAuthority};
 use remagic_core::AppId;
 use remagic_protocol::{
     RuntimeAppCommand, RuntimeAppReply, RuntimeAppRequest, RUNTIME_APP_PROTOCOL_V1,
@@ -51,8 +51,21 @@ async fn parse(
         return RuntimeAppReply::error(None, "unsupported application request");
     }
     match request.command {
-        RuntimeAppCommand::OpenApp { app, open_path } => {
-            open_app(daemon, request.version, request.request_id, app, open_path).await
+        RuntimeAppCommand::OpenApp {
+            app,
+            open_path,
+            token,
+        } => {
+            open_app(
+                daemon,
+                request.version,
+                request.request_id,
+                peer_app,
+                token,
+                app,
+                open_path,
+            )
+            .await
         }
         RuntimeAppCommand::SetInputMode { token, mode } => {
             set_input_mode(daemon, request.version, request.request_id, token, mode).await
@@ -94,21 +107,62 @@ async fn open_app(
     daemon: &Daemon,
     version: u8,
     request_id: String,
+    peer_app: Option<AppId>,
+    token: Option<remagic_core::AppToken>,
     app: AppId,
     open_path: Option<std::path::PathBuf>,
 ) -> RuntimeAppReply {
-    if version != RUNTIME_APP_PROTOCOL_V1 {
-        return RuntimeAppReply::error(
-            Some(request_id),
-            "open_app requires runtime protocol version 1",
-        );
+    let correlated = Some(request_id.clone());
+    let legacy = match validate_open_app_envelope(version, peer_app.as_ref(), token.as_ref()) {
+        Ok(legacy) => legacy,
+        Err(error) => return RuntimeAppReply::error(correlated, error),
+    };
+    let authority = if legacy {
+        RuntimeLaunchAuthority::LegacyPeer(
+            peer_app.as_ref().expect("validated legacy peer").clone(),
+        )
+    } else {
+        RuntimeLaunchAuthority::ForegroundToken(
+            token.as_ref().expect("validated version-two token").clone(),
+        )
+    };
+    if let Err(error) = daemon.validate_runtime_launch_authority(&authority).await {
+        return RuntimeAppReply::error(correlated, error);
     }
-    match daemon.enqueue(Event::Launch(app, open_path)).await {
-        remagic_protocol::Response::Ok => RuntimeAppReply::open_accepted(),
-        remagic_protocol::Response::Error { message } => {
-            RuntimeAppReply::error(Some(request_id), message)
+
+    match daemon
+        .enqueue_detached(Event::RuntimeLaunch {
+            authority,
+            app_id: app,
+            open_path,
+        })
+        .await
+    {
+        Ok(()) if legacy => RuntimeAppReply::legacy_open_accepted(),
+        Ok(()) => RuntimeAppReply::open_accepted(request_id),
+        Err(message) => RuntimeAppReply::error(Some(request_id), message),
+    }
+}
+
+fn validate_open_app_envelope(
+    version: u8,
+    peer_app: Option<&AppId>,
+    token: Option<&remagic_core::AppToken>,
+) -> Result<bool, &'static str> {
+    let peer = peer_app.ok_or("open_app requires a managed application cgroup")?;
+    match version {
+        RUNTIME_APP_PROTOCOL_V1 if token.is_none() => Ok(true),
+        RUNTIME_APP_PROTOCOL_V1 => {
+            Err("runtime protocol version 1 does not accept an open_app token")
         }
-        _ => RuntimeAppReply::error(Some(request_id), "unexpected manager reply"),
+        RUNTIME_APP_PROTOCOL_V2 => {
+            let token = token.ok_or("runtime protocol version 2 requires an open_app token")?;
+            if peer != &token.app_id {
+                return Err("open_app token does not belong to the calling application");
+            }
+            Ok(false)
+        }
+        _ => Err("open_app requires runtime protocol version 1 or 2"),
     }
 }
 
@@ -224,6 +278,7 @@ fn runtime_request_id(line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::input_mode::test_support::{daemon_with_events, manifest, token};
 
     #[test]
     fn request_identity_is_recovered_from_a_structurally_invalid_request() {
@@ -266,5 +321,120 @@ mod tests {
             "0::/system.slice/remagic-background-magicpaper.service.attacker"
         )
         .is_none());
+    }
+
+    #[test]
+    fn open_app_v2_requires_a_token_owned_by_the_managed_peer() {
+        let magicpaper = AppId::new("magicpaper").unwrap();
+        let koreader = AppId::new("koreader").unwrap();
+        let token = remagic_core::AppToken {
+            app_id: magicpaper.clone(),
+            generation: 7,
+            foreground_epoch: 11,
+            lease_id: Some(13),
+        };
+
+        assert_eq!(
+            validate_open_app_envelope(RUNTIME_APP_PROTOCOL_V2, Some(&magicpaper), Some(&token)),
+            Ok(false)
+        );
+        assert!(
+            validate_open_app_envelope(RUNTIME_APP_PROTOCOL_V2, Some(&koreader), Some(&token))
+                .unwrap_err()
+                .contains("does not belong")
+        );
+        assert!(
+            validate_open_app_envelope(RUNTIME_APP_PROTOCOL_V2, Some(&magicpaper), None)
+                .unwrap_err()
+                .contains("requires an open_app token")
+        );
+        assert!(
+            validate_open_app_envelope(RUNTIME_APP_PROTOCOL_V2, None, Some(&token))
+                .unwrap_err()
+                .contains("managed application cgroup")
+        );
+        assert_eq!(
+            validate_open_app_envelope(RUNTIME_APP_PROTOCOL_V1, Some(&magicpaper), None),
+            Ok(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn correlated_open_app_ack_is_returned_before_the_launch_event_is_consumed() {
+        let app = manifest();
+        let caller = app.id.clone();
+        let caller_token = token(&caller);
+        let (daemon, mut events) = daemon_with_events(app, caller.clone());
+
+        let reply = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            open_app(
+                &daemon,
+                RUNTIME_APP_PROTOCOL_V2,
+                "open-fast-1".into(),
+                Some(caller.clone()),
+                Some(caller_token.clone()),
+                AppId::new("koreader").unwrap(),
+                Some("/home/root/book.epub".into()),
+            ),
+        )
+        .await
+        .expect("open_app acknowledgement waited for the launch handler");
+
+        assert_eq!(
+            serde_json::to_value(reply).unwrap(),
+            serde_json::json!({
+                "ok": true,
+                "status": "accepted",
+                "request_id": "open-fast-1",
+            })
+        );
+        let queued = events.recv().await.expect("runtime launch was not queued");
+        assert!(queued.reply.is_none());
+        assert!(matches!(
+            queued.event,
+            Event::RuntimeLaunch {
+                authority: RuntimeLaunchAuthority::ForegroundToken(actual),
+                app_id,
+                open_path: Some(path),
+            } if actual == caller_token
+                && app_id.as_str() == "koreader"
+                && path == std::path::Path::new("/home/root/book.epub")
+        ));
+    }
+
+    #[tokio::test]
+    async fn legacy_open_app_queues_the_authenticated_peer_and_keeps_its_ack_shape() {
+        let app = manifest();
+        let caller = app.id.clone();
+        let (daemon, mut events) = daemon_with_events(app, caller.clone());
+
+        let reply = open_app(
+            &daemon,
+            RUNTIME_APP_PROTOCOL_V1,
+            "legacy-fast-1".into(),
+            Some(caller.clone()),
+            None,
+            AppId::new("koreader").unwrap(),
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            serde_json::to_value(reply).unwrap(),
+            serde_json::json!({"ok": true, "status": "accepted"})
+        );
+        let queued = events
+            .recv()
+            .await
+            .expect("legacy runtime launch was not queued");
+        assert!(matches!(
+            queued.event,
+            Event::RuntimeLaunch {
+                authority: RuntimeLaunchAuthority::LegacyPeer(peer),
+                app_id,
+                open_path: None,
+            } if peer == caller && app_id.as_str() == "koreader"
+        ));
     }
 }

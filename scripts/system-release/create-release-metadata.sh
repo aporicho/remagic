@@ -22,7 +22,7 @@ doc = {
     "sequence": int(sequence),
     "supported_devices": ["paper_pro", "paper_pro_move"],
     "supported_os": ["3.27"],
-    "required_remagic_api": 5,
+    "required_remagic_api": 6,
     "requires_reboot": False,
     "archive": {"url": url, "sha256": sha, "size_bytes": int(size)},
     "generated_at_unix": int(now),

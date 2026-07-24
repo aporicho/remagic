@@ -120,7 +120,7 @@ impl Daemon {
             context.generation,
             context.foreground_epoch,
             input.mode.ink_enabled(),
-            false,
+            true,
         )
         .await?;
         let mut state = self.state.write().await;

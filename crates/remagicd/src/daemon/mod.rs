@@ -15,7 +15,7 @@ mod sync;
 mod utils;
 
 use crate::{power_device, power_manager::PowerManager, system::SystemController};
-use remagic_core::{AppId, AppSession, ManagerState, ManifestStore, SessionStore};
+use remagic_core::{AppId, AppSession, AppToken, ManagerState, ManifestStore, SessionStore};
 use remagic_protocol::PackageOperation;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -40,6 +40,11 @@ pub(super) enum Event {
     TriplePower,
     LongPower,
     Launch(AppId, Option<PathBuf>),
+    RuntimeLaunch {
+        authority: RuntimeLaunchAuthority,
+        app_id: AppId,
+        open_path: Option<PathBuf>,
+    },
     OpenManager,
     #[cfg(test)]
     EnsureManager,
@@ -84,6 +89,7 @@ impl Event {
                 | Self::TriplePower
                 | Self::LongPower
                 | Self::Launch(_, _)
+                | Self::RuntimeLaunch { .. }
                 | Self::OpenManager
                 | Self::ReturnSystem
                 | Self::Sleep(_)
@@ -92,6 +98,12 @@ impl Event {
                 | Self::DisplayHostExited { .. }
         )
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum RuntimeLaunchAuthority {
+    LegacyPeer(AppId),
+    ForegroundToken(AppToken),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -253,8 +265,18 @@ mod queue_tests {
         assert_eq!(first.interrupt_epoch, 8);
         assert_eq!(epoch.load(Ordering::Acquire), first.interrupt_epoch);
 
+        let runtime = QueuedEvent::unattended(
+            Event::RuntimeLaunch {
+                authority: RuntimeLaunchAuthority::LegacyPeer(AppId::new("magicpaper").unwrap()),
+                app_id: AppId::new("koreader").unwrap(),
+                open_path: None,
+            },
+            &epoch,
+        );
+        assert!(runtime.interrupt_epoch > first.interrupt_epoch);
+
         let status = QueuedEvent::unattended(Event::EnsureManager, &epoch);
-        assert_eq!(status.interrupt_epoch, first.interrupt_epoch);
+        assert_eq!(status.interrupt_epoch, runtime.interrupt_epoch);
 
         let close = QueuedEvent::unattended(
             Event::Close(AppId::new("magicpaper").unwrap(), false),

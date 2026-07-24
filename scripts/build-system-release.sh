@@ -210,7 +210,8 @@ install -m 0644 \
     "$ROOT/systemd/remagic-app@koreader.service.d/10-koreader-runtime.conf" \
     "$PAYLOAD/share/systemd/remagic-app@koreader.service.d/10-koreader-runtime.conf"
 for test_script in device-acceptance-v2.sh device-fault-acceptance-v2.sh \
-    device-stress-acceptance-v2.sh device-lock-acceptance-v2.sh device-power-audit.sh; do
+    device-stress-acceptance-v2.sh device-lock-acceptance-v2.sh \
+    device-handoff-acceptance-v2.sh device-power-audit.sh; do
     install -m 0755 "$ROOT/scripts/$test_script" "$PAYLOAD/share/testing/$test_script"
 done
 for test_manifest in magicpaper.toml koreader.toml; do
@@ -227,7 +228,7 @@ cat >"$RELEASE_ROOT/release.env" <<EOF
 REMAGIC_RELEASE_SCHEMA=1
 REMAGIC_VERSION=$VERSION
 REMAGIC_RELEASE_SEQUENCE=$RELEASE_SEQUENCE
-REMAGIC_API=5
+REMAGIC_API=6
 REMAGIC_PI_RUNTIME_SCHEMA=$pi_runtime_schema
 REMAGIC_PI_VERSION=$pi_version
 REMAGIC_NODE_VERSION=$node_version

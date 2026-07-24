@@ -108,6 +108,7 @@ impl SystemReleaseV1 {
             || self.release_id.trim().is_empty()
             || self.version.trim().is_empty()
             || self.sequence < minimum_sequence
+            || self.required_remagic_api == 0
             || self.generated_at_unix >= self.expires_at_unix
             || now_unix < self.generated_at_unix
             || now_unix >= self.expires_at_unix
@@ -184,7 +185,7 @@ mod tests {
             sequence: 2,
             supported_devices: vec![DeviceProduct::PaperProMove],
             supported_os: vec!["3.27.0".into()],
-            required_remagic_api: 5,
+            required_remagic_api: 6,
             requires_reboot: false,
             archive: SystemArtifactV1 {
                 url: "https://github.com/aporicho/remagic/releases/download/v2026.07.23/remagic-system-universal-aarch64.tar.gz".into(),
@@ -208,6 +209,11 @@ mod tests {
         );
         assert!(value
             .validate(DeviceProduct::PaperProMove, "3.27.0", 15, 3)
+            .is_err());
+        let mut invalid_api = value;
+        invalid_api.required_remagic_api = 0;
+        assert!(invalid_api
+            .validate(DeviceProduct::PaperProMove, "3.27.0", 15, 2)
             .is_err());
     }
 }

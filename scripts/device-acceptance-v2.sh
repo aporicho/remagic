@@ -471,15 +471,16 @@ assert_presented_surface() {
         || fail "surface $key has no presented frame sequence"
 }
 
-assert_no_full_refresh_since() {
-    local before label after
+assert_one_full_refresh_since() {
+    local before label after expected
     [ "$#" -eq 2 ] || return 1
     before=$1
     label=$2
     wait_panel_settled
     after=$(display_number full_refresh_count)
-    [ "$after" = "$before" ] \
-        || fail "$label unexpectedly changed full-refresh count from $before to $after"
+    expected=$((before + 1))
+    [ "$after" -eq "$expected" ] \
+        || fail "$label changed full-refresh count from $before to $after instead of $expected"
 }
 
 lifecycle_value() {
@@ -543,14 +544,16 @@ assert_presented_surface "$home_key"
 home_signature=$(surface_signature "$home_key")
 home_generation=$(display_number generation)
 home_epoch=$(display_number foreground_epoch)
-assert_foreground_submission_since 0 "$home_key" "$home_generation" "$home_epoch" mono_quality \
+assert_foreground_submission_since 0 "$home_key" "$home_generation" "$home_epoch" full \
     "initial Home entry"
+
+before_full=$(full_refresh_checkpoint); "$CTL" manager >/dev/null
+[ "$(full_refresh_checkpoint)" = "$before_full" ] || fail "repeated OpenManager refreshed"
 
 echo "[v2-acceptance] finger-equivalent tap, press feedback, MagicPaper first frame"
 before_full=$(full_refresh_checkpoint)
 before_tap_sequence=$(last_submission_sequence)
-# Home layout is deterministic: stock, Store, KOReader, then MagicPaper.
-# Use the centre of the MagicPaper card, away from its optional close button.
+# Deterministic fourth card: use its centre, away from the optional close button.
 "$CTL" tap 200 686 >/dev/null
 wait_domain '"foreground": "magicpaper"'
 wait_unit 'remagic-app@magicpaper.service' active
@@ -566,12 +569,15 @@ magic_generation=$(display_number generation)
 magic_epoch=$(display_number foreground_epoch)
 [ "$magic_signature" != "$home_signature" ] \
     || fail "MagicPaper first frame is indistinguishable from Home"
-assert_no_full_refresh_since "$before_full" "MagicPaper entry"
+assert_one_full_refresh_since "$before_full" "MagicPaper entry"
 assert_home_press_release_since "$before_tap_sequence" "$home_key" "$home_generation" "$home_epoch"
 assert_foreground_submission_since "$before_tap_sequence" "$magic_key" "$magic_generation" \
-    "$magic_epoch" mono_quality "MagicPaper entry"
+    "$magic_epoch" full "MagicPaper entry"
 assert_no_lease_success_after "$MATCHED_SUBMISSION_SEQUENCE" "$home_key" "$home_generation" \
     "$home_epoch" "Home-to-MagicPaper switch"
+
+before_full=$(full_refresh_checkpoint); "$CTL" launch magicpaper >/dev/null
+[ "$(full_refresh_checkpoint)" = "$before_full" ] || fail "repeated launch refreshed"
 
 echo "[v2-acceptance] direct ink path and configured quality-partial idle dissolve"
 before_ink_full=$(full_refresh_checkpoint)
@@ -592,12 +598,11 @@ wait_domain '"domain": "manager"'
     || fail "MagicPaper was restarted instead of parked"
 surface_present "$magic_key" || fail "parked MagicPaper surface disappeared"
 wait_panel_settled
-[ "$(display_number full_refresh_count)" = "$before_full" ] \
-    || fail "parking MagicPaper caused an unnecessary full refresh"
+assert_one_full_refresh_since "$before_full" "parking MagicPaper"
 home_generation=$(display_number generation)
 home_epoch=$(display_number foreground_epoch)
 assert_foreground_submission_since "$before_switch_sequence" "$home_key" "$home_generation" \
-    "$home_epoch" mono_quality "Home after MagicPaper park"
+    "$home_epoch" full "Home after MagicPaper park"
 assert_no_lease_success_after "$MATCHED_SUBMISSION_SEQUENCE" "$magic_key" "$magic_generation" \
     "$magic_epoch" "MagicPaper-to-Home switch"
 
@@ -620,9 +625,9 @@ koreader_epoch=$(display_number foreground_epoch)
     || fail "KOReader first frame is indistinguishable from Home"
 [ "$koreader_signature" != "$magic_signature" ] \
     || fail "KOReader first frame is indistinguishable from MagicPaper"
-assert_no_full_refresh_since "$before_full" "KOReader entry"
+assert_one_full_refresh_since "$before_full" "KOReader entry"
 assert_foreground_submission_since "$before_switch_sequence" "$koreader_key" \
-    "$koreader_generation" "$koreader_epoch" non_full "KOReader entry"
+    "$koreader_generation" "$koreader_epoch" full "KOReader entry"
 assert_no_lease_success_after "$MATCHED_SUBMISSION_SEQUENCE" "$home_key" "$home_generation" \
     "$home_epoch" "Home-to-KOReader switch"
 [ "$koreader_key" != "$home_key" ] && [ "$koreader_key" != "$magic_key" ] \
@@ -636,12 +641,11 @@ assert_freezer_state 'remagic-app@koreader.service' frozen
     || fail "KOReader was restarted while parking"
 surface_present "$koreader_key" || fail "parked KOReader surface disappeared"
 wait_panel_settled
-[ "$(display_number full_refresh_count)" = "$before_full" ] \
-    || fail "parking KOReader caused an unnecessary full refresh"
+assert_one_full_refresh_since "$before_full" "parking KOReader"
 home_generation=$(display_number generation)
 home_epoch=$(display_number foreground_epoch)
 assert_foreground_submission_since "$before_switch_sequence" "$home_key" "$home_generation" \
-    "$home_epoch" mono_quality "Home after KOReader park"
+    "$home_epoch" full "Home after KOReader park"
 assert_no_lease_success_after "$MATCHED_SUBMISSION_SEQUENCE" "$koreader_key" \
     "$koreader_generation" "$koreader_epoch" "KOReader-to-Home switch"
 before_full=$(full_refresh_checkpoint)
@@ -654,11 +658,11 @@ assert_freezer_state 'remagic-app@koreader.service' running
     || fail "KOReader recall did not resume the same process"
 assert_ready_fence koreader
 assert_presented_surface "$koreader_key"
-assert_no_full_refresh_since "$before_full" "KOReader recall"
+assert_one_full_refresh_since "$before_full" "KOReader recall"
 koreader_generation=$(display_number generation)
 koreader_epoch=$(display_number foreground_epoch)
 assert_foreground_submission_since "$before_switch_sequence" "$koreader_key" \
-    "$koreader_generation" "$koreader_epoch" non_full "KOReader recall"
+    "$koreader_generation" "$koreader_epoch" full "KOReader recall"
 assert_no_lease_success_after "$MATCHED_SUBMISSION_SEQUENCE" "$home_key" "$home_generation" \
     "$home_epoch" "Home-to-KOReader recall"
 
@@ -675,22 +679,24 @@ assert_freezer_state 'remagic-app@koreader.service' frozen
     || fail "KOReader was killed during direct switch"
 assert_ready_fence magicpaper
 assert_presented_surface "$magic_key"
-assert_no_full_refresh_since "$before_full" "direct switch to MagicPaper"
+assert_one_full_refresh_since "$before_full" "direct switch to MagicPaper"
 magic_generation=$(display_number generation)
 magic_epoch=$(display_number foreground_epoch)
 assert_foreground_submission_since "$before_switch_sequence" "$magic_key" "$magic_generation" \
-    "$magic_epoch" mono_quality "direct switch to MagicPaper"
+    "$magic_epoch" full "direct switch to MagicPaper"
 assert_no_lease_success_after "$MATCHED_SUBMISSION_SEQUENCE" "$koreader_key" \
     "$koreader_generation" "$koreader_epoch" "KOReader-to-MagicPaper switch"
 
 echo "[v2-acceptance] close removes task and surface"
+before_full=$(full_refresh_checkpoint)
 before_switch_sequence=$(last_submission_sequence)
 "$CTL" park >/dev/null
 wait_domain '"domain": "manager"'
+assert_one_full_refresh_since "$before_full" "Home before close"
 home_generation=$(display_number generation)
 home_epoch=$(display_number foreground_epoch)
 assert_foreground_submission_since "$before_switch_sequence" "$home_key" "$home_generation" \
-    "$home_epoch" mono_quality "Home before close"
+    "$home_epoch" full "Home before close"
 assert_no_lease_success_after "$MATCHED_SUBMISSION_SEQUENCE" "$magic_key" "$magic_generation" \
     "$magic_epoch" "MagicPaper-to-Home close switch"
 "$CTL" close koreader --complete >/dev/null

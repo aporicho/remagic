@@ -4,8 +4,12 @@ use remagic_core::{AppManifest, AppToken, DomainState};
 use remagic_protocol::InputMode;
 use std::future::Future;
 
+mod authorization;
 mod policy;
+#[cfg(test)]
+pub(in crate::daemon) mod test_support;
 
+use authorization::validate_active_foreground_token;
 use policy::{
     has_capability, initial_input_mode, supports_dynamic_input_mode, DIRECT_INK_CAPABILITY,
     DYNAMIC_INPUT_MODE_CAPABILITY,
@@ -46,12 +50,6 @@ impl RuntimeInputState {
             direct_ink_allowed: has_capability(manifest, DIRECT_INK_CAPABILITY),
             pending: true,
         })
-    }
-
-    pub(super) fn matches(self, token: &AppToken) -> bool {
-        self.generation == token.generation
-            && self.foreground_epoch == token.foreground_epoch
-            && token.lease_id == Some(self.lease_id)
     }
 
     fn validate_mode(self, id: &AppId, mode: InputMode) -> Result<bool, String> {
@@ -128,25 +126,12 @@ impl Daemon {
         // atomic with park, close, and app-switch operations.
         let _guard = self.transition_lock.lock().await;
         let domain = self.state.read().await.domain.clone();
-        if !matches!(&domain, DomainState::Foreground(current) if current == id) {
-            return Err(format!(
-                "application {id} is not the current foreground application"
-            ));
-        }
-
         let mut modes = self.runtime_input_modes.write().await;
+        let validated = validate_active_foreground_token(&domain, &modes, token)?;
         let state = modes
             .get_mut(id)
-            .ok_or_else(|| format!("application {id} has no active input fence"))?;
-        if !state.matches(token) {
-            return Err(format!(
-                "application {id} supplied a stale input-mode token"
-            ));
-        }
-        if state.pending {
-            return Err(format!("application {id} input fence is still pending"));
-        }
-        let ink_enabled = state.validate_mode(id, mode)?;
+            .expect("validated input state disappeared");
+        let ink_enabled = validated.validate_mode(id, mode)?;
         configure(
             display_host::app_surface_key(id),
             token.generation,
@@ -161,84 +146,10 @@ impl Daemon {
 
 #[cfg(test)]
 mod tests {
+    use super::test_support::{daemon_with, manifest, token};
     use super::*;
-    use remagic_core::{AppManifest, ManagerState, ManifestStore, SessionStore};
-    use std::collections::BTreeMap;
-    use std::sync::atomic::{AtomicBool, AtomicU64};
+    use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex as StdMutex};
-
-    fn manifest() -> AppManifest {
-        toml::from_str(include_str!("../../../../manifests/magicpaper.toml")).unwrap()
-    }
-
-    fn daemon_with(manifest: AppManifest, foreground: AppId) -> Daemon {
-        let id = manifest.id.clone();
-        let token = token(&id);
-        let dynamic_allowed = supports_dynamic_input_mode(&manifest);
-        let direct_ink_allowed = has_capability(&manifest, DIRECT_INK_CAPABILITY);
-        let background_execution = manifest.runtime.background_execution;
-        let root = std::env::temp_dir().join(format!(
-            "remagic-input-mode-{}-{}",
-            std::process::id(),
-            NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let (events, _event_rx) = tokio::sync::mpsc::channel(1);
-        let (power_control, _power_rx) = std::sync::mpsc::channel();
-        Daemon {
-            state: RwLock::new(ManagerState {
-                domain: DomainState::Foreground(foreground),
-                last_app: Some(id.clone()),
-                sequence: 1,
-            }),
-            manifests: RwLock::new(BTreeMap::from([(id.clone(), manifest)])),
-            sessions: RwLock::new(BTreeMap::new()),
-            runtime_generations: RwLock::new(BTreeMap::from([(id.clone(), 17)])),
-            runtime_background_execution: RwLock::new(BTreeMap::from([(
-                id.clone(),
-                background_execution,
-            )])),
-            runtime_foreground_fences: RwLock::new(BTreeMap::from([(id.clone(), (23, 23))])),
-            runtime_input_modes: RwLock::new(BTreeMap::from([(
-                id,
-                RuntimeInputState {
-                    generation: token.generation,
-                    foreground_epoch: token.foreground_epoch,
-                    lease_id: token.lease_id.unwrap(),
-                    mode: InputMode::AnimationLocked,
-                    dynamic_allowed,
-                    direct_ink_allowed,
-                    pending: false,
-                },
-            )])),
-            runtime_exit_reports: RwLock::new(BTreeMap::new()),
-            runtime_missing_observations: RwLock::new(BTreeMap::new()),
-            session_store: SessionStore::new(root.clone()),
-            manifest_store: ManifestStore::new(root.join("manifests")),
-            controller: crate::system::SystemController::new(),
-            power: Arc::new(crate::power_manager::PowerManager::load()),
-            transition_lock: Mutex::new(()),
-            events,
-            power_control: power_device::ControlSender::from_test_channel(power_control),
-            next_generation: AtomicU64::new(1),
-            next_foreground_epoch: AtomicU64::new(1),
-            next_sleep_epoch: AtomicU64::new(1),
-            sleep_transaction: sleep::SleepTransaction::default(),
-            launch_interrupt_epoch: Arc::new(AtomicU64::new(1)),
-            manager_repair_pending: AtomicBool::new(false),
-            domain_recovery_pending: AtomicBool::new(false),
-        }
-    }
-
-    static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
-
-    fn token(id: &AppId) -> AppToken {
-        AppToken {
-            app_id: id.clone(),
-            generation: 17,
-            foreground_epoch: 23,
-            lease_id: Some(23),
-        }
-    }
 
     #[tokio::test]
     async fn writing_uses_the_current_runtime_fence_and_enables_direct_ink() {
@@ -278,6 +189,66 @@ mod tests {
                 pending: false,
             })
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_handoff_requires_the_exact_current_foreground_identity() {
+        let app = manifest();
+        let id = app.id.clone();
+        let daemon = daemon_with(app, id.clone());
+
+        daemon
+            .validate_foreground_token(&token(&id))
+            .await
+            .expect("exact token must authorize a handoff");
+        daemon
+            .validate_foreground_peer(&id)
+            .await
+            .expect("legacy caller must be the current foreground cgroup");
+
+        let stale = AppToken {
+            lease_id: Some(22),
+            ..token(&id)
+        };
+        assert!(daemon.validate_foreground_token(&stale).await.is_err());
+        assert!(daemon
+            .validate_foreground_peer(&AppId::new("koreader").unwrap())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn queued_runtime_handoff_is_dropped_after_a_newer_foreground_transition() {
+        let app = manifest();
+        let id = app.id.clone();
+        let caller_token = token(&id);
+        let daemon = daemon_with(app, id);
+        let authority = RuntimeLaunchAuthority::ForegroundToken(caller_token);
+        daemon
+            .validate_runtime_launch_authority(&authority)
+            .await
+            .expect("pre-queue authorization must succeed");
+
+        daemon.state.write().await.domain = DomainState::Manager;
+        let fence = Arc::new(RequestFence::pending());
+        let error = daemon
+            .handle_event(
+                Event::RuntimeLaunch {
+                    authority,
+                    app_id: AppId::new("koreader").unwrap(),
+                    open_path: None,
+                },
+                1,
+                fence,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.contains("not the current foreground"));
+        assert!(matches!(
+            daemon.state.read().await.domain,
+            DomainState::Manager
+        ));
     }
 
     #[tokio::test]

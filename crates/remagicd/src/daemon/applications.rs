@@ -134,7 +134,7 @@ impl Daemon {
             .apply(Transition::SinglePower)
             .map_err(|e| e.to_string())?;
         utils::set_foreground_marker(None)?;
-        self.show_manager_surface(false).await
+        self.show_manager_surface().await
     }
 
     async fn clear_runtime_tracking(&self, id: &AppId) {
@@ -221,7 +221,7 @@ impl Daemon {
                 .map_err(|e| e.to_string())?;
         }
         if was_foreground {
-            self.show_manager_surface(false).await?
+            self.show_manager_surface().await?
         }
         self.update_session_after_exit(id, generation, exit_code, crashed)
             .await

@@ -19,9 +19,14 @@ grep -Fq '"$PAYLOAD/share/testing/$test_script"' \
 }
 grep -Fq '/home/root/apps/remagic/share/testing/device-lock-acceptance-v2.sh' \
     "$ROOT/README.md"
+grep -Fq 'verify charger-blocked lock and single-power unlock' "$ROOT/$SCRIPT"
+grep -Fq '"$CTL" park >/dev/null' "$ROOT/$SCRIPT"
+grep -Fq 'wait_domain manager 600' "$ROOT/$SCRIPT"
+grep -Fq 'set REMAGIC_REAL_SUSPEND=1 for unplugged suspend' "$ROOT/$SCRIPT"
+grep -Fq 'wait_external_wake_locks_clear' "$ROOT/$SCRIPT"
 grep -Fq 'wait_domain manager 6000' "$ROOT/$SCRIPT"
-grep -Fq 'wait_submission_reason "$baseline" unlock_screen 6000' "$ROOT/$SCRIPT"
 grep -Fq 'assert_no_submission_reason "$baseline" lock_refresh' "$ROOT/$SCRIPT"
+grep -Fq 'assert_full_refresh_delta "$baseline_full" 2' "$ROOT/$SCRIPT"
 grep -Fq 'panel_failure_count)" = "$baseline_failures"' "$ROOT/$SCRIPT"
 
 echo "lock acceptance inventory tests passed"
