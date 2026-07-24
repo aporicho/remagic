@@ -51,6 +51,23 @@ wait_domain() {
     fail "manager domain did not match $pattern"
 }
 
+assert_manager_stable() {
+    local attempts
+    attempts=0
+    while [ "$attempts" -lt 20 ]; do
+        "$CTL" status 2>/dev/null | grep -q '"domain": "manager"' \
+            || fail "manager rollback was only transient"
+        [ "$(systemctl is-active remagic-display-host.service 2>/dev/null || true)" = active ] \
+            || fail "display host stopped after manager rollback"
+        [ "$(systemctl is-active remagic-home.service 2>/dev/null || true)" = active ] \
+            || fail "Home stopped after manager rollback"
+        [ "$(systemctl is-active xochitl.service 2>/dev/null || true)" != active ] \
+            || fail "stock shell reclaimed the display after manager rollback"
+        sleep 0.1
+        attempts=$((attempts + 1))
+    done
+}
+
 display_number() {
     local field
     [ "$#" -eq 1 ] || return 1
@@ -193,6 +210,7 @@ fi
 wait_domain '"domain": "manager"'
 wait_not_active 'remagic-app@magicpaper.service'
 assert_one_full_refresh_since "$before_full" "cold-launch rollback"
+assert_manager_stable
 mv "$saved_manifest" "$fault_manifest"
 "$CTL" reload >/dev/null
 

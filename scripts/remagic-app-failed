@@ -5,6 +5,24 @@ app=${1:-}
 ctl=${REMAGIC_CTL:-/home/root/apps/remagic/bin/remagicctl}
 recover=${REMAGIC_RECOVER:-/home/root/apps/remagic/libexec/remagic-recover}
 runtime_root=${REMAGIC_RUNTIME_ROOT:-/run/remagic/apps}
+health_attempts=${REMAGIC_FAILURE_HEALTH_ATTEMPTS:-20}
+
+case $health_attempts in
+    ''|0|*[!0-9]*) health_attempts=20 ;;
+esac
+[ "$health_attempts" -le 100 ] || health_attempts=100
+
+daemon_responds() {
+    attempts=$health_attempts
+    while [ "$attempts" -gt 0 ]; do
+        if "$ctl" status >/dev/null 2>&1; then
+            return 0
+        fi
+        attempts=$((attempts - 1))
+        [ "$attempts" -eq 0 ] || sleep 0.1
+    done
+    return 1
+}
 
 case $app in
     ''|*[!a-z0-9-]*|-*|*-) exec "$recover" ;;
@@ -16,11 +34,21 @@ generation=$(sed -n \
     's/.*"generation":[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
     "$status" 2>/dev/null | sed -n '1p')
 case $generation in
-    ''|0|*[!0-9]*) exec "$recover" ;;
+    ''|0|*[!0-9]*) ;;
+    *)
+        if "$ctl" runtime-exited "$app" --generation "$generation" \
+                --exit-code 1 --crashed >/dev/null; then
+            exit 0
+        fi
+        ;;
 esac
 
-if "$ctl" runtime-exited "$app" --generation "$generation" \
-        --exit-code 1 --crashed >/dev/null; then
+# Application OnFailure is an evidence bridge, not the owner of the whole
+# display domain. A pre-ready child can exit before lifecycle-status exists,
+# while the daemon is already performing its synchronous launch rollback.
+# Likewise a callback can race that serialized transition. If the daemon still
+# answers, its launch transaction or 750 ms synthetic supervisor owns recovery.
+if daemon_responds; then
     exit 0
 fi
 exec "$recover"

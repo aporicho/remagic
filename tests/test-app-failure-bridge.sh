@@ -9,8 +9,17 @@ printf '%s\n' '{"generation":42}' >"$TMP/runtime/magicpaper/lifecycle-status.jso
 
 cat >"$TMP/ctl" <<'EOF'
 #!/bin/sh
-printf '%s\n' "$*" >"$REMAGIC_TEST_CALL"
-exit "${REMAGIC_TEST_CTL_STATUS:-0}"
+case ${1:-} in
+    runtime-exited)
+        printf '%s\n' "$*" >"$REMAGIC_TEST_CALL"
+        exit "${REMAGIC_TEST_REPORT_STATUS:-0}"
+        ;;
+    status)
+        printf '%s\n' "$*" >"$REMAGIC_TEST_HEALTH_CALL"
+        exit "${REMAGIC_TEST_HEALTH_STATUS:-0}"
+        ;;
+    *) exit 2 ;;
+esac
 EOF
 cat >"$TMP/recover" <<'EOF'
 #!/bin/sh
@@ -22,17 +31,54 @@ REMAGIC_CTL=$TMP/ctl \
 REMAGIC_RECOVER=$TMP/recover \
 REMAGIC_RUNTIME_ROOT=$TMP/runtime \
 REMAGIC_TEST_CALL=$TMP/call \
+REMAGIC_TEST_HEALTH_CALL=$TMP/health-call \
 REMAGIC_TEST_RECOVERED=$TMP/recovered \
     "$ROOT/scripts/remagic-app-failed" magicpaper
 grep -Fxq 'runtime-exited magicpaper --generation 42 --exit-code 1 --crashed' \
     "$TMP/call"
 [ ! -e "$TMP/recovered" ]
+[ ! -e "$TMP/health-call" ]
 
+# A pre-ready crash has no lifecycle status. The healthy daemon owns its
+# synchronous launch rollback, so application OnFailure must not restore the
+# entire stock domain.
+rm -f "$TMP/runtime/magicpaper/lifecycle-status.json"
 REMAGIC_CTL=$TMP/ctl \
 REMAGIC_RECOVER=$TMP/recover \
 REMAGIC_RUNTIME_ROOT=$TMP/runtime \
 REMAGIC_TEST_CALL=$TMP/call \
-REMAGIC_TEST_CTL_STATUS=1 \
+REMAGIC_TEST_HEALTH_CALL=$TMP/health-call \
+REMAGIC_TEST_RECOVERED=$TMP/recovered \
+    "$ROOT/scripts/remagic-app-failed" magicpaper
+grep -Fxq status "$TMP/health-call"
+[ ! -e "$TMP/recovered" ]
+
+# A generation report may lose a race with launch rollback. A responsive
+# daemon still owns the application failure through synthetic supervision.
+printf '%s\n' '{"generation":43}' >"$TMP/runtime/magicpaper/lifecycle-status.json"
+REMAGIC_CTL=$TMP/ctl \
+REMAGIC_RECOVER=$TMP/recover \
+REMAGIC_RUNTIME_ROOT=$TMP/runtime \
+REMAGIC_TEST_CALL=$TMP/call \
+REMAGIC_TEST_REPORT_STATUS=1 \
+REMAGIC_TEST_HEALTH_CALL=$TMP/health-call \
+REMAGIC_TEST_RECOVERED=$TMP/recovered \
+    "$ROOT/scripts/remagic-app-failed" magicpaper
+grep -Fxq 'runtime-exited magicpaper --generation 43 --exit-code 1 --crashed' \
+    "$TMP/call"
+grep -Fxq status "$TMP/health-call"
+[ ! -e "$TMP/recovered" ]
+
+# Only a persistently unavailable manager control plane permits the emergency
+# whole-domain recovery helper.
+REMAGIC_CTL=$TMP/ctl \
+REMAGIC_RECOVER=$TMP/recover \
+REMAGIC_RUNTIME_ROOT=$TMP/runtime \
+REMAGIC_TEST_CALL=$TMP/call \
+REMAGIC_TEST_REPORT_STATUS=1 \
+REMAGIC_TEST_HEALTH_CALL=$TMP/health-call \
+REMAGIC_TEST_HEALTH_STATUS=1 \
+REMAGIC_FAILURE_HEALTH_ATTEMPTS=1 \
 REMAGIC_TEST_RECOVERED=$TMP/recovered \
     "$ROOT/scripts/remagic-app-failed" magicpaper
 [ -e "$TMP/recovered" ]
