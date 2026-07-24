@@ -1,5 +1,5 @@
 use super::*;
-use remagic_core::{BackgroundService, DomainState, SessionStatus, Transition};
+use remagic_core::{BackgroundService, DomainState, PresentationState, SessionStatus, Transition};
 use remagic_protocol::{AppView, Request, Response};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -10,6 +10,16 @@ impl Daemon {
     pub(super) async fn request(&self, request: Request) -> Response {
         match request {
             Request::Status => self.status_response().await,
+            Request::PowerStatus => Response::Power {
+                snapshot: self.power.snapshot().await,
+            },
+            Request::SetIdleSuspend { seconds } => match self.power.set_idle_suspend(seconds).await
+            {
+                Ok(_) => Response::Power {
+                    snapshot: self.power.snapshot().await,
+                },
+                Err(message) => Response::Error { message },
+            },
             Request::ListApps => Response::Apps {
                 apps: self.app_views().await,
             },
@@ -190,7 +200,17 @@ impl Daemon {
         interrupt_epoch: u64,
         request_fence: Arc<RequestFence>,
     ) -> Result<(), String> {
+        if matches!(
+            event,
+            Event::SinglePower | Event::TriplePower | Event::LongPower
+        ) {
+            self.power.note_activity().await;
+        }
         match event {
+            Event::UserActivity => {
+                self.power.note_activity().await;
+                Ok(())
+            }
             Event::SinglePower => self.single_power(interrupt_epoch, &request_fence).await,
             Event::TriplePower => self.triple_power().await,
             // EVIOCGRAB means the stock shell cannot receive the press while
@@ -199,6 +219,7 @@ impl Daemon {
             Event::LongPower => self.restore_system().await,
             Event::Launch(id, path) => self.launch(id, path, interrupt_epoch, &request_fence).await,
             Event::OpenManager => self.open_manager().await,
+            #[cfg(test)]
             Event::EnsureManager => self.handle_ensure_manager().await,
             Event::ReturnSystem => self.restore_system().await,
             Event::Sleep(lock_surface_sequence) => {
@@ -213,6 +234,10 @@ impl Daemon {
                 interaction_epoch,
             } => {
                 self.resuspend_locked(sleep_epoch, sleep_revision, interaction_epoch)
+                    .await
+            }
+            Event::AutoSleep { activity_revision } => {
+                self.handle_auto_sleep(activity_revision, interrupt_epoch)
                     .await
             }
             Event::Close(id, complete) => self.close(id, complete).await,
@@ -259,6 +284,7 @@ impl Daemon {
         }
     }
 
+    #[cfg(test)]
     async fn handle_ensure_manager(&self) -> Result<(), String> {
         let result = self.ensure_manager_surface().await;
         self.manager_repair_pending.store(false, Ordering::Release);
@@ -277,6 +303,10 @@ impl Daemon {
         if let DomainState::Foreground(id) = &state.domain {
             utils::set_foreground_marker(Some(id))?;
         }
+        drop(state);
+        self.power
+            .set_presentation(PresentationState::Foreground(id))
+            .await;
         Ok(())
     }
 
@@ -387,8 +417,13 @@ fn reserve_runner_report(
     app_id: AppId,
     pending: PendingExit,
 ) -> bool {
-    if reports.get(&app_id) == Some(&pending) {
-        return false;
+    if let Some(existing) = reports.get(&app_id) {
+        if *existing == pending
+            || (existing.generation == pending.generation
+                && existing.source == ExitReportSource::Controlled)
+        {
+            return false;
+        }
     }
     reports.insert(app_id, pending);
     true
@@ -413,5 +448,21 @@ mod runner_exit_tests {
         assert!(reserve_runner_report(&mut reports, id.clone(), runner));
         assert!(!reserve_runner_report(&mut reports, id.clone(), runner));
         assert_eq!(reports.get(&id), Some(&runner));
+    }
+
+    #[test]
+    fn controlled_close_acknowledges_runner_without_queueing_an_exit() {
+        let id = AppId::new("magicpaper").unwrap();
+        let runner = PendingExit {
+            generation: 12,
+            source: ExitReportSource::Runner,
+        };
+        let controlled = PendingExit {
+            generation: 12,
+            source: ExitReportSource::Controlled,
+        };
+        let mut reports = BTreeMap::from([(id.clone(), controlled)]);
+        assert!(!reserve_runner_report(&mut reports, id.clone(), runner));
+        assert_eq!(reports.get(&id), Some(&controlled));
     }
 }

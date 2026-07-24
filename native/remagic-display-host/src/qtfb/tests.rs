@@ -338,7 +338,7 @@ fn lock_transaction_freezes_damage_filters_input_and_rejects_epoch_replay() {
     state.activate_client(44, 99, Arc::clone(&input)).unwrap();
     let unlock = crate::geometry::Rect::new(150, 1010, 654, 126);
 
-    state.show_lock(44, 5, 7, 11, unlock).unwrap();
+    state.show_lock(44, 5, 7, 11).unwrap();
     assert!(matches!(
         rx.recv().unwrap(),
         PanelCommand::ShowLock {
@@ -358,23 +358,13 @@ fn lock_transaction_freezes_damage_filters_input_and_rejects_epoch_replay() {
     state.telemetry.commit_lock(11);
     assert!(state.snapshot().lock_committed);
 
-    // Pen and touches outside the dedicated unlock rectangle are swallowed.
+    // A frozen lock screen accepts no pen or touch input. The power key is
+    // handled by the supervisor and is the only wake action.
     assert!(state.inject_pen_line(200, 300, 220, 320, 3).is_err());
     assert!(state.inject_tap(20, 20).is_err());
-    state.inject_tap(200, 1050).unwrap();
-    let down = input.pop().unwrap();
-    let up = input.pop().unwrap();
-    assert_eq!(
-        i32::from_le_bytes(down[8..12].try_into().unwrap()),
-        INPUT_TOUCH_PRESS
-    );
-    assert_eq!(i32::from_le_bytes(down[16..20].try_into().unwrap()), 200);
-    assert_eq!(
-        i32::from_le_bytes(up[8..12].try_into().unwrap()),
-        INPUT_TOUCH_RELEASE
-    );
+    assert!(state.inject_tap(200, 1050).is_err());
 
-    // Only button feedback may update the frozen host-owned lock image.
+    // Client damage cannot update the frozen host-owned lock image.
     state
         .damage(
             44,
@@ -384,7 +374,7 @@ fn lock_transaction_freezes_damage_filters_input_and_rejects_epoch_replay() {
         .unwrap();
     assert!(matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
     state.damage(44, unlock, RefreshIntent::Ui).unwrap();
-    assert!(matches!(rx.recv().unwrap(), PanelCommand::Damage { rect, .. } if rect == unlock));
+    assert!(matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
 
     state.refresh_lock(11).unwrap();
     assert!(matches!(
@@ -417,7 +407,7 @@ fn lock_transaction_freezes_damage_filters_input_and_rejects_epoch_replay() {
         "lost ACK retry is idempotent"
     );
     assert_eq!(
-        state.show_lock(44, 5, 8, 11, unlock).unwrap_err().kind(),
+        state.show_lock(44, 5, 8, 11).unwrap_err().kind(),
         io::ErrorKind::PermissionDenied,
         "a completed sleep epoch cannot be replayed"
     );
@@ -435,8 +425,7 @@ fn cancelling_a_queued_show_waits_for_the_panel_transaction_barrier() {
         rx.recv().unwrap(),
         PanelCommand::RegisterSurface(_)
     ));
-    let unlock = crate::geometry::Rect::new(150, 1010, 654, 126);
-    state.show_lock(44, 5, 7, 11, unlock).unwrap();
+    state.show_lock(44, 5, 7, 11).unwrap();
     assert!(matches!(
         rx.recv().unwrap(),
         PanelCommand::ShowLock {

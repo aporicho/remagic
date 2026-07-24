@@ -58,6 +58,26 @@ export SYSTEMCTL REMAGIC_INSTALL_LOCK REMAGIC_ACCEPTANCE_LOCK REMAGIC_SYSTEMD_RU
 . "$ROOT/scripts/lib/koreader-storage.sh"
 . "$ROOT/scripts/lib/magicpaper-font-contract.sh"
 
+PROC_FIXTURE=$TMP/proc
+mkdir -p "$PROC_FIXTURE/101"
+ln -s /bin/sh "$PROC_FIXTURE/101/exe"
+printf '%s\000%s\000%s\000%s\000' -sh --login -c \
+    'systemctl status remagic-display-host.service remagic-home.service' \
+    >"$PROC_FIXTURE/101/cmdline"
+REMAGIC_PROC_ROOT=$PROC_FIXTURE
+export REMAGIC_PROC_ROOT
+assert_no_known_owner_processes || {
+    echo "diagnostic SSH command was mistaken for a display owner" >&2
+    exit 1
+}
+printf '%s\000%s\000' sh /home/root/apps/magicpaper/start.sh \
+    >"$PROC_FIXTURE/101/cmdline"
+if assert_no_known_owner_processes >/dev/null 2>&1; then
+    echo "interpreter-owned display process was not detected" >&2
+    exit 1
+fi
+unset REMAGIC_PROC_ROOT
+
 [ "$MAGICPAPER_UI_FONT_SHA256" = \
     dbbdf59d7035d980abecf4f820e615b72107865a00f6eb41a1bbb9d9d1492fd1 ] || {
     echo "MagicPaper UI font content identity changed unexpectedly" >&2
@@ -411,6 +431,9 @@ grep -Fq 'STORE_ACCEPTED_REVISION=/home/root/.local/state/remagic-store/accepted
     "$SYSTEM_INSTALL"
 grep -Fq 'if [ -e "$STORE_ACCEPTED_REVISION" ]; then' "$SYSTEM_INSTALL"
 grep -Fq 'wait_for_remagic_ready "$APP_ROOT/bin/remagicctl"' "$SYSTEM_INSTALL"
+grep -Fq 'prepare_remagic_for_update "$APP_ROOT/bin/remagicctl"' "$SYSTEM_INSTALL"
+grep -Fq 'mask --runtime remagic-recover.service' "$SYSTEM_INSTALL"
+grep -Fq 'unmask_recovery_after_update' "$SYSTEM_INSTALL"
 grep -Fq 'installation failed; restoring the previous system' "$SYSTEM_INSTALL"
 grep -Fq 'restore_stock' "$SYSTEM_INSTALL"
 agent_stop_line=$(grep -n '^    systemctl stop magicpaper-agent.service' \
@@ -441,6 +464,11 @@ if grep -Eq 'rm -rf .*(/home/root/books|\.local/share/koreader-for-remagic|\.loc
 fi
 grep -Fxq 'name = "KOReader"' "$ROOT/testing/manifests/koreader.toml"
 ! grep -Eq '^name = ".*(for ReMagic|验收环境)' "$ROOT/testing/manifests/koreader.toml"
+[ "$(sed -n '/^\[readiness\]$/,/^\[/p' "$ROOT/testing/manifests/koreader.toml" \
+    | sed -n 's/^timeout_ms = \([0-9][0-9]*\)$/\1/p')" -ge 60000 ] || {
+    echo "KOReader acceptance readiness budget is below the production cold-start contract" >&2
+    exit 1
+}
 grep -Fq 'ReadWritePaths=/home/root/.local/share/koreader-for-remagic' \
     "$ROOT/systemd/remagic-app@koreader.service.d/10-koreader-runtime.conf"
 grep -Fq 'ReadOnlyPaths=/home/root' \
@@ -448,6 +476,16 @@ grep -Fq 'ReadOnlyPaths=/home/root' \
 grep -q '^Conflicts=.*riddle-takeover.service' "$ROOT/systemd/remagicd.service"
 grep -q '^Conflicts=.*magicpaper-takeover.service' "$ROOT/systemd/remagicd.service"
 grep -q '^Conflicts=.*magicpaper-power-launcher.service' "$ROOT/systemd/remagicd.service"
+grep -Fq 'BOOT_WANTS=${REMAGIC_BOOT_WANTS:-/usr/lib/systemd/system/multi-user.target.wants}' \
+    "$ROOT/scripts/remagic-recover" || {
+    echo "recovery does not inspect the durable ReMagic boot registration" >&2
+    exit 1
+}
+grep -Fq '[ -L "$BOOT_WANTS/remagicd.service" ] && restart_daemon=true' \
+    "$ROOT/scripts/remagic-recover" || {
+    echo "recovery can strand a persistently registered daemon after a crash" >&2
+    exit 1
+}
 grep -q '^Environment=REMAGIC_PLATFORM_CAPABILITIES=.*input:mode-v2' \
     "$ROOT/systemd/remagic-app@.service" || {
     echo "application service omitted the dynamic input-mode capability" >&2

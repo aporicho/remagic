@@ -56,13 +56,22 @@ main_pid() {
 }
 
 child_pid() {
-    local unit main group pid
+    local unit main group pid attempts controller
     [ "$#" -eq 1 ] || return 1
     unit=$1
-    main=$(main_pid "$unit")
-    group=$(systemctl show --property=ControlGroup --value "$unit")
-    for pid in $(cat "/sys/fs/cgroup$group/cgroup.procs" 2>/dev/null || true); do
-        [ "$pid" != "$main" ] && { echo "$pid"; return 0; }
+    attempts=0
+    while [ "$attempts" -lt 100 ]; do
+        main=$(main_pid "$unit")
+        group=$(systemctl show --property=ControlGroup --value "$unit")
+        for controller in /sys/fs/cgroup /sys/fs/cgroup/unified \
+                /sys/fs/cgroup/systemd /sys/fs/cgroup/pids; do
+            [ -r "$controller$group/cgroup.procs" ] || continue
+            for pid in $(cat "$controller$group/cgroup.procs"); do
+                [ "$pid" != "$main" ] && { echo "$pid"; return 0; }
+            done
+        done
+        sleep 0.1
+        attempts=$((attempts + 1))
     done
     return 1
 }
@@ -138,7 +147,15 @@ while [ "$attempts" -lt 160 ]; do
 done
 [ "$new_home" != "$old_home" ] || fail "Home did not restart after SIGKILL"
 wait_domain '"domain": "manager"'
-[ "$("$CTL" display-status | sed -n 's/.*"foreground_key": \([0-9][0-9]*\).*/\1/p')" = 245209900 ] \
+attempts=0
+while [ "$attempts" -lt 160 ]; do
+    foreground_key=$("$CTL" display-status 2>/dev/null \
+        | sed -n 's/.*"foreground_key": \([0-9][0-9]*\).*/\1/p')
+    [ "$foreground_key" = 245209900 ] && break
+    sleep 0.1
+    attempts=$((attempts + 1))
+done
+[ "$foreground_key" = 245209900 ] \
     || fail "restarted Home was not rebound to the panel"
 
 echo "[v2-fault] application child crash returns to Home"

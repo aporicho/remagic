@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, Notify};
 use tracing::{info, warn};
 
 const SYSTEMD_LISTEN_FD: RawFd = 3;
@@ -24,24 +24,35 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let listener = activated_or_private_listener(Path::new(DEFAULT_AGENT_SOCKET))?;
     let clients = Arc::new(AtomicUsize::new(0));
     let activity = Arc::new(Mutex::new(Instant::now()));
+    let changed = Arc::new(Notify::new());
     info!(socket = DEFAULT_AGENT_SOCKET, "Pi agent service ready");
     loop {
-        match tokio::time::timeout(Duration::from_secs(60), listener.accept()).await {
-            Ok(Ok((stream, _))) => {
+        let deadline = if clients.load(Ordering::Acquire) == 0 {
+            Some(*activity.lock().await + IDLE_EXIT)
+        } else {
+            None
+        };
+        tokio::select! {
+            accepted = listener.accept() => match accepted {
+            Ok((stream, _)) => {
                 let Some(identity) = peer_identity(&stream) else {
                     warn!("rejected agent client outside a managed application cgroup");
                     continue;
                 };
                 clients.fetch_add(1, Ordering::AcqRel);
                 *activity.lock().await = Instant::now();
-                spawn_connection(stream, state.clone(), identity, &clients, &activity);
+                spawn_connection(stream, state.clone(), identity, &clients, &activity, &changed);
             }
-            Ok(Err(error)) => return Err(error.into()),
-            Err(_) if idle(&clients, &activity).await => {
+            Err(error) => return Err(error.into()),
+            },
+            _ = wait_until(deadline) => {
+                if !idle(&clients, &activity).await {
+                    continue;
+                }
                 info!("Pi agent service idle; returning ownership to socket activation");
                 return Ok(());
-            }
-            Err(_) => {}
+            },
+            _ = changed.notified() => {},
         }
     }
 }
@@ -52,16 +63,26 @@ fn spawn_connection(
     identity: ClientIdentity,
     clients: &Arc<AtomicUsize>,
     activity: &Arc<Mutex<Instant>>,
+    changed: &Arc<Notify>,
 ) {
     let clients = Arc::clone(clients);
     let activity = Arc::clone(activity);
+    let changed = Arc::clone(changed);
     tokio::spawn(async move {
         if let Err(error) = serve_connection(stream, state, identity, &activity).await {
             warn!(%error, "agent connection stopped");
         }
         clients.fetch_sub(1, Ordering::AcqRel);
         *activity.lock().await = Instant::now();
+        changed.notify_one();
     });
+}
+
+async fn wait_until(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await,
+        None => std::future::pending().await,
+    }
 }
 
 async fn idle(clients: &AtomicUsize, activity: &Mutex<Instant>) -> bool {

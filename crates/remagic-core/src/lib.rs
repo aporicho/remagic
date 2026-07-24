@@ -2,6 +2,7 @@
 
 pub mod manifest;
 pub mod power;
+pub mod power_policy;
 pub mod runtime;
 pub mod session;
 pub mod state;
@@ -17,6 +18,10 @@ pub use manifest::{
     ManifestStore, ParkStrategy, ReadinessMode, ReadinessPolicy, ShutdownPolicy, SyncProvider,
     UninstallPolicy, MANIFEST_SCHEMA_V1, MANIFEST_SCHEMA_V2, MAX_SHUTDOWN_KILL_TIMEOUT_MS,
     REMAGIC_APP_API_VERSION,
+};
+pub use power_policy::{
+    PowerPhase, PowerSettings, PowerSnapshot, PresentationState, ResourceLease, WorkClass,
+    WorkloadState, DEFAULT_IDLE_SUSPEND_SECS, MAX_IDLE_SUSPEND_SECS, MIN_IDLE_SUSPEND_SECS,
 };
 pub use runtime::{
     is_platform_reserved_environment, qtfb_key_for_app, validate_environment_pair,

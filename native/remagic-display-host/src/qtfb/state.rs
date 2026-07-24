@@ -32,7 +32,6 @@ pub(super) struct ForegroundLease {
 pub(super) struct LockLease {
     pub(super) sleep_epoch: u64,
     pub(super) foreground: ForegroundLease,
-    pub(super) unlock_region: crate::geometry::Rect,
 }
 
 impl ForegroundLease {
@@ -50,7 +49,6 @@ pub struct HostState {
     pub(super) foreground: Mutex<Option<ForegroundLease>>,
     pub(super) prepared_foreground: Mutex<Option<ForegroundLease>>,
     pub(super) lock: Mutex<Option<LockLease>>,
-    pub(super) lock_touches: Mutex<HashSet<i32>>,
     pub(super) active_touches: Mutex<HashSet<i32>>,
     pub(super) suppressed_touches: Mutex<HashSet<i32>>,
     pub(super) active_pen: Mutex<Option<(PanelLease, PenFrame)>>,
@@ -99,7 +97,6 @@ impl HostState {
             foreground: Mutex::new(None),
             prepared_foreground: Mutex::new(None),
             lock: Mutex::new(None),
-            lock_touches: Mutex::new(HashSet::new()),
             active_touches: Mutex::new(HashSet::new()),
             suppressed_touches: Mutex::new(HashSet::new()),
             active_pen: Mutex::new(None),

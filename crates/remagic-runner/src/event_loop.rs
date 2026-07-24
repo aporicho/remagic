@@ -1,5 +1,5 @@
 use crate::bootstrap::PreparedApplication;
-use crate::lifecycle_bridge::{LifecycleBridge, LifecycleStatusStore};
+use crate::lifecycle_bridge::{BridgeError, LifecycleBridge, LifecycleStatusStore};
 use crate::process::{graceful_stop, RunningApplication};
 use remagic_core::{AppId, MANIFEST_SCHEMA_V2};
 use remagic_protocol::{read_frame, write_frame, LifecycleEvent, Request, Response};
@@ -99,8 +99,9 @@ fn spawn_lifecycle_task(
     app_id: AppId,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        if let Err(error) = forward_lifecycle_events(bridge, status, app_id).await {
-            eprintln!("remagic-runner: lifecycle event bridge stopped: {error}");
+        match forward_lifecycle_events(bridge, status, app_id).await {
+            Ok(()) | Err(BridgeError::Disconnected) => {}
+            Err(error) => eprintln!("remagic-runner: lifecycle event bridge stopped: {error}"),
         }
     })
 }
@@ -109,7 +110,7 @@ async fn forward_lifecycle_events(
     bridge: LifecycleBridge,
     status: LifecycleStatusStore,
     app_id: AppId,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(), BridgeError> {
     loop {
         for envelope in bridge.receive_events().await? {
             if !bridge.persist_current_event(&status, &envelope).await? {

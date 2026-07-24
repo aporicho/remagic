@@ -93,6 +93,7 @@ fn managed_background_environment(
         ("REMAGIC_APP_ID", manifest.id.to_string()),
         ("REMAGIC_MANAGED", "1".into()),
         ("REMAGIC_BACKGROUND_SERVICE", "1".into()),
+        ("REMAGIC_RUNTIME_SOCKET", APP_REQUEST_SOCKET.into()),
     ] {
         values.insert(key.into(), value);
     }

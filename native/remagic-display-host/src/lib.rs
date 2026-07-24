@@ -4,6 +4,7 @@
 //! It owns the physical panel and input devices for one managed-domain
 //! generation and exposes surfaces, damage and normalized input to clients.
 
+pub mod activity;
 pub mod control;
 pub mod geometry;
 pub mod input;

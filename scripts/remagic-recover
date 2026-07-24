@@ -7,6 +7,7 @@ COMMON=$APP_ROOT/libexec/deployment-common.sh
 REMAGIC_ACCEPTANCE_RECOVERY_LIB=$APP_ROOT/libexec/device-test-recovery.sh
 RECOVERY_LOCK=${REMAGIC_RECOVERY_LOCK:-/run/remagic-recover.lock}
 INSTALL_GUARD=/home/root/.local/state/remagic/install/in-progress
+BOOT_WANTS=${REMAGIC_BOOT_WANTS:-/usr/lib/systemd/system/multi-user.target.wants}
 
 if [ ! -r "$COMMON" ]; then
     echo "remagic-recover: deployment helper is missing; refusing unsafe lock cleanup" >&2
@@ -114,6 +115,12 @@ unit_is_active remagicd.service && restart_daemon=true
 case "$("$SYSTEMCTL" is-enabled remagicd.service 2>/dev/null || true)" in
     enabled|enabled-runtime) restart_daemon=true ;;
 esac
+# ReMagic publishes its durable dependency in the vendor target's wants
+# directory because the read-only image does not provide a writable /etc
+# overlay on every supported release. systemctl is-enabled reports that
+# vendor dependency as "disabled" on the current devices even though systemd
+# follows it at boot, so the link itself is also authoritative recovery state.
+[ -L "$BOOT_WANTS/remagicd.service" ] && restart_daemon=true
 "$SYSTEMCTL" mask --runtime remagicd.service >/dev/null 2>&1 || true
 
 stop_unit_confirmed remagicd.service || {

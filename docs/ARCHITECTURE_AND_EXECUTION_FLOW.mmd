@@ -17,6 +17,14 @@ flowchart TB
       rm_background@{ shape: rect, label: "后台暂停<br/>保存状态 · 冻结 cgroup" }
       rm_closing@{ shape: rect, label: "完全关闭<br/>有界 Shutdown → TERM → KILL" }
     end
+    subgraph rm_power_model [统一电源与调度]
+      direction LR
+      rm_activity@{ shape: rect, label: "事件驱动活动源<br/>笔落下 · 触摸按下 · 电源键" }
+      rm_power@{ shape: rect, label: "PowerManager<br/>单调时钟 · 自动休眠截止时间<br/>有限资源租约" }
+      rm_quiesce@{ shape: rect, label: "Quiescing<br/>暂停前台 · 提交锁屏 · 冻结输入" }
+      rm_suspend@{ shape: rect, label: "Suspended<br/>释放 remagic-managed wake lock" }
+      rm_blocked@{ shape: rect, label: "ExternallyBlocked<br/>插线时 udev.charger<br/>拔线后自动重试" }
+    end
     subgraph rm_install [系统安装与恢复]
       direction LR
       rm_detect@{ shape: rect, label: "USB SSH<br/>检测型号与 OS" }
@@ -137,6 +145,12 @@ flowchart TB
   rm_closing --> rm_stopped
   rm_background -->|关闭| rm_closing
   rm_daemon --> rm_stopped
+  rm_activity --> rm_power
+  rm_power -->|到期且无租约| rm_quiesce
+  rm_quiesce -->|外部锁已清空| rm_suspend
+  rm_quiesce -->|USB 充电锁| rm_blocked
+  rm_blocked -->|拔线| rm_suspend
+  rm_suspend -->|物理唤醒| rm_home
   rm_detect --> rm_verify
   rm_verify --> rm_stage
   rm_stage --> rm_publish
@@ -207,7 +221,7 @@ flowchart TB
     classDef component fill:#fff,color:#111,stroke:#111,stroke-width:2px;
     classDef boundary fill:#eee,color:#111,stroke:#666,stroke-dasharray:5 5;
     classDef decision fill:#fff,color:#111,stroke:#111,stroke-width:2px;
-class rm_daemon,rm_display,rm_runner,rm_supervisor,rm_agentd,rm_store,mp_loop,ko_adapter,up_listen system;
+class rm_daemon,rm_display,rm_runner,rm_supervisor,rm_agentd,rm_store,rm_power,mp_loop,ko_adapter,up_listen system;
 class rm_home,rm_stopped,rm_foreground,rm_background,mp_capture,mp_preview,mp_local,mp_buffer,mp_layout,mp_appear,mp_visible,mp_fade,mp_ready,mp_commands,mp_data,ko_upstream,ko_books,ko_progress,ko_settings,ko_launch,ko_reading,ko_pause,ko_resume,ko_close,up_foreground,up_background,up_pair,up_queue,up_convert,up_stream,up_validate,up_atomic,up_books,up_wallpapers,up_screen component;
 class rm_original,rm_detect,rm_verify,mp_environment,mp_ocr,mp_pi,ko_environment,up_environment boundary;
 class rm_health,mp_route,up_kind decision;

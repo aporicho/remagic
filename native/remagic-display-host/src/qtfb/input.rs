@@ -1,5 +1,5 @@
 use super::queue::InputPush;
-use super::state::{HostState, LockLease};
+use super::state::HostState;
 use crate::input::{
     CapturedInput, InputFrame, PenFrame, PenPhase, PenTool, TouchFrame, TouchPhase,
 };
@@ -41,11 +41,9 @@ impl HostState {
         if self.prepared_foreground.lock().unwrap().is_some() {
             return Err(input_not_routed("foreground transition is still prepared"));
         }
-        let lock = *self.lock.lock().unwrap();
-        if lock.is_some_and(|lock| !self.route_lock_contact(frame, lock)) {
-            return Err(input_not_routed(
-                "contact is outside the lock-screen control",
-            ));
+        let locked = self.lock.lock().unwrap().is_some();
+        if locked {
+            return Err(input_not_routed("all input is disabled while locked"));
         }
         let requested = self
             .foreground
@@ -60,7 +58,7 @@ impl HostState {
                 "requested and panel-committed foregrounds differ",
             ));
         }
-        if lock.is_none() && !self.route_foreground_touch(frame) {
+        if !self.route_foreground_touch(frame) {
             return Err(input_not_routed("touch sequence has no active contact"));
         }
         if !self.track_pen_contact(frame, lease) {
@@ -109,28 +107,6 @@ impl HostState {
             }
         }
         false
-    }
-
-    /// A locked domain only routes an unlock gesture that began inside the
-    /// explicit unlock control. Pen input stays fenced until cancellation.
-    fn route_lock_contact(&self, frame: InputFrame, lock: LockLease) -> bool {
-        let InputFrame::Touch(touch) = frame else {
-            return false;
-        };
-        let mut active = self.lock_touches.lock().unwrap();
-        let in_unlock_region = touch.x >= lock.unlock_region.x
-            && touch.x < lock.unlock_region.right()
-            && touch.y >= lock.unlock_region.y
-            && touch.y < lock.unlock_region.bottom();
-        match touch.phase {
-            TouchPhase::Down if in_unlock_region => {
-                active.insert(touch.device_id);
-                true
-            }
-            TouchPhase::Move => active.contains(&touch.device_id),
-            TouchPhase::Up | TouchPhase::Cancel => active.remove(&touch.device_id),
-            TouchPhase::Down => false,
-        }
     }
 
     fn route_foreground_touch(&self, frame: InputFrame) -> bool {

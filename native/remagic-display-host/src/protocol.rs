@@ -210,7 +210,6 @@ pub enum DisplayControl {
         generation: u64,
         foreground_epoch: u64,
         sleep_epoch: u64,
-        unlock_region: Rect,
     },
     RefreshLock {
         sleep_epoch: u64,
@@ -392,7 +391,7 @@ mod tests {
     }
 
     #[test]
-    fn lock_control_round_trips_epoch_and_unlock_region() {
+    fn lock_control_round_trips_without_a_touch_target() {
         let request = ControlEnvelope {
             protocol: 1,
             request_id: "lock-1".into(),
@@ -401,7 +400,6 @@ mod tests {
                 generation: 8,
                 foreground_epoch: 14,
                 sleep_epoch: 3,
-                unlock_region: Rect::new(150, 1010, 654, 126),
             },
         };
         let decoded: ControlEnvelope =
@@ -413,8 +411,7 @@ mod tests {
                 generation: 8,
                 foreground_epoch: 14,
                 sleep_epoch: 3,
-                unlock_region,
-            } if unlock_region == Rect::new(150, 1010, 654, 126)
+            }
         ));
     }
 

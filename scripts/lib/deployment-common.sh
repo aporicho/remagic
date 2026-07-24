@@ -165,14 +165,21 @@ known_display_owner_active() {
 }
 
 assert_no_known_owner_processes() {
-    for entry in /proc/[0-9]*/cmdline; do
-        [ -r "$entry" ] || continue
-        command_line=$(tr '\000' ' ' <"$entry" 2>/dev/null || true)
-        case "$command_line" in
+    process_root=${REMAGIC_PROC_ROOT:-/proc}
+    for process in "$process_root"/[0-9]*; do
+        [ -r "$process/cmdline" ] || continue
+        executable=$(readlink "$process/exe" 2>/dev/null || true)
+        argv=$(tr '\000' '\n' <"$process/cmdline" 2>/dev/null | sed -n '1,2p')
+        # Only the executable and an interpreter's script argument identify a
+        # process owner. Searching every argument makes an SSH diagnostic such
+        # as `systemctl status remagic-display-host` look like a display owner
+        # and can prevent the recovery it is trying to inspect.
+        process_identity=$(printf '%s\n%s\n' "$executable" "$argv")
+        case "$process_identity" in
             *remagic-display-host*|*remagic-home*|*remagic-appload-runtime*|\
             *riddle-takeover*|*/apps/riddle/riddle*|*/magicpaper*|\
             */reader.lua*|*/appload*|*qtfb-shim*)
-                echo "deployment: unmanaged display process remains: $command_line" >&2
+                echo "deployment: unmanaged display process remains: $(printf '%s' "$process_identity" | tr '\n' ' ')" >&2
                 return 1
                 ;;
         esac

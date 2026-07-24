@@ -8,7 +8,7 @@ USB_HOST=${REMAGIC_USB_HOST:-10.11.99.1}
 
 usb_usage() {
     cat <<EOF
-Usage: $(basename "$0") [probe|ssh|push|pull|install|deploy] [arguments...]
+Usage: $(basename "$0") [probe|ssh|push|pull|install|deploy|power-audit-begin|power-audit-collect] [arguments...]
 
   probe                 show the matched interface and device identity
   ssh [COMMAND...]      open a shell or run a remote command (default)
@@ -16,6 +16,8 @@ Usage: $(basename "$0") [probe|ssh|push|pull|install|deploy] [arguments...]
   pull REMOTE LOCAL     download one file or directory from the device
   install               download and install the latest stable ReMagic release
   deploy                build and install the current ReMagic checkout
+  power-audit-begin      record a plugged-in power baseline before unplugging
+  power-audit-collect    collect and validate logs after reconnecting USB
 EOF
 }
 
@@ -149,6 +151,13 @@ usb_main() {
                 REMAGIC_USB_HOST=$USB_HOST \
                 REMAGIC_USB_ALIAS=$DEVICE_ALIAS \
                 "$DEVICE_ROOT/scripts/deploy-usb.sh"
+            ;;
+        power-audit-begin|power-audit-collect)
+            [ "$#" -eq 0 ] || { usb_usage >&2; return 2; }
+            audit_operation=${operation#power-audit-}
+            exec ssh "${USB_SSH_OPTIONS[@]}" root@remagic-device \
+                "/home/root/apps/remagic/share/testing/device-power-audit.sh" \
+                "$audit_operation"
             ;;
         *)
             exec ssh "${USB_SSH_OPTIONS[@]}" root@remagic-device "$operation" "$@"

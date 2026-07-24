@@ -9,7 +9,7 @@ mod protocol;
 #[cfg(test)]
 use lock::lock_is_committed_as;
 pub use lock::{cancel_lock, show_lock};
-use protocol::{request, Command, WireRect};
+use protocol::{request, Command};
 
 pub const SOCKET: &str = "/run/remagic/display.sock";
 pub const HOME_SURFACE_KEY: i32 = remagic_core::REMAGIC_HOME_QTFB_KEY;

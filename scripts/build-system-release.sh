@@ -186,7 +186,8 @@ install -m 0755 "$BUILD_ROOT/shims/qtfb-shim.so" "$PAYLOAD/shims/qtfb-shim.so"
 install -m 0644 "$BUILD_ROOT/shims/LICENSE.qtfb-shim" \
     "$PAYLOAD/shims/LICENSE.qtfb-shim"
 
-for helper in remagic-register remagic-recover remagic-configure-provider; do
+for helper in remagic-register remagic-recover remagic-app-failed \
+    remagic-configure-provider; do
     install -m 0755 "$ROOT/scripts/$helper" "$PAYLOAD/libexec/$helper"
 done
 install -m 0644 "$ROOT/scripts/system-release/system-trusted-keys.json" \
@@ -196,8 +197,8 @@ for helper in deployment-common.sh device-test-recovery.sh device-test-manifests
     install -m 0644 "$ROOT/scripts/lib/$helper" "$PAYLOAD/libexec/$helper"
 done
 for unit in remagicd.service remagic-display-host.service remagic-home.service \
-    remagic-app@.service remagic-recover.service remagic-agentd.service \
-    remagic-agentd.socket; do
+    remagic-app@.service remagic-app-failed@.service remagic-recover.service \
+    remagic-agentd.service remagic-agentd.socket; do
     install -m 0644 "$ROOT/systemd/$unit" "$PAYLOAD/share/systemd/$unit"
 done
 mkdir -p "$PAYLOAD/share/systemd/remagic-app@koreader.service.d"
@@ -205,7 +206,7 @@ install -m 0644 \
     "$ROOT/systemd/remagic-app@koreader.service.d/10-koreader-runtime.conf" \
     "$PAYLOAD/share/systemd/remagic-app@koreader.service.d/10-koreader-runtime.conf"
 for test_script in device-acceptance-v2.sh device-fault-acceptance-v2.sh \
-    device-stress-acceptance-v2.sh device-lock-acceptance-v2.sh; do
+    device-stress-acceptance-v2.sh device-lock-acceptance-v2.sh device-power-audit.sh; do
     install -m 0755 "$ROOT/scripts/$test_script" "$PAYLOAD/share/testing/$test_script"
 done
 for test_manifest in magicpaper.toml koreader.toml; do
@@ -257,8 +258,8 @@ readelf -d "$PAYLOAD/bin/remagic-display-host" | grep -q 'Shared library: \[libq
 
 tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
     -C "$OUT_ROOT" -cf - remagic-system | gzip -n >"$ARCHIVE"
-sha256sum "$ARCHIVE" >"$ARCHIVE.sha256"
 archive_sha=$(sha256sum "$ARCHIVE" | awk '{print $1}')
+printf '%s  %s\n' "$archive_sha" "$(basename -- "$ARCHIVE")" >"$ARCHIVE.sha256"
 cat >"$OUT_ROOT/remagic-release.env" <<EOF
 REMAGIC_RELEASE_SCHEMA=1
 REMAGIC_VERSION=$VERSION

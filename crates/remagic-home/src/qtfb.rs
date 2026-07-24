@@ -10,6 +10,7 @@ const MESSAGE_INITIALIZE: u8 = 0;
 const MESSAGE_UPDATE: u8 = 1;
 const MESSAGE_TERMINATE: u8 = 3;
 const MESSAGE_USERINPUT: u8 = 4;
+const MESSAGE_REQUEST_FULL_REFRESH: u8 = 6;
 const UPDATE_ALL: i32 = 0;
 const UPDATE_PARTIAL: i32 = 1;
 const INPUT_TOUCH_PRESS: i32 = 0x10;
@@ -107,8 +108,18 @@ impl Client {
         Ok(())
     }
 
+    pub fn request_full_refresh(&self) -> io::Result<()> {
+        let mut packet = [0_u8; CLIENT_SIZE];
+        packet[0] = MESSAGE_REQUEST_FULL_REFRESH;
+        send_packet(self.fd, &packet)
+    }
+
     pub fn commit_sequence(&self) -> u64 {
         self.commit_sequence.load(Ordering::Acquire)
+    }
+
+    pub fn raw_fd(&self) -> RawFd {
+        self.fd
     }
 
     pub fn poll_touch_events(&mut self) -> io::Result<Vec<TouchEvent>> {
@@ -156,14 +167,6 @@ impl Client {
             }
         }
         Ok(events)
-    }
-
-    /// Sleep until input/window state is available. Unlike the old fixed 12ms
-    /// loop this consumes no CPU while Home is idle, but a finger packet wakes
-    /// the loop immediately. The timeout lets the locked UI reconcile daemon
-    /// recovery without a second polling thread.
-    pub fn wait_readable(&self, timeout: Duration) -> io::Result<()> {
-        wait_fd(self.fd, libc::POLLIN, timeout)
     }
 }
 

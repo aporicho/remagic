@@ -1,8 +1,7 @@
-use super::{Display, BLACK, DARK_GRAY, WHITE};
+use super::{Display, BLACK, GRAY};
 use crate::device::settings::{HomeSettings, WallpaperOption};
 use crate::device::{Action, Button};
 use ab_glyph::FontArc;
-use remagic_protocol::{LOCK_UNLOCK_HEIGHT, LOCK_UNLOCK_WIDTH, LOCK_UNLOCK_X, LOCK_UNLOCK_Y};
 use std::io;
 
 impl Display {
@@ -14,58 +13,22 @@ impl Display {
         preview: bool,
     ) -> io::Result<Vec<Button>> {
         super::wallpaper::draw(self, settings, settings.wallpaper(wallpapers));
-        if settings.lock.show_clock {
-            self.centered_text(font, &current_time(), 76.0, 230, BLACK);
-        }
-        self.round_rect(58, 548, self.width - 116, 232, 0xFFF2_F1EE);
-        self.centered_text(font, "ReMagic 已锁定", 50.0, 642, BLACK);
-        if settings.lock.show_hint {
-            self.centered_text(font, "按电源键唤醒后自动返回管理器", 27.0, 710, DARK_GRAY);
-        }
+        let mut buttons = Vec::new();
         if preview {
             self.text(font, "锁屏预览", 28.0, 42, 66, BLACK);
+            let x = self.width - 190;
+            self.rect(x, 38, 152, 72, GRAY);
+            self.text(font, "返回", 28.0, x + 48, 84, BLACK);
+            buttons.push(Button {
+                x,
+                y: 38,
+                width: 152,
+                height: 72,
+                action: Action::BackSettings,
+            });
         }
-
-        let x = LOCK_UNLOCK_X;
-        let y = LOCK_UNLOCK_Y;
-        let width = LOCK_UNLOCK_WIDTH.min(self.width - x);
-        let height = LOCK_UNLOCK_HEIGHT;
-        self.round_rect(x, y, width, height, BLACK);
-        self.centered_text(
-            font,
-            if preview {
-                "返回设置"
-            } else {
-                "立即返回"
-            },
-            40.0,
-            y + 79,
-            WHITE,
-        );
         self.client.update_all()?;
-        Ok(vec![Button {
-            x,
-            y,
-            width,
-            height,
-            action: if preview {
-                Action::BackSettings
-            } else {
-                Action::Wake
-            },
-        }])
-    }
-}
-
-fn current_time() -> String {
-    let mut timestamp: libc::time_t = 0;
-    let mut local = std::mem::MaybeUninit::<libc::tm>::uninit();
-    unsafe {
-        libc::time(&mut timestamp);
-        if libc::localtime_r(&timestamp, local.as_mut_ptr()).is_null() {
-            return "--:--".into();
-        }
-        let local = local.assume_init();
-        format!("{:02}:{:02}", local.tm_hour, local.tm_min)
+        self.client.request_full_refresh()?;
+        Ok(buttons)
     }
 }

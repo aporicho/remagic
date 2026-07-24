@@ -74,6 +74,38 @@ if wait_for_remagic_ready "$READY_CTL" 2 0 >/dev/null 2>&1; then
     exit 1
 fi
 
+HANDOFF_STATE=$TMP/handoff-state
+HANDOFF_CTL=$TMP/handoff-ctl
+printf '%s\n' manager >"$HANDOFF_STATE"
+cat >"$HANDOFF_CTL" <<EOF
+#!/bin/sh
+case "\${1:-status}" in
+    status)
+        state=\$(sed -n '1p' "$HANDOFF_STATE")
+        printf '{"type":"status","domain":"%s","sequence":1}\n' "\$state"
+        ;;
+    system) printf '%s\n' system >"$HANDOFF_STATE" ;;
+    *) exit 2 ;;
+esac
+EOF
+chmod 0755 "$HANDOFF_CTL"
+systemctl() {
+    [ "$1" = is-active ] && [ "$2" = --quiet ] && \
+        [ "$3" = remagicd.service ]
+}
+prepare_remagic_for_update "$HANDOFF_CTL"
+[ "$(cat "$HANDOFF_STATE")" = system ] || {
+    echo "system update handoff did not reach the stock domain" >&2
+    exit 1
+}
+printf '#!/bin/sh\nexit 1\n' >"$HANDOFF_CTL"
+chmod 0755 "$HANDOFF_CTL"
+if prepare_remagic_for_update "$HANDOFF_CTL" >/dev/null 2>&1; then
+    echo "system update accepted an unavailable running manager" >&2
+    exit 1
+fi
+unset -f systemctl
+
 make_device "$TMP/mismatch" 'reMarkable Ferrari' 3.27.3.0
 printf 'reMarkable Chiappa\000' >"$TMP/mismatch/proc/device-tree/model"
 if (
@@ -92,6 +124,19 @@ grep -Fq 'testing/manifests/$test_manifest' "$ROOT/scripts/build-system-release.
 }
 grep -Fq 'remagic-agentd.socket' "$ROOT/scripts/build-system-release.sh" || {
     echo "system release does not ship the Pi agent socket" >&2
+    exit 1
+}
+grep -Fq 'install -m 0755 "$sysroot/usr/bin/curl" "$PAYLOAD/bin/curl"' \
+    "$ROOT/scripts/build-system-release.sh" || {
+    echo "system release does not package the SDK curl client" >&2
+    exit 1
+}
+grep -Fq 'publish_curl_command' "$ROOT/scripts/system-release/install-device.sh" || {
+    echo "system installer does not register the packaged curl command" >&2
+    exit 1
+}
+grep -Fq 'host-curl:/usr/local/bin/curl' "$ROOT/scripts/system-release/install-device.sh" || {
+    echo "system installer cannot roll curl registration back" >&2
     exit 1
 }
 grep -Fq 'BindsTo=remagicd.service' "$ROOT/systemd/remagic-agentd.service" || {
@@ -149,6 +194,10 @@ grep -Fq 'remagic-configure-provider' "$ROOT/scripts/build-system-release.sh" ||
     echo "system release does not package provider configuration support" >&2
     exit 1
 }
+grep -Fq 'remagic-app-failed' "$ROOT/scripts/build-system-release.sh" || {
+    echo "system release does not package the event-driven application failure bridge" >&2
+    exit 1
+}
 grep -Fq 'REMAGIC_DEVICE_HOST:-${REMAGIC_HOST:-10.11.99.1}' \
     "$ROOT/configure-provider.sh" || {
     echo "provider helper does not share the installer host override" >&2
@@ -191,6 +240,16 @@ grep -Fq '"$STORE_PAYLOAD/bin/remagic-store" catalog' \
 grep -Fq 'wait_for_remagic_ready "$APP_ROOT/bin/remagicctl"' \
     "$ROOT/scripts/system-release/install-device.sh" || {
     echo "system installer does not wait for the manager control plane" >&2
+    exit 1
+}
+grep -Fq 'prepare_remagic_for_update "$APP_ROOT/bin/remagicctl"' \
+    "$ROOT/scripts/system-release/install-device.sh" || {
+    echo "system installer does not hand the panel back before replacement" >&2
+    exit 1
+}
+grep -Fq 'mask --runtime remagic-recover.service' \
+    "$ROOT/scripts/system-release/install-device.sh" || {
+    echo "system installer does not suppress competing planned-stop recovery" >&2
     exit 1
 }
 

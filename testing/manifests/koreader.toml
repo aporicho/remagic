@@ -16,12 +16,16 @@ capabilities = ["display:qtfb-v1", "input:touch-v1", "lifecycle:v2"]
 supports_open_path = true
 allowed_open_roots = [
   "/home/root/.local/state/remagic/acceptance/current/koreader/library-state/library",
-  "/home/root/.local/share/remarkable/xochitl",
+  "/home/root/.local/state/remagic/acceptance/current/koreader/source-library",
+  "/home/root/.local/state/remagic/acceptance/current/koreader/local-books",
 ]
 
 [readiness]
 mode = "first_frame"
-timeout_ms = 20000
+# Match the production adapter's cold-start budget. A fresh KO_HOME has to
+# build KOReader's font and configuration caches on the slower Move before it
+# can publish semantic readiness; warm starts still complete immediately.
+timeout_ms = 60000
 
 [shutdown]
 graceful_timeout_ms = 3500
@@ -75,6 +79,7 @@ KOREADER_BACKUP_ROOT = "/home/root/.local/state/remagic/acceptance/current/korea
 KOREADER_LEGACY_DATA_DIRS = "/home/root/.local/state/remagic/acceptance/current/koreader/empty-legacy"
 KOREADER_LIBRARY_STATE_ROOT = "/home/root/.local/state/remagic/acceptance/current/koreader/library-state"
 KOREADER_SOURCE_LIBRARY_DIR = "/home/root/.local/state/remagic/acceptance/current/koreader/source-library"
+KOREADER_BOOKS_DIR = "/home/root/.local/state/remagic/acceptance/current/koreader/local-books"
 KOREADER_LIBRARY_DIR = "/home/root/.local/state/remagic/acceptance/current/koreader/library-state/library"
 KOREADER_ACTIVE_STARTUP_SCRIPT = "/home/root/.local/state/remagic/acceptance/current/koreader/runtime/koreader.sh"
-KOREADER_ALLOWED_OPEN_ROOTS = "/home/root/.local/state/remagic/acceptance/current/koreader/library-state/library:/home/root/.local/share/remarkable/xochitl"
+KOREADER_ALLOWED_OPEN_ROOTS = "/home/root/.local/state/remagic/acceptance/current/koreader/library-state/library:/home/root/.local/state/remagic/acceptance/current/koreader/source-library:/home/root/.local/state/remagic/acceptance/current/koreader/local-books"

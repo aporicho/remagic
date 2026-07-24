@@ -1,4 +1,4 @@
-use remagic_core::{AppId, AppSession, DomainState};
+use remagic_core::{AppId, AppSession, DomainState, PowerSnapshot};
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::PathBuf;
@@ -36,10 +36,6 @@ pub use runtime_app::{
 };
 
 pub const DEFAULT_SOCKET: &str = "/run/remagic/control.sock";
-pub const LOCK_UNLOCK_X: i32 = 150;
-pub const LOCK_UNLOCK_Y: i32 = 1010;
-pub const LOCK_UNLOCK_WIDTH: i32 = 654;
-pub const LOCK_UNLOCK_HEIGHT: i32 = 126;
 pub const MAX_FRAME: usize = 64 * 1024;
 pub const PROTOCOL_V2: u16 = 2;
 
@@ -97,6 +93,12 @@ pub enum ProtocolValidationError {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request {
     Status,
+    PowerStatus,
+    SetIdleSuspend {
+        /// Zero disables automatic suspension; otherwise the platform
+        /// validates the system-supported range.
+        seconds: u64,
+    },
     ListApps,
     ReloadManifests,
     OpenManager,
@@ -200,6 +202,9 @@ pub enum Response {
         domain: DomainState,
         last_app: Option<AppId>,
         sequence: u64,
+    },
+    Power {
+        snapshot: PowerSnapshot,
     },
     Apps {
         apps: Vec<AppView>,
@@ -320,6 +325,20 @@ mod tests {
             Request::Wake {
                 manager_surface_sequence: 29,
             },
+        ] {
+            let encoded = serde_json::to_vec(&request).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<Request>(&encoded).unwrap(),
+                request
+            );
+        }
+    }
+
+    #[test]
+    fn power_policy_requests_round_trip_without_legacy_ambiguity() {
+        for request in [
+            Request::PowerStatus,
+            Request::SetIdleSuspend { seconds: 120 },
         ] {
             let encoded = serde_json::to_vec(&request).unwrap();
             assert_eq!(

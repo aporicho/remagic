@@ -1,9 +1,9 @@
-use super::{queued_magicpaper_result, Action, Button};
+use super::{Action, Button};
 use ab_glyph::{point, Font, FontArc, Glyph, PxScale, ScaleFont};
 use remagic_protocol::AppView;
 use std::fs;
 use std::io;
-use std::time::Duration;
+use std::os::fd::RawFd;
 
 const WHITE: u32 = 0xFFFF_FFFF;
 const BLACK: u32 = 0xFF18_1818;
@@ -14,7 +14,12 @@ mod lock_page;
 mod settings_page;
 mod store_page;
 mod wallpaper;
+mod wallpaper_browser;
 mod welcome_page;
+
+pub(super) fn prepare_wallpaper_thumbnails(options: &[super::WallpaperOption]) {
+    wallpaper::prepare_thumbnails(options)
+}
 
 pub(super) fn load_font() -> Result<FontArc, Box<dyn std::error::Error>> {
     let paths = [
@@ -73,7 +78,7 @@ impl Display {
             DARK_GRAY,
         );
         let x = self.width - 190;
-        self.round_rect(x, 38, 142, 72, GRAY);
+        self.rect(x, 38, 142, 72, GRAY);
         self.text(font, "设置", 28.0, x + 42, 84, BLACK);
         buttons.push(Button {
             x,
@@ -142,7 +147,7 @@ impl Display {
         if app.session.is_none() && !app.background_active {
             return;
         }
-        self.round_rect(self.width - 190, y + 28, 112, 70, 0xFFD0_CECB);
+        self.rect(self.width - 190, y + 28, 112, 70, 0xFFD0_CECB);
         self.text(font, "关闭", 25.0, self.width - 164, y + 72, BLACK);
         buttons.push(Button {
             x: self.width - 190,
@@ -155,7 +160,7 @@ impl Display {
 
     fn render_sleep_button(&mut self, font: &FontArc, buttons: &mut Vec<Button>) {
         let y = self.height - 150;
-        self.round_rect(38, y, self.width - 76, 104, BLACK);
+        self.rect(38, y, self.width - 76, 104, BLACK);
         self.text(font, "休眠", 38.0, self.width / 2 - 46, y + 67, WHITE);
         buttons.push(Button {
             x: 38,
@@ -167,7 +172,7 @@ impl Display {
     }
 
     fn card(&mut self, x: i32, y: i32, width: i32, height: i32) {
-        self.round_rect(x, y, width, height, GRAY);
+        self.rect(x, y, width, height, GRAY);
         self.hline(x + 18, x + width - 18, y + height - 1, 0xFFD2_D0CB);
     }
 
@@ -201,8 +206,8 @@ impl Display {
         self.client.poll_touch_events()
     }
 
-    pub(super) fn wait_for_input(&self, timeout: Duration) -> io::Result<()> {
-        self.client.wait_readable(timeout)
+    pub(super) fn input_fd(&self) -> RawFd {
+        self.client.raw_fd()
     }
 
     pub(super) fn commit_sequence(&self) -> u64 {
@@ -217,27 +222,10 @@ impl Display {
         }
     }
 
-    fn round_rect(&mut self, x: i32, y: i32, width: i32, height: i32, color: u32) {
-        let radius = 18;
+    fn rect(&mut self, x: i32, y: i32, width: i32, height: i32, color: u32) {
         for py in y..y + height {
             for px in x..x + width {
-                let dx = if px < x + radius {
-                    x + radius - px
-                } else if px >= x + width - radius {
-                    px - (x + width - radius - 1)
-                } else {
-                    0
-                };
-                let dy = if py < y + radius {
-                    y + radius - py
-                } else if py >= y + height - radius {
-                    py - (y + height - radius - 1)
-                } else {
-                    0
-                };
-                if dx == 0 || dy == 0 || dx * dx + dy * dy <= radius * radius {
-                    self.pixel(px, py, color);
-                }
+                self.pixel(px, py, color);
             }
         }
     }
@@ -338,6 +326,11 @@ fn app_status(app: &AppView) -> String {
     } else {
         "未安装".into()
     }
+}
+
+fn queued_magicpaper_result() -> bool {
+    fs::metadata("/home/root/.local/share/magicpaper/agent/pending.tsv")
+        .is_ok_and(|metadata| metadata.len() > 0)
 }
 
 fn app_action(app: &AppView) -> Action {

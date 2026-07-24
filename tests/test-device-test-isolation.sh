@@ -39,6 +39,7 @@ printf '%s\n' 'test koreader' \
     'migrator = "/__REMAGIC_KOREADER_ADAPTER_ROOT__/libexec/koreader-data-migrate"' \
     'KOREADER_LIBRARY_STATE_ROOT = "/home/root/.local/state/remagic/acceptance/current/koreader/library-state"' \
     'KOREADER_SOURCE_LIBRARY_DIR = "/home/root/.local/state/remagic/acceptance/current/koreader/source-library"' \
+    'KOREADER_BOOKS_DIR = "/home/root/.local/state/remagic/acceptance/current/koreader/local-books"' \
     >"$TMP/templates/koreader.toml"
 printf 'untouched a\n' >"$TMP/protected-a/data"
 printf 'untouched b\n' >"$TMP/protected-b/data"
@@ -147,6 +148,9 @@ grep -q "KOREADER_LIBRARY_STATE_ROOT = \"$REMAGIC_TEST_ROOT/koreader/library-sta
     "$REMAGIC_TEST_ROOT/manifests/koreader.toml" || fail 'KOReader library state was not isolated'
 grep -q "KOREADER_SOURCE_LIBRARY_DIR = \"$REMAGIC_TEST_ROOT/koreader/source-library\"" \
     "$REMAGIC_TEST_ROOT/manifests/koreader.toml" || fail 'KOReader source library was not isolated'
+grep -q "KOREADER_BOOKS_DIR = \"$REMAGIC_TEST_ROOT/koreader/local-books\"" \
+    "$REMAGIC_TEST_ROOT/manifests/koreader.toml" || fail 'KOReader local books were not isolated'
+[ -d "$REMAGIC_TEST_ROOT/koreader/local-books" ] || fail 'isolated local book root was not created'
 grep -q '^name = "KOReader"$' "$REMAGIC_TEST_ROOT/manifests/koreader.toml" || \
     fail 'KOReader visible name changed during test materialization'
 grep -q "^exec = \"$TMP/apps/koreader/releases/$koreader_content/payload/adapter/releases/adapter-test/bin/koreader-for-remagic\"$" \
@@ -265,6 +269,28 @@ simulate_interrupted_run() {
 for interrupted_phase in sessions-saved overrides-installing override-staged overrides-installed; do
     simulate_interrupted_run "$interrupted_phase"
 done
+
+# An SSH or power loss can arrive after the EXIT trap has started and removed
+# the public lock but before it deletes the durable transaction root. The next
+# test must reconstruct only a fully validated dead-owner journal and recover
+# it instead of overwriting or requiring manual deletion.
+remagic_test_lock || fail 'could not claim lockless-journal fixture'
+remagic_acceptance_prepare lockless-journal "$$" || fail 'could not prepare lockless fixture'
+REMAGIC_TEST_TRANSACTION_PREPARED=true
+remagic_test_seed_data
+remagic_acceptance_save_sessions
+printf 'mutated by lockless test\n' >"$TMP/sessions/magicpaper.json"
+dead_owner=2147483647
+printf '%s\n' "$dead_owner" >"$REMAGIC_TEST_ROOT/transaction/owner-pid"
+rm -rf "$REMAGIC_TEST_LOCK"
+REMAGIC_TEST_LOCKED=false
+REMAGIC_TEST_SESSIONS_SAVED=false
+REMAGIC_TEST_TRANSACTION_PREPARED=false
+remagic_test_lock || fail 'lockless journal was not recovered'
+grep -q '^production session$' "$TMP/sessions/magicpaper.json" || \
+    fail 'lockless recovery lost the production session'
+[ ! -e "$REMAGIC_TEST_ROOT" ] || fail 'lockless recovery retained its test root'
+remagic_test_release_lock || fail 'could not release post-lockless test lock'
 
 # A crash after the terminal state and durable test-root deletion leaves only
 # the lock journal. Both normal completion and recovery completion must be

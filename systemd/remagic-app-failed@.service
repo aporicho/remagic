@@ -1,0 +1,7 @@
+[Unit]
+Description=Report failed ReMagic application %i to the lifecycle manager
+After=remagicd.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/root/apps/remagic/libexec/remagic-app-failed %i

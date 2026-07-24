@@ -108,3 +108,46 @@ wait_for_remagic_ready() {
     echo "ReMagic: manager control socket did not become ready after $max_attempts attempts" >&2
     return 1
 }
+
+# A running manager may own the panel through its display host and foreground
+# application.  Updating binaries underneath that ownership graph makes the
+# daemon's SIGINT handoff race systemd stopping its dependants.  Ask the public
+# control plane to complete the stock handoff first and prove the resulting
+# domain before the installer stops any ReMagic unit.
+wait_for_remagic_system_domain() {
+    ctl=$1
+    max_attempts=${2:-120}
+    delay=${3:-0.1}
+    attempt=0
+
+    while [ "$attempt" -lt "$max_attempts" ]; do
+        status=$("$ctl" status 2>/dev/null || true)
+        if printf '%s\n' "$status" | \
+            grep -Eq '"domain"[[:space:]]*:[[:space:]]*"system"'; then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        if [ "$attempt" -lt "$max_attempts" ]; then
+            sleep "$delay"
+        fi
+    done
+
+    echo "ReMagic: stock handoff did not complete before system update" >&2
+    return 1
+}
+
+prepare_remagic_for_update() {
+    ctl=$1
+    if ! systemctl is-active --quiet remagicd.service; then
+        return 0
+    fi
+    "$ctl" status >/dev/null 2>&1 || {
+        echo "ReMagic: running manager control socket is unavailable" >&2
+        return 1
+    }
+    "$ctl" system >/dev/null 2>&1 || {
+        echo "ReMagic: could not request stock handoff before system update" >&2
+        return 1
+    }
+    wait_for_remagic_system_domain "$ctl"
+}

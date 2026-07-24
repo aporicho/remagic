@@ -10,6 +10,10 @@ use tokio::sync::mpsc as tokio_mpsc;
 
 use crate::daemon::{Event, QueuedEvent};
 
+mod control;
+pub use control::ControlSender;
+use control::WakeEvent;
+
 const EV_KEY: u16 = 1;
 const KEY_POWER: u16 = 116;
 const EVIOCGRAB: libc::c_ulong = 0x40044590;
@@ -45,6 +49,19 @@ struct WakeGuard {
 }
 
 impl WakeGuard {
+    fn next_deadline(&self) -> Option<Instant> {
+        let resumed_at = self.resumed_at?;
+        if self.key_down {
+            return None;
+        }
+        Some(
+            self.last_event_at
+                .filter(|event| *event > resumed_at)
+                .unwrap_or(resumed_at)
+                + WAKE_GUARD_QUIET,
+        )
+    }
+
     fn arm(&mut self) -> Result<(), String> {
         if self.active {
             return Err("power wake guard is already armed".into());
@@ -105,8 +122,10 @@ impl WakeGuard {
 pub fn spawn(
     events: tokio_mpsc::Sender<QueuedEvent>,
     launch_interrupt_epoch: Arc<AtomicU64>,
-) -> (std::thread::JoinHandle<()>, mpsc::Sender<Control>) {
+) -> (std::thread::JoinHandle<()>, ControlSender) {
     let (control_tx, control_rx) = mpsc::channel();
+    let wake = Arc::new(WakeEvent::create().expect("eventfd is required for power control"));
+    let thread_wake = Arc::clone(&wake);
     let thread = std::thread::spawn(move || {
         let mut device = loop {
             match PowerDevice::open() {
@@ -120,6 +139,12 @@ pub fn spawn(
         let mut tracker = ClickTracker::default();
         let mut wake_guard = WakeGuard::default();
         loop {
+            wait_for_input_or_control(
+                device.fd,
+                thread_wake.fd(),
+                next_deadline(&tracker, &wake_guard),
+            );
+            thread_wake.drain();
             while let Ok(control) = control_rx.try_recv() {
                 match control {
                     Control::Grab { grab, reply } => {
@@ -165,6 +190,10 @@ pub fn spawn(
                     // physical contact, not 800 ms later when a single click
                     // is finally distinguishable from a triple click.
                     note_power_press(&launch_interrupt_epoch);
+                    let _ = events.blocking_send(QueuedEvent::unattended(
+                        Event::UserActivity,
+                        &launch_interrupt_epoch,
+                    ));
                     tracker.press(now);
                     PowerAction::None
                 } else if value == 0 {
@@ -179,10 +208,50 @@ pub fn spawn(
             if !wake_guard.active {
                 send_action(tracker.poll(now), &events, &launch_interrupt_epoch);
             }
-            std::thread::sleep(Duration::from_millis(20));
         }
     });
-    (thread, control_tx)
+    (thread, ControlSender::new(control_tx, wake))
+}
+
+fn next_deadline(tracker: &ClickTracker, wake_guard: &WakeGuard) -> Option<Instant> {
+    match (tracker.next_deadline(), wake_guard.next_deadline()) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
+        (None, None) => None,
+    }
+}
+
+fn wait_for_input_or_control(device_fd: RawFd, wake_fd: RawFd, deadline: Option<Instant>) {
+    let timeout = deadline.map_or(-1, |deadline| {
+        deadline
+            .saturating_duration_since(Instant::now())
+            .as_millis()
+            .clamp(1, i32::MAX as u128) as i32
+    });
+    let mut descriptors = [
+        libc::pollfd {
+            fd: device_fd,
+            events: libc::POLLIN | libc::POLLERR | libc::POLLHUP,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: wake_fd,
+            events: libc::POLLIN | libc::POLLERR | libc::POLLHUP,
+            revents: 0,
+        },
+    ];
+    loop {
+        let result = unsafe {
+            libc::poll(
+                descriptors.as_mut_ptr(),
+                descriptors.len() as libc::nfds_t,
+                timeout,
+            )
+        };
+        if result >= 0 || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+            return;
+        }
+    }
 }
 
 fn note_power_press(interaction_epoch: &AtomicU64) -> u64 {

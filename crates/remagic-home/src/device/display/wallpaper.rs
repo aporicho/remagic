@@ -5,12 +5,14 @@ use std::fs::File;
 use std::io::{self, BufReader};
 use std::path::Path;
 
+mod thumbnail_cache;
+
 const MAX_DECODED_BYTES: usize = 64 * 1024 * 1024;
 
-struct GrayImage {
+pub(super) struct ColorImage {
     width: usize,
     height: usize,
-    pixels: Vec<u8>,
+    pixels: Vec<[u8; 3]>,
 }
 
 pub(super) fn draw(display: &mut Display, settings: &HomeSettings, option: &WallpaperOption) {
@@ -27,7 +29,7 @@ pub(super) fn draw(display: &mut Display, settings: &HomeSettings, option: &Wall
     }
 }
 
-fn decode_png(path: &Path) -> io::Result<GrayImage> {
+pub(super) fn decode_png(path: &Path) -> io::Result<ColorImage> {
     let mut decoder = png::Decoder::new(BufReader::new(File::open(path)?));
     decoder.set_transformations(Transformations::EXPAND | Transformations::STRIP_16);
     let mut reader = decoder
@@ -53,15 +55,20 @@ fn decode_png(path: &Path) -> io::Result<GrayImage> {
     let width = output.width as usize;
     let height = output.height as usize;
     let source = &buffer[..output.buffer_size()];
-    let pixels = to_gray(source, output.color_type, width, height)?;
-    Ok(GrayImage {
+    let pixels = to_rgb(source, output.color_type, width, height)?;
+    Ok(ColorImage {
         width,
         height,
         pixels,
     })
 }
 
-fn to_gray(source: &[u8], color: ColorType, width: usize, height: usize) -> io::Result<Vec<u8>> {
+fn to_rgb(
+    source: &[u8],
+    color: ColorType,
+    width: usize,
+    height: usize,
+) -> io::Result<Vec<[u8; 3]>> {
     let channels = match color {
         ColorType::Grayscale => 1,
         ColorType::GrayscaleAlpha => 2,
@@ -87,33 +94,45 @@ fn to_gray(source: &[u8], color: ColorType, width: usize, height: usize) -> io::
     Ok(source
         .chunks_exact(channels)
         .map(|pixel| {
-            let (gray, alpha) = match color {
-                ColorType::Grayscale => (pixel[0], 255),
-                ColorType::GrayscaleAlpha => (pixel[0], pixel[1]),
-                ColorType::Rgb => (luma(pixel[0], pixel[1], pixel[2]), 255),
-                ColorType::Rgba => (luma(pixel[0], pixel[1], pixel[2]), pixel[3]),
+            let (red, green, blue, alpha) = match color {
+                ColorType::Grayscale => (pixel[0], pixel[0], pixel[0], 255),
+                ColorType::GrayscaleAlpha => (pixel[0], pixel[0], pixel[0], pixel[1]),
+                ColorType::Rgb => (pixel[0], pixel[1], pixel[2], 255),
+                ColorType::Rgba => (pixel[0], pixel[1], pixel[2], pixel[3]),
                 ColorType::Indexed => unreachable!(),
             };
-            composite_white(gray, alpha)
+            [
+                composite_white(red, alpha),
+                composite_white(green, alpha),
+                composite_white(blue, alpha),
+            ]
         })
         .collect())
 }
 
-fn luma(red: u8, green: u8, blue: u8) -> u8 {
-    ((red as u32 * 77 + green as u32 * 150 + blue as u32 * 29) >> 8) as u8
-}
-
-fn composite_white(gray: u8, alpha: u8) -> u8 {
+fn composite_white(channel: u8, alpha: u8) -> u8 {
     let alpha = alpha as u32;
-    ((gray as u32 * alpha + 255 * (255 - alpha)) / 255) as u8
+    ((channel as u32 * alpha + 255 * (255 - alpha)) / 255) as u8
 }
 
-fn draw_scaled(display: &mut Display, image: &GrayImage, fit: WallpaperFit) {
+fn draw_scaled(display: &mut Display, image: &ColorImage, fit: WallpaperFit) {
+    draw_scaled_in(display, image, fit, 0, 0, display.width, display.height)
+}
+
+fn draw_scaled_in(
+    display: &mut Display,
+    image: &ColorImage,
+    fit: WallpaperFit,
+    target_x: i32,
+    target_y: i32,
+    target_width: i32,
+    target_height: i32,
+) {
     if image.width == 0 || image.height == 0 {
         return;
     }
-    let target_w = display.width as f64;
-    let target_h = display.height as f64;
+    let target_w = target_width as f64;
+    let target_h = target_height as f64;
     let scale_x = target_w / image.width as f64;
     let scale_y = target_h / image.height as f64;
     let scale = match fit {
@@ -122,28 +141,65 @@ fn draw_scaled(display: &mut Display, image: &GrayImage, fit: WallpaperFit) {
     };
     let drawn_w = (image.width as f64 * scale).round().max(1.0) as i32;
     let drawn_h = (image.height as f64 * scale).round().max(1.0) as i32;
-    let origin_x = (display.width - drawn_w) / 2;
-    let origin_y = (display.height - drawn_h) / 2;
-    let x0 = origin_x.max(0);
-    let y0 = origin_y.max(0);
-    let x1 = (origin_x + drawn_w).min(display.width);
-    let y1 = (origin_y + drawn_h).min(display.height);
+    let origin_x = target_x + (target_width - drawn_w) / 2;
+    let origin_y = target_y + (target_height - drawn_h) / 2;
+    let x0 = origin_x.max(target_x);
+    let y0 = origin_y.max(target_y);
+    let x1 = (origin_x + drawn_w).min(target_x + target_width);
+    let y1 = (origin_y + drawn_h).min(target_y + target_height);
     for y in y0..y1 {
         let source_y = (((y - origin_y) as f64 / scale).floor() as usize).min(image.height - 1);
         for x in x0..x1 {
             let source_x = (((x - origin_x) as f64 / scale).floor() as usize).min(image.width - 1);
-            let gray = quantize(image.pixels[source_y * image.width + source_x]);
-            display.pixel(x, y, gray_color(gray));
+            let [red, green, blue] = image.pixels[source_y * image.width + source_x];
+            display.pixel(x, y, rgb_color(red, green, blue));
         }
     }
 }
 
-fn quantize(gray: u8) -> u8 {
-    ((gray as u16 * 15 + 127) / 255 * 17) as u8
+pub(super) fn draw_thumbnail(
+    display: &mut Display,
+    option: &WallpaperOption,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) {
+    display.rect(x, y, width, height, super::GRAY);
+    let Some(path) = option.path.as_deref() else {
+        display.rect(x + 4, y + 4, width - 8, height - 8, super::WHITE);
+        return;
+    };
+    let cached = thumbnail_cache::path(path).ok();
+    let cached = cached
+        .as_deref()
+        .filter(|path| std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file()));
+    let Some(cached) = cached else {
+        return;
+    };
+    match decode_png(cached) {
+        Ok(image) => draw_scaled_in(
+            display,
+            &image,
+            WallpaperFit::Cover,
+            x + 4,
+            y + 4,
+            width - 8,
+            height - 8,
+        ),
+        Err(error) => eprintln!(
+            "remagic-home: wallpaper thumbnail {} ignored: {error}",
+            cached.display()
+        ),
+    }
 }
 
-fn gray_color(gray: u8) -> u32 {
-    0xFF00_0000 | ((gray as u32) << 16) | ((gray as u32) << 8) | gray as u32
+pub(super) fn prepare_thumbnails(options: &[WallpaperOption]) {
+    thumbnail_cache::prepare(options)
+}
+
+fn rgb_color(red: u8, green: u8, blue: u8) -> u32 {
+    0xFF00_0000 | ((red as u32) << 16) | ((green as u32) << 8) | blue as u32
 }
 
 #[cfg(test)]
@@ -151,18 +207,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn alpha_is_composited_on_white_and_gray_is_quantized() {
+    fn alpha_is_composited_on_white() {
         assert_eq!(composite_white(0, 0), 255);
         assert_eq!(composite_white(0, 255), 0);
-        assert_eq!(luma(255, 255, 255), 255);
-        assert_eq!(luma(0, 0, 0), 0);
-        assert_eq!(quantize(0), 0);
-        assert_eq!(quantize(255), 255);
     }
 
     #[test]
-    fn rgba_conversion_keeps_one_pixel_per_source_pixel() {
-        let pixels = to_gray(&[0, 0, 0, 255, 255, 255, 255, 0], ColorType::Rgba, 2, 1).unwrap();
-        assert_eq!(pixels, vec![0, 255]);
+    fn rgba_conversion_preserves_color_and_composites_transparency() {
+        let pixels = to_rgb(&[255, 0, 0, 255, 0, 0, 255, 0], ColorType::Rgba, 2, 1).unwrap();
+        assert_eq!(pixels, vec![[255, 0, 0], [255, 255, 255]]);
     }
 }

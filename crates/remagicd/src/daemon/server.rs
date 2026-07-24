@@ -2,24 +2,24 @@ use super::*;
 use crate::display_host;
 use remagic_core::DomainState;
 use remagic_package::PackageManager;
-use remagic_protocol::{
-    read_frame, write_frame, ControlRequest, Request, Response, RuntimeAppCommand, RuntimeAppReply,
-    RuntimeAppRequest, RUNTIME_APP_PROTOCOL_V1, RUNTIME_APP_PROTOCOL_V2,
-};
+use remagic_protocol::{read_frame, write_frame, ControlRequest, Request, Response};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncReadExt;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
+
+mod app_requests;
 
 pub(super) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(RUNTIME_ROOT)?;
     let listener = bind_private_socket(Path::new(remagic_protocol::DEFAULT_SOCKET))?;
     let app_listener = bind_private_socket(Path::new(APP_REQUEST_SOCKET))?;
+    let activity_listener = bind_private_socket(Path::new(ACTIVITY_SOCKET))?;
     let (daemon, mut event_rx, power_thread) = create_daemon()?;
 
     daemon
@@ -29,8 +29,8 @@ pub(super) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     daemon.start_declared_background_services().await;
     spawn_control_server(listener, daemon.clone());
     spawn_app_request_server(app_listener, daemon.clone());
+    spawn_activity_server(activity_listener, daemon.clone());
     spawn_signal_handler(daemon.clone());
-    supervision::spawn(daemon.clone());
     info!(
         socket = remagic_protocol::DEFAULT_SOCKET,
         "ReMagic manager ready"
@@ -59,6 +59,7 @@ fn create_daemon() -> Result<DaemonParts, Box<dyn std::error::Error>> {
     let sessions = session_store.load_all()?;
     let (events, event_rx) = mpsc::channel(64);
     let launch_interrupt_epoch = Arc::new(AtomicU64::new(1));
+    let power = Arc::new(crate::power_manager::PowerManager::load());
     let (power_thread, power_control) =
         power_device::spawn(events.clone(), launch_interrupt_epoch.clone());
     let daemon = Arc::new(Daemon {
@@ -74,6 +75,7 @@ fn create_daemon() -> Result<DaemonParts, Box<dyn std::error::Error>> {
         session_store,
         manifest_store,
         controller: SystemController::new(),
+        power: power.clone(),
         transition_lock: Mutex::new(()),
         events,
         power_control,
@@ -82,9 +84,11 @@ fn create_daemon() -> Result<DaemonParts, Box<dyn std::error::Error>> {
         next_sleep_epoch: AtomicU64::new(1),
         sleep_transaction: sleep::SleepTransaction::default(),
         launch_interrupt_epoch,
+        #[cfg(test)]
         manager_repair_pending: AtomicBool::new(false),
         domain_recovery_pending: AtomicBool::new(false),
     });
+    power.spawn(daemon.events.clone(), daemon.launch_interrupt_epoch.clone());
     Ok((daemon, event_rx, power_thread))
 }
 
@@ -108,8 +112,57 @@ fn spawn_control_server(listener: UnixListener, daemon: Arc<Daemon>) {
 
 fn spawn_app_request_server(listener: UnixListener, daemon: Arc<Daemon>) {
     tokio::spawn(async move {
-        accept_loop(listener, daemon, serve_app_request, "application request").await;
+        accept_loop(listener, daemon, app_requests::serve, "application request").await;
     });
+}
+
+fn spawn_activity_server(listener: UnixListener, daemon: Arc<Daemon>) {
+    tokio::spawn(async move {
+        loop {
+            match listener.accept().await {
+                Ok((stream, _)) => {
+                    if !display_activity_peer(&stream) {
+                        warn!("rejected activity source outside remagic-display-host.service");
+                        continue;
+                    }
+                    let daemon = daemon.clone();
+                    tokio::spawn(async move {
+                        let mut stream = stream;
+                        let mut bytes = [0_u8; 64];
+                        loop {
+                            match stream.read(&mut bytes).await {
+                                Ok(0) => break,
+                                Ok(_) => daemon.power.note_activity().await,
+                                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                                Err(_) => break,
+                            }
+                        }
+                    });
+                }
+                Err(error) => {
+                    error!(%error, "activity socket accept failed");
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            }
+        }
+    });
+}
+
+fn display_activity_peer(stream: &UnixStream) -> bool {
+    let Ok(credentials) = stream.peer_cred() else {
+        return false;
+    };
+    if credentials.uid() != unsafe { libc::geteuid() } {
+        return false;
+    }
+    let Some(pid) = credentials.pid() else {
+        return false;
+    };
+    fs::read_to_string(format!("/proc/{pid}/cgroup")).is_ok_and(|value| {
+        value
+            .split('/')
+            .any(|part| part.trim() == "remagic-display-host.service")
+    })
 }
 
 async fn accept_loop<F, Fut>(
@@ -239,111 +292,4 @@ async fn serve_control_client(
         write_frame(&mut stream, &daemon.request(request).await).await?;
     }
     Ok(())
-}
-
-async fn serve_app_request(
-    mut stream: UnixStream,
-    daemon: Arc<Daemon>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if stream.peer_cred()?.uid() != unsafe { libc::geteuid() } {
-        stream
-            .write_all(b"{\"ok\":false,\"error\":\"permission denied\"}\n")
-            .await?;
-        return Ok(());
-    }
-    let mut line = String::new();
-    let count = BufReader::new(&mut stream).read_line(&mut line).await?;
-    let reply = parse_app_request(count, &line, &daemon).await;
-    stream.write_all(&serde_json::to_vec(&reply)?).await?;
-    stream.write_all(b"\n").await?;
-    Ok(())
-}
-
-async fn parse_app_request(count: usize, line: &str, daemon: &Daemon) -> RuntimeAppReply {
-    let request_id_hint = runtime_request_id(line);
-    if count == 0 || !line.ends_with('\n') || line.len() > 64 * 1024 {
-        return RuntimeAppReply::error(request_id_hint, "incomplete application request");
-    }
-    let request = match serde_json::from_str::<RuntimeAppRequest>(line) {
-        Ok(request) => request,
-        Err(error) => {
-            return RuntimeAppReply::error(
-                request_id_hint,
-                format!("invalid application request: {error}"),
-            )
-        }
-    };
-    if request.request_id.is_empty() {
-        return RuntimeAppReply::error(
-            (!request.request_id.is_empty()).then_some(request.request_id),
-            "unsupported application request",
-        );
-    }
-    let version = request.version;
-    let request_id = request.request_id;
-    match request.command {
-        RuntimeAppCommand::OpenApp { app, open_path } => {
-            if version != RUNTIME_APP_PROTOCOL_V1 {
-                return RuntimeAppReply::error(
-                    Some(request_id),
-                    "open_app requires runtime protocol version 1",
-                );
-            }
-            match daemon.enqueue(Event::Launch(app, open_path)).await {
-                Response::Ok => RuntimeAppReply::open_accepted(),
-                Response::Error { message } => RuntimeAppReply::error(Some(request_id), message),
-                _ => RuntimeAppReply::error(Some(request_id), "unexpected manager reply"),
-            }
-        }
-        RuntimeAppCommand::SetInputMode { token, mode } => {
-            if version != RUNTIME_APP_PROTOCOL_V2 {
-                return RuntimeAppReply::error(
-                    Some(request_id),
-                    "set_input_mode requires runtime protocol version 2",
-                );
-            }
-            match daemon.set_input_mode(&token, mode).await {
-                Ok(ink_enabled) => {
-                    RuntimeAppReply::input_mode_accepted(request_id, token, mode, ink_enabled)
-                }
-                Err(error) => RuntimeAppReply::error(Some(request_id), error),
-            }
-        }
-    }
-}
-
-fn runtime_request_id(line: &str) -> Option<String> {
-    serde_json::from_str::<serde_json::Value>(line)
-        .ok()?
-        .get("request_id")?
-        .as_str()
-        .filter(|request_id| !request_id.is_empty())
-        .map(str::to_owned)
-}
-
-#[cfg(test)]
-mod runtime_request_tests {
-    use super::*;
-
-    #[test]
-    fn request_identity_is_recovered_from_a_structurally_invalid_request() {
-        let line = r#"{"version":1,"request_id":"mode-bad","command":"set_input_mode","app":"magicpaper","mode":"unknown"}"#;
-        assert_eq!(runtime_request_id(line).as_deref(), Some("mode-bad"));
-        let error = serde_json::from_str::<RuntimeAppRequest>(line).unwrap_err();
-        let reply = RuntimeAppReply::error(runtime_request_id(line), error.to_string());
-        assert_eq!(reply.request_id.as_deref(), Some("mode-bad"));
-        assert!(!reply.ok);
-    }
-
-    #[test]
-    fn empty_or_non_string_request_identity_is_not_echoed() {
-        for line in [
-            r#"{"request_id":""}"#,
-            r#"{"request_id":17}"#,
-            r#"{"version":1}"#,
-            "not-json",
-        ] {
-            assert_eq!(runtime_request_id(line), None);
-        }
-    }
 }

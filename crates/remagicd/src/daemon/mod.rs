@@ -4,14 +4,17 @@ mod input_mode;
 mod launch;
 mod navigation;
 mod packages;
+mod power;
 mod request;
 mod server;
 mod sleep;
+#[cfg(test)]
+#[allow(dead_code)]
 mod supervision;
 mod sync;
 mod utils;
 
-use crate::{power_device, system::SystemController};
+use crate::{power_device, power_manager::PowerManager, system::SystemController};
 use remagic_core::{AppId, AppSession, ManagerState, ManifestStore, SessionStore};
 use remagic_protocol::PackageOperation;
 use std::collections::BTreeMap;
@@ -27,14 +30,18 @@ pub(super) const DISPLAY_UNIT: &str = "remagic-display-host.service";
 pub(super) const HOME_UNIT: &str = "remagic-home.service";
 pub(super) const FOREGROUND_MARKER: &str = "/run/remagic/foreground-app";
 pub(super) const APP_REQUEST_SOCKET: &str = "/run/remagic/runtime-app.sock";
+pub(super) const ACTIVITY_SOCKET: &str = "/run/remagic/activity.sock";
+pub(super) const HOME_EVENT_SOCKET: &str = "/run/remagic/home-events.sock";
 
 #[derive(Debug)]
 pub(super) enum Event {
+    UserActivity,
     SinglePower,
     TriplePower,
     LongPower,
     Launch(AppId, Option<PathBuf>),
     OpenManager,
+    #[cfg(test)]
     EnsureManager,
     ReturnSystem,
     Sleep(u64),
@@ -44,6 +51,9 @@ pub(super) enum Event {
         sleep_revision: u64,
         interaction_epoch: u64,
     },
+    AutoSleep {
+        activity_revision: u64,
+    },
     Close(AppId, bool),
     RuntimeExited {
         app_id: AppId,
@@ -52,6 +62,7 @@ pub(super) enum Event {
         crashed: bool,
         source: ExitReportSource,
     },
+    #[allow(dead_code)]
     DisplayHostExited {
         state_sequence: u64,
         sleep_revision: u64,
@@ -86,7 +97,9 @@ impl Event {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ExitReportSource {
     Runner,
+    #[cfg_attr(not(test), allow(dead_code))]
     Synthetic,
+    Controlled,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -206,9 +219,10 @@ pub(super) struct Daemon {
     pub(super) session_store: SessionStore,
     pub(super) manifest_store: ManifestStore,
     pub(super) controller: SystemController,
+    pub(super) power: Arc<PowerManager>,
     pub(super) transition_lock: Mutex<()>,
     pub(super) events: mpsc::Sender<QueuedEvent>,
-    pub(super) power_control: std::sync::mpsc::Sender<power_device::Control>,
+    pub(super) power_control: power_device::ControlSender,
     pub(super) next_generation: AtomicU64,
     pub(super) next_foreground_epoch: AtomicU64,
     /// Monotonic identity for display/power sleep transactions. Zero is
@@ -216,6 +230,7 @@ pub(super) struct Daemon {
     pub(super) next_sleep_epoch: AtomicU64,
     sleep_transaction: sleep::SleepTransaction,
     pub(super) launch_interrupt_epoch: Arc<AtomicU64>,
+    #[cfg(test)]
     pub(super) manager_repair_pending: AtomicBool,
     pub(super) domain_recovery_pending: AtomicBool,
 }

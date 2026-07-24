@@ -23,6 +23,7 @@ done < <(find scripts native/appload-runtime -type f -print0)
 sh tests/test-deployment-safety.sh
 sh tests/test-koreader-adapter-inventory.sh
 sh tests/test-lock-acceptance-inventory.sh
+sh tests/test-app-failure-bridge.sh
 sh tests/test-device-test-isolation.sh
 sh tests/test-magicpaper-config-isolation.sh
 sh tests/test-magicpaper-data-migrate.sh

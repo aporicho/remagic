@@ -28,14 +28,6 @@ struct Envelope<'a, T: Serialize> {
 }
 
 #[derive(Serialize)]
-pub(super) struct WireRect {
-    pub(super) x: i32,
-    pub(super) y: i32,
-    pub(super) width: i32,
-    pub(super) height: i32,
-}
-
-#[derive(Serialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub(super) enum Command {
     Status,
@@ -69,7 +61,6 @@ pub(super) enum Command {
         generation: u64,
         foreground_epoch: u64,
         sleep_epoch: u64,
-        unlock_region: WireRect,
     },
     CancelLock {
         sleep_epoch: u64,

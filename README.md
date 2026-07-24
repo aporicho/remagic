@@ -76,6 +76,13 @@ migrator；失败、超时或断电不会提交 schema。暂停先要求应用�
 `/home/root/.config/remagic/home.toml`，壁纸位于
 `/home/root/.local/share/remagic/wallpapers/`。
 
+ReMagic 默认在 2 分钟无笔、无触摸、无按键且没有有限工作租约时自动锁屏并进入
+深度休眠；设置页可选 1、2、5、10、30 分钟或关闭自动休眠。电源键与原始输入采用
+内核事件唤醒，MagicPaper 定时任务只在任务文件变化或精确到期时唤醒。插着 USB
+电源时，内核的 `udev.charger` wake lock 会阻止深度休眠，这是设备平台的预期行为：
+ReMagic 将其显示为 `externally_blocked / charger`，保留已提交锁屏，拔线且外部锁消失
+后自动重试，不把“正在充电”误报成休眠故障。
+
 ## 安装与更新
 
 Linux 或 macOS 通过 USB 连接设备后运行：
@@ -100,6 +107,13 @@ curl -fsSL https://raw.githubusercontent.com/aporicho/remagic/main/install.sh | 
 两条入口还支持 `pull REMOTE LOCAL`；`install` 安装最新正式版，`deploy` 部署当前
 源码；省略子命令时等同于 `ssh`。连接底层固定绑定各自
 USB 物理接口，并在执行前核验 Ferrari/Chiappa 身份，避免同 IP 双机部署错位。
+
+可以随时读取电源状态与自动休眠截止时间：
+
+```sh
+./scripts/paper-pro ssh /home/root/apps/remagic/bin/remagicctl power
+./scripts/paper-pro-move ssh /home/root/apps/remagic/bin/remagicctl set-idle-suspend 120
+```
 
 主机脚本自动识别 Paper Pro / Paper Pro Move、验证 3.27.x、下载并校验 release，
 再通过 SSH 传入设备。设备安装器会：
@@ -192,6 +206,22 @@ ssh -F /dev/null root@10.11.99.1 /home/root/apps/remagic/share/testing/device-lo
 surface fence、完整刷新计数、进程/cgroup/显示宿主故障恢复与 suspend/resume。
 正式 stable 发布必须在 Ferrari 和 Chiappa 两台实机均通过；只有一台设备时只能发布
 预发布版本。
+
+功耗验收必须跨越一次真实的无 USB 区间，不能用“插线等待”代替。两台设备分别执行：
+
+```sh
+./scripts/paper-pro power-audit-begin
+# 拔线，实际使用 MagicPaper 与 KOReader，随后静置超过自动休眠时间，再插线
+./scripts/paper-pro power-audit-collect
+
+./scripts/paper-pro-move power-audit-begin
+# 同样拔线使用、静置、再插线
+./scripts/paper-pro-move power-audit-collect
+```
+
+报告会比较 suspend 成功计数、各服务 CPU 时间和重启次数，并完整输出 ReMagic、
+MagicPaper、KOReader、内核休眠/唤醒日志；重新插线后的 `udev.charger` 只作为当前充电
+状态记录，不会否定此前已经发生的深度休眠。
 
 紧急恢复：
 

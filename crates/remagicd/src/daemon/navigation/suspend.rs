@@ -2,9 +2,10 @@ use super::super::{sleep, Daemon, Event, QueuedEvent, RequestFence};
 use crate::display_host;
 use remagic_core::{DomainState, Transition};
 use sleep::SleepPhase;
+use std::fs;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tracing::info;
+use tracing::{info, warn};
 
 const LOCK_AWAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -29,12 +30,14 @@ impl Daemon {
                 )
                 .await;
         }
+        self.power.suspended().await;
         let suspend_result = self.controller.suspend().await;
         // The managed owner must be awake-locked again before any display or
         // input recovery work is attempted.
         let wakelock_result = self.controller.acquire_wakelock();
 
         if let Err(error) = suspend_result {
+            self.power.externally_blocked(&error).await;
             let guard_result = self.cancel_wake_guard().await;
             if let Err(wakelock_error) = wakelock_result {
                 return Err(format!("{error}; wake-lock recovery: {wakelock_error}"));
@@ -42,6 +45,7 @@ impl Daemon {
             if let Err(guard_error) = guard_result {
                 return Err(format!("{error}; wake-key recovery: {guard_error}"));
             }
+            self.schedule_blocked_resuspend(self.sleep_transaction.snapshot(), interaction_epoch);
             // The lock page and input fence were already committed. A power
             // inhibitor is not permission to expose Home again: retain the
             // retryable Sleeping domain and let the explicit lock-page button
@@ -103,6 +107,7 @@ impl Daemon {
         if let Err(error) = self.sleep_transaction.mark_locked(sleep_epoch) {
             return self.rollback_sleep(sleep_epoch, error).await;
         }
+        self.power.begin_suspend().await;
         Ok((sleep_epoch, interaction_epoch))
     }
 
@@ -142,9 +147,20 @@ impl Daemon {
             self.cancel_wake_guard().await?;
             return Ok(());
         }
+        self.power.suspended().await;
         let suspend_result = self.controller.suspend().await;
         let wakelock_result = self.controller.acquire_wakelock();
         let guard_result = self.resume_wake_guard().await;
+        if let Err(suspend_error) = &suspend_result {
+            self.power.externally_blocked(suspend_error).await;
+            if wakelock_result.is_ok() && guard_result.is_ok() {
+                self.schedule_blocked_resuspend(
+                    self.sleep_transaction.snapshot(),
+                    interaction_epoch,
+                );
+                return Err(sleep::retained_lock_error(suspend_error));
+            }
+        }
         let mut failures = Vec::new();
         for (stage, result) in [
             ("suspend", suspend_result),
@@ -180,7 +196,27 @@ impl Daemon {
         }
         let awake = self.sleep_transaction.mark_awake(sleep_epoch)?;
         self.schedule_locked_resuspend(awake);
+        self.notify_home_resume().await;
         Ok(())
+    }
+
+    async fn notify_home_resume(&self) {
+        let result = async {
+            let socket = tokio::net::UnixDatagram::unbound()
+                .map_err(|error| format!("cannot create Home resume socket: {error}"))?;
+            socket
+                .send_to(b"resume_unlock\n", super::super::HOME_EVENT_SOCKET)
+                .await
+                .map_err(|error| format!("cannot notify Home after resume: {error}"))?;
+            Ok::<(), String>(())
+        }
+        .await;
+        if let Err(error) = result {
+            // The panel remains safely locked and the visible unlock region
+            // is still available. Notification loss is recoverable UI state,
+            // not a reason to tear down the managed domain.
+            warn!(%error, "Home resume notification was lost");
+        }
     }
 
     fn schedule_locked_resuspend(&self, sleep: sleep::SleepSnapshot) {
@@ -202,6 +238,36 @@ impl Daemon {
                     &launch_interrupt_epoch,
                 ))
                 .await;
+        });
+    }
+
+    /// A charger wake lock is expected while USB power is attached. Keep the
+    /// lock page committed and retry only after every external blocker has
+    /// disappeared. The interaction epoch cancels this observer immediately
+    /// when the user unlocks, restores stock, or starts another transition.
+    fn schedule_blocked_resuspend(&self, sleep: sleep::SleepSnapshot, interaction_epoch: u64) {
+        let events = self.events.clone();
+        let launch_interrupt_epoch = self.launch_interrupt_epoch.clone();
+        tokio::spawn(async move {
+            loop {
+                if launch_interrupt_epoch.load(Ordering::Acquire) != interaction_epoch {
+                    return;
+                }
+                if external_wake_locks_are_clear() {
+                    let _ = events
+                        .send(QueuedEvent::unattended(
+                            Event::Resuspend {
+                                sleep_epoch: sleep.epoch,
+                                sleep_revision: sleep.revision,
+                                interaction_epoch,
+                            },
+                            &launch_interrupt_epoch,
+                        ))
+                        .await;
+                    return;
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
         });
     }
 
@@ -260,6 +326,7 @@ impl Daemon {
             .apply(Transition::Wake)
             .map_err(|error| error.to_string())?;
         self.sleep_transaction.finish_unlock(sleep_epoch)?;
+        self.power.resumed("power key").await;
         Ok(())
     }
 
@@ -328,6 +395,29 @@ impl Daemon {
             .apply(Transition::Wake)
             .map_err(|error| error.to_string())?;
         self.sleep_transaction.finish_unlock(sleep_epoch)?;
+        self.power.cancel_quiescing("sleep rollback").await;
         Err(cause)
+    }
+}
+
+fn external_wake_locks_are_clear() -> bool {
+    fs::read_to_string("/sys/power/wake_lock").is_ok_and(|value| wake_lock_text_is_clear(&value))
+}
+
+fn wake_lock_text_is_clear(value: &str) -> bool {
+    value
+        .split_whitespace()
+        .all(|owner| owner == "remagic-managed")
+}
+
+#[cfg(test)]
+mod power_tests {
+    use super::wake_lock_text_is_clear;
+
+    #[test]
+    fn blocked_retry_waits_for_the_charger_to_disappear() {
+        assert!(!wake_lock_text_is_clear("remagic-managed udev.charger"));
+        assert!(wake_lock_text_is_clear("remagic-managed"));
+        assert!(wake_lock_text_is_clear(""));
     }
 }

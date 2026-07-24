@@ -1,5 +1,6 @@
 mod display;
 mod first_run;
+mod home_events;
 mod release;
 mod settings;
 mod settings_ui;
@@ -10,7 +11,6 @@ use display::Display;
 use remagic_core::{AppId, DomainState};
 use remagic_protocol::{AppView, Request};
 use settings::{HomeSettings, WallpaperOption};
-use std::fs;
 use std::time::Duration;
 
 #[derive(Clone)]
@@ -25,14 +25,14 @@ pub(super) enum Action {
     Unavailable,
     System,
     Sleep,
-    Wake,
     OpenSettings,
     BackManager,
     BackSettings,
-    CycleWallpaper,
+    OpenWallpaperBrowser,
+    SelectWallpaper(String),
+    WallpaperPage(i32),
     ToggleWallpaperFit,
-    ToggleLockClock,
-    ToggleLockHint,
+    CycleAutoSleep,
     PreviewLock,
 }
 
@@ -41,6 +41,7 @@ enum UiMode {
     Welcome,
     Manager,
     Settings,
+    WallpaperBrowser,
     Store,
     LockPreview,
     Locked,
@@ -60,33 +61,61 @@ pub(super) async fn run(mut apps: Vec<AppView>) -> Result<(), Box<dyn std::error
     let mut settings = HomeSettings::load();
     let mut wallpapers = settings::wallpapers();
     let mut display = Display::open()?;
+    let home_events = home_events::Receiver::bind()?;
     let font = display::load_font()?;
-    let mut mode = if matches!(domain_state().await?, DomainState::Sleeping) {
-        UiMode::Locked
-    } else if first_run::pending() {
-        UiMode::Welcome
-    } else {
-        UiMode::Manager
-    };
-    let mut buttons = match mode {
-        UiMode::Welcome => {
-            let device = remagic_device::DeviceProfile::detect()?;
-            let name = match device.product {
-                remagic_device::DeviceProduct::PaperPro => "reMarkable Paper Pro",
-                remagic_device::DeviceProduct::PaperProMove => "reMarkable Paper Pro Move",
-            };
-            display.render_welcome(&font, name)?
-        }
-        UiMode::Manager => display.render(&font, &apps)?,
-        UiMode::Locked => display.render_locked(&font, &settings, &wallpapers, false)?,
-        UiMode::Settings | UiMode::Store | UiMode::LockPreview => unreachable!(),
-    };
+    let (mut mode, mut buttons) =
+        initial_page(&mut display, &font, &apps, &settings, &wallpapers).await?;
     let mut pressed: Option<(Button, Vec<u32>)> = None;
     let mut store_error: Option<String> = None;
     let mut store_catalog = Vec::new();
     let mut system_update = store::SystemUpdateInfo::default();
-    let mut last_lock_poll = tokio::time::Instant::now();
+    let mut wallpaper_page = 0_usize;
     loop {
+        for event in home_events.drain()? {
+            match event {
+                home_events::Event::AutoSleep if mode != UiMode::Locked => {
+                    pressed = None;
+                    let mut context = release::Context {
+                        display: &mut display,
+                        font: &font,
+                        apps: &mut apps,
+                        buttons: &mut buttons,
+                        mode: &mut mode,
+                        settings: &mut settings,
+                        wallpapers: &mut wallpapers,
+                        store_error: &mut store_error,
+                        store_catalog: &mut store_catalog,
+                        system_update: &mut system_update,
+                        wallpaper_page: &mut wallpaper_page,
+                    };
+                    release::sleep(&mut context).await?;
+                }
+                home_events::Event::AutoSleep => {}
+                home_events::Event::ResumeUnlock if mode == UiMode::Locked => {
+                    pressed = None;
+                    unlock(
+                        &mut display,
+                        &font,
+                        &mut apps,
+                        &mut buttons,
+                        &mut mode,
+                        &settings,
+                        &wallpapers,
+                    )
+                    .await?;
+                }
+                home_events::Event::ResumeUnlock => {}
+                home_events::Event::WallpapersChanged => settings_ui::wallpapers_changed(
+                    &mut display,
+                    &font,
+                    &mut buttons,
+                    mode,
+                    &settings,
+                    &mut wallpapers,
+                    &mut wallpaper_page,
+                )?,
+            }
+        }
         for event in display.poll_touch_events()? {
             match event {
                 crate::qtfb::TouchEvent::Press { x, y } => {
@@ -105,6 +134,7 @@ pub(super) async fn run(mut apps: Vec<AppView>) -> Result<(), Box<dyn std::error
                             store_error: &mut store_error,
                             store_catalog: &mut store_catalog,
                             system_update: &mut system_update,
+                            wallpaper_page: &mut wallpaper_page,
                         },
                         &mut pressed,
                         x,
@@ -114,30 +144,46 @@ pub(super) async fn run(mut apps: Vec<AppView>) -> Result<(), Box<dyn std::error
                 }
             }
         }
-        if mode == UiMode::Locked && last_lock_poll.elapsed() >= Duration::from_millis(300) {
-            let previous_mode = mode;
-            reconcile_mode(
-                &mut display,
-                &font,
-                &mut apps,
-                &mut buttons,
-                &mut mode,
-                &settings,
-                &wallpapers,
-            )
-            .await?;
-            if mode != previous_mode {
-                pressed = None;
-            }
-            last_lock_poll = tokio::time::Instant::now();
-        }
-        let wait = if mode == UiMode::Locked {
-            Duration::from_millis(300).saturating_sub(last_lock_poll.elapsed())
-        } else {
-            Duration::from_millis(500)
-        };
-        display.wait_for_input(wait.max(Duration::from_millis(1)))?;
+        home_events.wait_with_input(display.input_fd(), None)?;
     }
+}
+
+async fn initial_page(
+    display: &mut Display,
+    font: &ab_glyph::FontArc,
+    apps: &[AppView],
+    settings: &HomeSettings,
+    wallpapers: &[WallpaperOption],
+) -> Result<(UiMode, Vec<Button>), Box<dyn std::error::Error>> {
+    let domain = domain_state().await?;
+    let mode = if matches!(&domain, DomainState::Sleeping) {
+        UiMode::Locked
+    } else if first_run::pending() {
+        UiMode::Welcome
+    } else {
+        UiMode::Manager
+    };
+    let buttons = match mode {
+        UiMode::Welcome => {
+            let device = remagic_device::DeviceProfile::detect()?;
+            let name = match device.product {
+                remagic_device::DeviceProduct::PaperPro => "reMarkable Paper Pro",
+                remagic_device::DeviceProduct::PaperProMove => "reMarkable Paper Pro Move",
+            };
+            display.render_welcome(font, name)?
+        }
+        UiMode::Manager => display.render(font, apps)?,
+        UiMode::Locked => display.render_locked(font, settings, wallpapers, false)?,
+        UiMode::Settings | UiMode::WallpaperBrowser | UiMode::Store | UiMode::LockPreview => {
+            unreachable!()
+        }
+    };
+    // A restarted Home commits a new surface and then requests one idempotent
+    // foreground transaction; no periodic supervisor polling is required.
+    if matches!(&domain, DomainState::Manager) {
+        request(Request::OpenManager).await?;
+    }
+    Ok((mode, buttons))
 }
 
 fn persist_settings(settings: &HomeSettings) {
@@ -228,19 +274,19 @@ async fn execute_action(
         Action::Unavailable => Ok(()),
         Action::System => request(Request::ReturnSystem).await,
         Action::Sleep => Err("sleep must render and fence the lock page first".into()),
-        Action::Wake => Err("wake must prepare and fence the manager page first".into()),
         Action::OpenSettings
         | Action::BackManager
         | Action::BackSettings
+        | Action::OpenWallpaperBrowser
+        | Action::SelectWallpaper(_)
+        | Action::WallpaperPage(_)
         | Action::OpenStore
         | Action::StoreInstall(_)
         | Action::StoreUpgrade(_)
         | Action::StoreUninstall(_)
         | Action::SystemUpdate
-        | Action::CycleWallpaper
         | Action::ToggleWallpaperFit
-        | Action::ToggleLockClock
-        | Action::ToggleLockHint
+        | Action::CycleAutoSleep
         | Action::PreviewLock => Err("settings actions must stay inside Home".into()),
     }
 }
@@ -318,11 +364,6 @@ fn button_contains(button: &Button, x: i32, y: i32) -> bool {
 
 fn button_at(buttons: &[Button], x: i32, y: i32) -> Option<&Button> {
     buttons.iter().find(|button| button_contains(button, x, y))
-}
-
-pub(super) fn queued_magicpaper_result() -> bool {
-    fs::metadata("/home/root/.local/share/magicpaper/agent/pending.tsv")
-        .is_ok_and(|metadata| metadata.len() > 0)
 }
 
 #[cfg(test)]

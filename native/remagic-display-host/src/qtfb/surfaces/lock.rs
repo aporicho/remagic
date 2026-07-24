@@ -1,5 +1,4 @@
 use super::HostState;
-use crate::geometry::Rect;
 use crate::panel::PanelCommand;
 use crate::qtfb::state::{ForegroundLease, LockLease};
 use std::io;
@@ -13,7 +12,6 @@ impl HostState {
         generation: u64,
         epoch: u64,
         sleep_epoch: u64,
-        unlock_region: Rect,
     ) -> io::Result<()> {
         if sleep_epoch == 0 {
             return Err(io::Error::new(
@@ -33,7 +31,6 @@ impl HostState {
                 && current.foreground.key == key
                 && current.foreground.generation == generation
                 && current.foreground.epoch == epoch
-                && current.unlock_region == unlock_region
             {
                 return Ok(());
             }
@@ -55,7 +52,6 @@ impl HostState {
             ));
         }
         self.validate_foreground_fence(key, generation, epoch)?;
-        self.validate_unlock_region(key, unlock_region)?;
         let foreground = ForegroundLease {
             key,
             generation,
@@ -73,26 +69,7 @@ impl HostState {
         *self.lock.lock().unwrap() = Some(LockLease {
             sleep_epoch,
             foreground,
-            unlock_region,
         });
-        self.lock_touches.lock().unwrap().clear();
-        Ok(())
-    }
-
-    fn validate_unlock_region(&self, key: i32, unlock_region: Rect) -> io::Result<()> {
-        let surfaces = self.surfaces.lock().unwrap();
-        let surface = &surfaces
-            .get(&key)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "lock surface disappeared"))?
-            .surface;
-        if unlock_region.is_empty()
-            || unlock_region.clip(surface.width, surface.height) != unlock_region
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "unlock region is outside the lock surface",
-            ));
-        }
         Ok(())
     }
 

@@ -5,6 +5,7 @@ Wants=remagic-agentd.socket
 BindsTo=remagic-display-host.service
 After=remagicd.service remagic-display-host.service remagic-agentd.socket
 ConditionPathExists=/run/remagic/managed-domain
+OnFailure=remagic-app-failed@%i.service
 
 [Service]
 Type=simple

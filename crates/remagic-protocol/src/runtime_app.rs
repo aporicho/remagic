@@ -5,7 +5,7 @@
 //! scoped foreground requests such as opening another app or changing their
 //! direct-ink input mode.
 
-use remagic_core::{AppId, AppToken};
+use remagic_core::{AppId, AppToken, ResourceLease, WorkClass};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -51,6 +51,16 @@ pub enum RuntimeAppCommand {
         token: AppToken,
         mode: InputMode,
     },
+    BeginWork {
+        class: WorkClass,
+        reason: String,
+        requested_ms: u64,
+    },
+    FinishWork {
+        lease_id: u64,
+        #[serde(default)]
+        visible_result: bool,
+    },
 }
 
 /// A single response shape keeps the legacy `open_app` acknowledgement byte
@@ -69,6 +79,8 @@ pub struct RuntimeAppReply {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ink_enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease: Option<ResourceLease>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
@@ -81,6 +93,7 @@ impl RuntimeAppReply {
             mode: None,
             token: None,
             ink_enabled: None,
+            lease: None,
             error: None,
         }
     }
@@ -98,6 +111,33 @@ impl RuntimeAppReply {
             mode: Some(mode),
             token: Some(token),
             ink_enabled: Some(ink_enabled),
+            lease: None,
+            error: None,
+        }
+    }
+
+    pub fn work_accepted(request_id: String, lease: ResourceLease) -> Self {
+        Self {
+            ok: true,
+            status: Some("accepted".into()),
+            request_id: Some(request_id),
+            mode: None,
+            token: None,
+            ink_enabled: None,
+            lease: Some(lease),
+            error: None,
+        }
+    }
+
+    pub fn work_finished(request_id: String) -> Self {
+        Self {
+            ok: true,
+            status: Some("finished".into()),
+            request_id: Some(request_id),
+            mode: None,
+            token: None,
+            ink_enabled: None,
+            lease: None,
             error: None,
         }
     }
@@ -110,6 +150,7 @@ impl RuntimeAppReply {
             mode: None,
             token: None,
             ink_enabled: None,
+            lease: None,
             error: Some(error.into()),
         }
     }
@@ -215,5 +256,32 @@ mod tests {
                 "error": "not foreground",
             })
         );
+    }
+
+    #[test]
+    fn finite_work_lease_commands_are_versioned_and_bounded_by_the_manager() {
+        let begin: RuntimeAppRequest = serde_json::from_str(
+            r#"{"version":2,"request_id":"work-1","command":"begin_work","class":"agent_turn","reason":"scheduled task","requested_ms":180000}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            begin.command,
+            RuntimeAppCommand::BeginWork {
+                class: WorkClass::AgentTurn,
+                requested_ms: 180_000,
+                ..
+            }
+        ));
+        let finish: RuntimeAppRequest = serde_json::from_str(
+            r#"{"version":2,"request_id":"work-2","command":"finish_work","lease_id":7,"visible_result":false}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            finish.command,
+            RuntimeAppCommand::FinishWork {
+                lease_id: 7,
+                visible_result: false,
+            }
+        ));
     }
 }

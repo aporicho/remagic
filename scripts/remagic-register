@@ -17,6 +17,7 @@ UNITS='remagicd.service
 remagic-display-host.service
 remagic-home.service
 remagic-app@.service
+remagic-app-failed@.service
 remagic-recover.service
 remagic-agentd.service
 remagic-agentd.socket'

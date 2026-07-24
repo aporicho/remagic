@@ -123,7 +123,7 @@ fn accept_loop(
             events: libc::POLLIN,
             revents: 0,
         };
-        if unsafe { libc::poll(&mut descriptor, 1, 100) } <= 0 {
+        if unsafe { libc::poll(&mut descriptor, 1, -1) } <= 0 {
             continue;
         }
         let fd = unsafe {

@@ -20,6 +20,15 @@ pub struct ClickTracker {
 }
 
 impl ClickTracker {
+    pub fn next_deadline(&self) -> Option<Instant> {
+        let held = self.down_since.map(|start| start + LONG_PRESS);
+        match (held, self.deadline) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
+            (None, None) => None,
+        }
+    }
+
     pub fn press(&mut self, now: Instant) {
         self.down_since.get_or_insert(now);
     }

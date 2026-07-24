@@ -88,6 +88,14 @@ fn parse_v2(args: &[String]) -> Result<Option<ControlIntent>, Box<dyn std::error
     };
     let intent = match command {
         "snapshot" => ControlIntent::Snapshot,
+        "power" => ControlIntent::PowerSnapshot,
+        "set-idle-suspend" => ControlIntent::SetIdleSuspend {
+            seconds: args
+                .get(1)
+                .ok_or("set-idle-suspend requires seconds")?
+                .parse()
+                .map_err(|_| "set-idle-suspend seconds must be an unsigned integer")?,
+        },
         "preflight" => ControlIntent::Preflight {
             app_id: AppId::new(args.get(1).ok_or("preflight requires an app id")?.clone())?,
         },

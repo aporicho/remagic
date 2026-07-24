@@ -91,7 +91,7 @@ impl Display {
             height: 72,
             action: Action::BackManager,
         };
-        self.round_rect(back.x, back.y, back.width, back.height, GRAY);
+        self.rect(back.x, back.y, back.width, back.height, GRAY);
         self.text(font, "返回", 28.0, back.x + 42, 84, BLACK);
         buttons.push(back);
 
@@ -196,7 +196,7 @@ impl Display {
             height: 48,
             action: Action::StoreUninstall(app_id.to_owned()),
         };
-        self.round_rect(remove.x, remove.y, remove.width, remove.height, GRAY);
+        self.rect(remove.x, remove.y, remove.width, remove.height, GRAY);
         self.text(font, "卸载", 22.0, remove.x + 40, remove.y + 33, BLACK);
         buttons.push(remove);
     }

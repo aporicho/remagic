@@ -1,6 +1,6 @@
 use super::*;
 use crate::display_host;
-use remagic_core::{DomainState, Transition};
+use remagic_core::{DomainState, PresentationState, Transition};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tracing::warn;
@@ -70,7 +70,9 @@ impl Daemon {
             .write()
             .await
             .apply(Transition::ManagedReady)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        self.power.enter_managed().await;
+        Ok(())
     }
 
     pub(super) async fn open_manager(&self) -> Result<(), String> {
@@ -119,7 +121,9 @@ impl Daemon {
             .write()
             .await
             .apply(Transition::SystemReady)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        self.power.enter_stock().await;
+        Ok(())
     }
 
     async fn stop_managed_apps(&self) -> Result<(), String> {
@@ -201,7 +205,9 @@ impl Daemon {
             self.allocate_foreground_epoch(),
             full_refresh,
         )
-        .await
+        .await?;
+        self.power.set_presentation(PresentationState::Home).await;
+        Ok(())
     }
 
     pub(super) async fn ensure_manager_surface(&self) -> Result<(), String> {

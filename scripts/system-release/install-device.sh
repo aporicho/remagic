@@ -45,6 +45,7 @@ STORE_BUNDLE=$SOURCE_DIR/$store_package
 PI_RUNTIME=$PAYLOAD/runtime/pi
 [ -x "$PAYLOAD/bin/remagicd" ] && \
     [ -x "$PAYLOAD/bin/remagic-agentd" ] && \
+    [ -x "$PAYLOAD/bin/curl" ] && \
     [ -x "$PI_RUNTIME/bin/node" ] && [ ! -L "$PI_RUNTIME/bin/node" ] && \
     [ -x "$PI_RUNTIME/bin/pi" ] && [ ! -L "$PI_RUNTIME/bin/pi" ] && \
     [ -f "$PI_RUNTIME/extensions/remagic-tools.js" ] && \
@@ -89,6 +90,7 @@ FIRST_INSTALL=false
 ROOT_WRITABLE=false
 ROOT_WAS_RO=false
 LEGACY_AGENT_WAS_ACTIVE=false
+RECOVERY_MASKED=false
 
 case ",$(awk '$2 == "/" { print $4; exit }' /proc/mounts)," in
     *,ro,*) ROOT_WAS_RO=true ;;
@@ -128,6 +130,7 @@ restore_snapshot() {
         /home/root/apps/remagic-store|\
         /home/root/.local/share/remagic/apps.d/*.toml|\
         /home/root/.local/state/remagic/packages/remagic-store.json|\
+        /usr/local/bin/curl|\
         /usr/lib/systemd/system/remagic*.service|\
         /usr/lib/systemd/system/remagic*.socket|\
         /usr/lib/systemd/system/remagic-app@koreader.service.d/10-koreader-runtime.conf|\
@@ -157,6 +160,44 @@ restore_stock() {
     systemctl start paperweight.service >/dev/null 2>&1 || true
 }
 
+mask_recovery_for_update() {
+    systemctl mask --runtime remagic-recover.service >/dev/null
+    RECOVERY_MASKED=true
+}
+
+unmask_recovery_after_update() {
+    [ "$RECOVERY_MASKED" = true ] || return 0
+    systemctl unmask --runtime remagic-recover.service >/dev/null
+    RECOVERY_MASKED=false
+}
+
+publish_curl_command() {
+    command_path=/usr/local/bin/curl
+    command_target=$APP_ROOT/bin/curl
+    make_root_writable
+    mkdir -p "$(dirname "$command_path")"
+    if [ -e "$command_path" ] || [ -L "$command_path" ]; then
+        if [ -L "$command_path" ] && [ "$(readlink "$command_path")" = "$command_target" ]; then
+            :
+        elif [ -x "$command_path" ]; then
+            # Preserve an existing working curl supplied by the user or OS.
+            return 0
+        else
+            echo "ReMagic: refusing to replace unusable existing $command_path" >&2
+            return 1
+        fi
+    else
+        command_new=$(dirname "$command_path")/.remagic-curl.$$.new
+        rm -f "$command_new"
+        ln -s "$command_target" "$command_new"
+        mv -f "$command_new" "$command_path"
+    fi
+    [ -x "$command_path" ] || {
+        echo "ReMagic: curl command registration is not executable" >&2
+        return 1
+    }
+}
+
 rollback() {
     systemctl stop remagic-agentd.service remagic-agentd.socket >/dev/null 2>&1 || true
     systemctl stop remagicd.service >/dev/null 2>&1 || true
@@ -166,6 +207,7 @@ rollback() {
     fi
     restore_snapshots || true
     restore_stock
+    unmask_recovery_after_update || true
     if [ -x "$APP_ROOT/libexec/remagic-register" ]; then
         "$APP_ROOT/libexec/remagic-register" --persistent >/dev/null 2>&1 || true
     fi
@@ -202,12 +244,14 @@ for entry in \
     'store-app:/home/root/apps/remagic-store' \
     'store-manifest:/home/root/.local/share/remagic/apps.d/remagic-store.toml' \
     'store-state:/home/root/.local/state/remagic/packages/remagic-store.json' \
+    'host-curl:/usr/local/bin/curl' \
     'magicpaper-manifest:/home/root/.local/share/remagic/apps.d/magicpaper.toml' \
     'koreader-manifest:/home/root/.local/share/remagic/apps.d/koreader.toml' \
     'unit-daemon:/usr/lib/systemd/system/remagicd.service' \
     'unit-display:/usr/lib/systemd/system/remagic-display-host.service' \
     'unit-home:/usr/lib/systemd/system/remagic-home.service' \
     'unit-app:/usr/lib/systemd/system/remagic-app@.service' \
+    'unit-app-failed:/usr/lib/systemd/system/remagic-app-failed@.service' \
     'unit-recover:/usr/lib/systemd/system/remagic-recover.service' \
     'unit-agent:/usr/lib/systemd/system/remagic-agentd.service' \
     'unit-agent-socket:/usr/lib/systemd/system/remagic-agentd.socket' \
@@ -228,8 +272,12 @@ cp -a "$PAYLOAD/." "$STAGE/"
 chown -R 0:0 "$STAGE"
 (cd "$STAGE" && sha256sum -c share/system-files.sha256 >/dev/null)
 
-# Stop only ReMagic ownership. Stock xochitl and Paperweight are restored
-# before files move, so a failed installer never leaves a blank panel.
+# Complete the serialized stock handoff while the display host and foreground
+# application still exist.  During the following planned stop the installer is
+# the recovery owner, so suppress OnFailure's independent recovery job until
+# the new units and files have been published.
+prepare_remagic_for_update "$APP_ROOT/bin/remagicctl"
+mask_recovery_for_update
 systemctl stop remagic-agentd.service remagic-agentd.socket >/dev/null 2>&1 || true
 systemctl stop remagicd.service >/dev/null 2>&1 || true
 restore_stock
@@ -287,12 +335,14 @@ fi
 # daemon-reload follows links into the replaced system tree. A rollback uses
 # the restored release's register helper to republish and restart it.
 make_root_writable
+publish_curl_command
 systemctl disable magicpaper-agent.service >/dev/null 2>&1 || true
 rm -f /run/systemd/system/magicpaper-agent.service \
     /run/systemd/system/multi-user.target.wants/magicpaper-agent.service \
     /usr/lib/systemd/system/magicpaper-agent.service \
     /usr/lib/systemd/system/multi-user.target.wants/magicpaper-agent.service
 systemctl daemon-reload
+unmask_recovery_after_update
 
 "$APP_ROOT/libexec/remagic-register" --persistent
 wait_for_remagic_ready "$APP_ROOT/bin/remagicctl"

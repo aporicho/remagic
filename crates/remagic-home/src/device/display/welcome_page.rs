@@ -24,11 +24,11 @@ impl Display {
         let x = (self.width - width) / 2;
         let height = 118;
         let store_y = self.height / 2 - 42;
-        self.round_rect(x, store_y, width, height, BLACK);
+        self.rect(x, store_y, width, height, BLACK);
         self.centered_text(font, "打开应用商店", 38.0, store_y + 75, WHITE);
 
         let system_y = store_y + height + 34;
-        self.round_rect(x, system_y, width, height, GRAY);
+        self.rect(x, system_y, width, height, GRAY);
         self.centered_text(font, "返回原版系统", 36.0, system_y + 74, BLACK);
 
         self.centered_text(

@@ -34,6 +34,7 @@ struct InputAbsInfo {
 
 pub struct InputThreads {
     stop: Arc<AtomicBool>,
+    stop_event: Arc<StopEvent>,
     failed: Arc<AtomicBool>,
     handles: Vec<std::thread::JoinHandle<()>>,
 }
@@ -48,12 +49,14 @@ impl InputThreads {
         let marker = find_input_device("Elan marker input")?;
         let touch = find_input_device("Elan touch input")?;
         let stop = Arc::new(AtomicBool::new(false));
+        let stop_event = Arc::new(StopEvent::new()?);
         let failed = Arc::new(AtomicBool::new(false));
         let marker_stop = Arc::clone(&stop);
         let marker_failed = Arc::clone(&failed);
         let marker_health_stop = Arc::clone(&stop);
         let marker_tx = tx.clone();
         let marker_epoch = Arc::clone(&input_epoch);
+        let marker_stop_event = Arc::clone(&stop_event);
         let marker_handle = std::thread::Builder::new()
             .name("remagic-marker".into())
             .spawn(move || {
@@ -64,6 +67,7 @@ impl InputThreads {
                     marker_stop,
                     marker_tx,
                     marker_epoch,
+                    marker_stop_event.as_raw_fd(),
                 ) {
                     eprintln!("remagic-display-host: marker input stopped: {error}");
                     if !marker_health_stop.load(Ordering::Acquire) {
@@ -74,6 +78,7 @@ impl InputThreads {
         let touch_stop = Arc::clone(&stop);
         let touch_failed = Arc::clone(&failed);
         let touch_health_stop = Arc::clone(&stop);
+        let touch_stop_event = Arc::clone(&stop_event);
         let touch_handle = std::thread::Builder::new()
             .name("remagic-touch".into())
             .spawn(move || {
@@ -84,6 +89,7 @@ impl InputThreads {
                     touch_stop,
                     tx,
                     input_epoch,
+                    touch_stop_event.as_raw_fd(),
                 ) {
                     eprintln!("remagic-display-host: touch input stopped: {error}");
                     if !touch_health_stop.load(Ordering::Acquire) {
@@ -93,6 +99,7 @@ impl InputThreads {
             })?;
         Ok(Self {
             stop,
+            stop_event,
             failed,
             handles: vec![marker_handle, touch_handle],
         })
@@ -106,6 +113,7 @@ impl InputThreads {
 impl Drop for InputThreads {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        self.stop_event.notify();
         for handle in self.handles.drain(..) {
             let _ = handle.join();
         }
@@ -145,6 +153,7 @@ fn run_marker(
     stop: Arc<AtomicBool>,
     tx: Sender<CapturedInput>,
     input_epoch: Arc<AtomicU64>,
+    stop_fd: RawFd,
 ) -> io::Result<()> {
     let fd = open_grabbed(path)?;
     let mut decoder = MarkerDecoder::new(
@@ -154,7 +163,7 @@ fn run_marker(
         query_axis(fd.as_raw_fd(), EVIOCGABS_Y, 0, 11960),
         query_axis(fd.as_raw_fd(), EVIOCGABS_PRESSURE, 0, 4096),
     );
-    read_events(fd.as_raw_fd(), stop, |event| {
+    read_events(fd.as_raw_fd(), stop_fd, stop, |event| {
         if let Some(frame) = decoder.consume(event) {
             let _ = tx.send(CapturedInput::capture(&input_epoch, InputFrame::Pen(frame)));
         }
@@ -168,6 +177,7 @@ fn run_touch(
     stop: Arc<AtomicBool>,
     tx: Sender<CapturedInput>,
     input_epoch: Arc<AtomicU64>,
+    stop_fd: RawFd,
 ) -> io::Result<()> {
     let fd = open_grabbed(path)?;
     let slot_range = query_axis(fd.as_raw_fd(), EVIOCGABS_MT_SLOT, 0, 9);
@@ -179,7 +189,7 @@ fn run_touch(
         query_axis(fd.as_raw_fd(), EVIOCGABS_MT_Y, 0, 2208),
         (slot_range.maximum - slot_range.minimum + 1).max(1) as usize,
     );
-    read_events(fd.as_raw_fd(), stop, |event| {
+    read_events(fd.as_raw_fd(), stop_fd, stop, |event| {
         let frames = decoder.consume(event);
         let epoch = input_epoch.load(Ordering::Acquire);
         for frame in frames {
@@ -233,6 +243,7 @@ fn query_axis(
 
 fn read_events(
     fd: RawFd,
+    stop_fd: RawFd,
     stop: Arc<AtomicBool>,
     mut consume: impl FnMut(RawEvent),
 ) -> io::Result<()> {
@@ -246,12 +257,19 @@ fn read_events(
         value: 0,
     }; 64];
     while !stop.load(Ordering::Acquire) {
-        let mut descriptor = libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let status = unsafe { libc::poll(&mut descriptor, 1, 100) };
+        let mut descriptors = [
+            libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: stop_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        let status = unsafe { libc::poll(descriptors.as_mut_ptr(), 2, -1) };
         if status < 0 {
             let error = io::Error::last_os_error();
             if error.kind() == io::ErrorKind::Interrupted {
@@ -261,6 +279,9 @@ fn read_events(
         }
         if status == 0 {
             continue;
+        }
+        if stop.load(Ordering::Acquire) {
+            break;
         }
         let bytes = unsafe {
             libc::read(
@@ -297,4 +318,27 @@ fn read_events(
     let _ = unsafe { libc::ioctl(fd, EVIOCGRAB, zero) };
     std::thread::sleep(Duration::from_millis(1));
     Ok(())
+}
+
+struct StopEvent(OwnedFd);
+
+impl StopEvent {
+    fn new() -> io::Result<Self> {
+        let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self(unsafe { OwnedFd::from_raw_fd(fd) }))
+    }
+
+    fn notify(&self) {
+        let value = 1_u64.to_ne_bytes();
+        let _ = unsafe { libc::write(self.0.as_raw_fd(), value.as_ptr().cast(), value.len()) };
+    }
+}
+
+impl AsRawFd for StopEvent {
+    fn as_raw_fd(&self) -> RawFd {
+        self.0.as_raw_fd()
+    }
 }

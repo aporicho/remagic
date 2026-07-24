@@ -182,12 +182,58 @@ remagic_test_wait_stock() {
     return 1
 }
 
+remagic_test_recover_lockless_journal() {
+    local owner state
+    [ ! -e "$REMAGIC_TEST_LOCK" ] || return 0
+    [ -e "$REMAGIC_TEST_ROOT" ] || [ -L "$REMAGIC_TEST_ROOT" ] || return 0
+    [ -d "$REMAGIC_TEST_ROOT" ] && [ ! -L "$REMAGIC_TEST_ROOT" ] || {
+        echo "acceptance isolation: unsafe lockless test root" >&2
+        return 1
+    }
+    owner=$(sed -n '1p' "$REMAGIC_TEST_ROOT/transaction/owner-pid" 2>/dev/null || true)
+    state=$(sed -n '1p' "$REMAGIC_TEST_ROOT/transaction/state" 2>/dev/null || true)
+    case $owner in
+        ''|*[!0-9]*|0|1)
+            echo "acceptance isolation: lockless journal has no provable owner" >&2
+            return 1
+            ;;
+        *) kill -0 "$owner" 2>/dev/null && {
+            echo "acceptance isolation: lockless journal owner is still alive" >&2
+            return 1
+        } ;;
+    esac
+    case $state in
+        prepared|sessions-saved|overrides-installing|overrides-installed|sessions-restored|finished|recovered) ;;
+        *) echo "acceptance isolation: lockless journal has an invalid state" >&2; return 1 ;;
+    esac
+    remagic_test_acquire_recovery_guard || return 1
+    if ! mkdir "$REMAGIC_TEST_LOCK" 2>/dev/null; then
+        remagic_test_release_recovery_guard || true
+        echo "acceptance isolation: another test won lockless recovery" >&2
+        return 1
+    fi
+    if ! printf '%s\n' "$owner" >"$REMAGIC_TEST_LOCK/pid" ||
+        ! printf '%s\n' "$REMAGIC_ACCEPTANCE_FORMAT" >"$REMAGIC_TEST_LOCK/format" ||
+        ! printf '%s\n' "$REMAGIC_TEST_ROOT" >"$REMAGIC_TEST_LOCK/test-root" ||
+        ! printf '%s\n' "$state" >"$REMAGIC_TEST_LOCK/state" || ! sync; then
+        remagic_test_release_recovery_guard || true
+        return 1
+    fi
+    remagic_acceptance_recover_orphan "$owner" || {
+        remagic_test_release_recovery_guard || true
+        echo "acceptance isolation: lockless transaction recovery failed" >&2
+        return 1
+    }
+    remagic_test_release_recovery_guard
+}
+
 remagic_test_lock() {
     local owner live
     if [ -e "$REMAGIC_INSTALL_LOCK" ]; then
         echo "acceptance isolation: an install transaction is present" >&2
         return 1
     fi
+    remagic_test_recover_lockless_journal || return 1
     if mkdir "$REMAGIC_TEST_LOCK" 2>/dev/null; then
         if ! printf '%s\n' "$$" >"$REMAGIC_TEST_LOCK/pid" ||
             ! printf '%s\n' "$REMAGIC_ACCEPTANCE_FORMAT" >"$REMAGIC_TEST_LOCK/format" ||
@@ -475,6 +521,7 @@ remagic_test_seed_data() {
         "$REMAGIC_TEST_ROOT/koreader/cache" \
         "$REMAGIC_TEST_ROOT/koreader/library-state" \
         "$REMAGIC_TEST_ROOT/koreader/source-library" \
+        "$REMAGIC_TEST_ROOT/koreader/local-books" \
         "$REMAGIC_TEST_ROOT/koreader/runtime" \
         "$REMAGIC_TEST_ROOT/koreader/empty-legacy" || return 1
     : >"$REMAGIC_TEST_ROOT/magicpaper/config/oracle.env" || return 1

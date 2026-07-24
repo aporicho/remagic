@@ -3,8 +3,8 @@
 
 use crate::{Envelope, PackageOperation};
 use remagic_core::{
-    AppId, AppInstance, AppKind, AppSession, Capability, DeviceProduct, PreflightReport,
-    RuntimeProfile, SupervisorState, SystemDomainState, UninstallPolicy,
+    AppId, AppInstance, AppKind, AppSession, Capability, DeviceProduct, PowerSnapshot,
+    PreflightReport, RuntimeProfile, SupervisorState, SystemDomainState, UninstallPolicy,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -18,6 +18,10 @@ pub type ControlEventEnvelope = Envelope<ControlEvent>;
 #[serde(tag = "intent", rename_all = "snake_case")]
 pub enum ControlIntent {
     Snapshot,
+    PowerSnapshot,
+    SetIdleSuspend {
+        seconds: u64,
+    },
     Subscribe {
         #[serde(default)]
         since_revision: Option<u64>,
@@ -75,6 +79,10 @@ pub enum ControlReply {
     },
     Snapshot {
         snapshot: SupervisorSnapshot,
+    },
+    Power {
+        snapshot: PowerSnapshot,
+        state_revision: u64,
     },
     Subscribed {
         state_revision: u64,
@@ -233,6 +241,8 @@ impl TryFrom<crate::Request> for ControlIntent {
         use crate::Request;
         Ok(match request {
             Request::Status | Request::ListApps => Self::Snapshot,
+            Request::PowerStatus => Self::PowerSnapshot,
+            Request::SetIdleSuspend { seconds } => Self::SetIdleSuspend { seconds },
             Request::ReloadManifests => Self::ReloadManifests,
             Request::OpenManager => Self::ShowHome,
             Request::ReturnSystem => Self::ReturnStock,

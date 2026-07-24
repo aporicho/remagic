@@ -1,5 +1,4 @@
-use super::{last_submission_sequence, protocol::request, status, Command, Snapshot, WireRect};
-use remagic_protocol::{LOCK_UNLOCK_HEIGHT, LOCK_UNLOCK_WIDTH, LOCK_UNLOCK_X, LOCK_UNLOCK_Y};
+use super::{last_submission_sequence, protocol::request, status, Command, Snapshot};
 use std::time::Duration;
 
 pub async fn show_lock(
@@ -15,12 +14,6 @@ pub async fn show_lock(
         generation,
         foreground_epoch,
         sleep_epoch,
-        unlock_region: WireRect {
-            x: LOCK_UNLOCK_X,
-            y: LOCK_UNLOCK_Y,
-            width: LOCK_UNLOCK_WIDTH,
-            height: LOCK_UNLOCK_HEIGHT,
-        },
     })
     .await?;
     // A retry after losing the first acknowledgement accepts the exact lock

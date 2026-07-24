@@ -26,7 +26,6 @@ impl ControlServer {
             Err(error) => return Err(error),
         }
         let listener = UnixListener::bind(&path)?;
-        listener.set_nonblocking(true)?;
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let thread_path = path.clone();
@@ -37,9 +36,6 @@ impl ControlServer {
                     match listener.accept() {
                         Ok((stream, _)) => {
                             let _ = handle(stream, &state);
-                        }
-                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(10));
                         }
                         Err(_) => break,
                     }
@@ -153,14 +149,7 @@ fn dispatch(
             generation,
             foreground_epoch,
             sleep_epoch,
-            unlock_region,
-        } => state.show_lock(
-            key,
-            generation,
-            foreground_epoch,
-            sleep_epoch,
-            unlock_region,
-        ),
+        } => state.show_lock(key, generation, foreground_epoch, sleep_epoch),
         DisplayControl::RefreshLock { sleep_epoch } => state.refresh_lock(sleep_epoch),
         DisplayControl::CancelLock {
             sleep_epoch,

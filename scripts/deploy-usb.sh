@@ -2,7 +2,10 @@
 set -euo pipefail
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-ARCHIVE="$ROOT/dist/remagic-aarch64.tar.gz"
+VERSION=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' \
+    "$ROOT/Cargo.toml" | head -n 1)
+PI_RUNTIME=${REMAGIC_PI_RUNTIME_DIR:-$ROOT/dist/pi-runtime}
+ARCHIVE="$ROOT/dist/system-release/remagic-system-$VERSION-universal-aarch64.tar.gz"
 CHECKSUM="$ARCHIVE.sha256"
 HOST=${REMAGIC_HOST:-10.11.99.1}
 USB_INTERFACE=${REMAGIC_USB_INTERFACE:-}
@@ -28,17 +31,21 @@ if [ -n "$USB_INTERFACE" ]; then
 fi
 
 if [ "${REMAGIC_SKIP_BUILD:-0}" != 1 ]; then
-    "$ROOT/scripts/build-bundle.sh"
+    if [ ! -x "$PI_RUNTIME/bin/node" ] || [ ! -x "$PI_RUNTIME/bin/pi" ] || \
+       [ ! -f "$PI_RUNTIME/runtime.env" ]; then
+        REMAGIC_PI_RUNTIME_OUT="$PI_RUNTIME" "$ROOT/scripts/build-pi-runtime.sh"
+    fi
+    REMAGIC_PI_RUNTIME_DIR="$PI_RUNTIME" "$ROOT/scripts/build-system-release.sh"
 elif [ ! -f "$ARCHIVE" ] || [ ! -f "$CHECKSUM" ]; then
-    echo "REMAGIC_SKIP_BUILD=1 requested, but no complete bundle exists" >&2
+    echo "REMAGIC_SKIP_BUILD=1 requested, but no complete system release exists" >&2
     exit 1
 fi
 
 (
-    cd "$ROOT/dist"
-    sha256sum -c remagic-aarch64.tar.gz.sha256
+    cd "$(dirname -- "$ARCHIVE")"
+    sha256sum -c "$(basename -- "$CHECKSUM")"
 )
 
 scp "${SSH_OPTIONS[@]}" -O "$ARCHIVE" "$CHECKSUM" "root@$HOST:/tmp/"
 ssh "${SSH_OPTIONS[@]}" "root@$HOST" \
-    'set -eu; txn=/tmp/remagic-install.$$.new; cleanup() { rm -rf "$txn"; }; trap cleanup EXIT HUP INT TERM; cd /tmp; sha256sum -c remagic-aarch64.tar.gz.sha256; mkdir "$txn"; tar -xzf /tmp/remagic-aarch64.tar.gz -C "$txn"; "$txn/remagic/scripts/install-device.sh"'
+    'set -eu; archive=/tmp/'"$(basename -- "$ARCHIVE")"'; checksum=$archive.sha256; txn=/tmp/remagic-install.$$.new; cleanup() { rm -rf "$txn" "$archive" "$checksum"; }; trap cleanup EXIT HUP INT TERM; cd /tmp; sha256sum -c "$(basename "$checksum")"; mkdir "$txn"; tar -xzf "$archive" -C "$txn"; "$txn/remagic-system/install-device.sh"'

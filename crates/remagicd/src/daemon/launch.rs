@@ -128,7 +128,15 @@ impl Daemon {
             .apply(Transition::AppReady(context.id.clone()))
             .map_err(|error| error.to_string())?;
         input.pending = false;
-        utils::set_foreground_marker(Some(&context.id))
+        utils::set_foreground_marker(Some(&context.id))?;
+        drop(state);
+        drop(input_modes);
+        self.power
+            .set_presentation(remagic_core::PresentationState::Foreground(
+                context.id.clone(),
+            ))
+            .await;
+        Ok(())
     }
 
     async fn prepare_launch(
@@ -244,9 +252,25 @@ impl Daemon {
             warn!(%id, "active application has no complete supervisor token; restarting safely");
             // The missing policy itself is why this process cannot be safely
             // recalled. Thaw unconditionally: it is idempotent for a running
-            // unit and is required before stopping a possibly frozen one.
-            self.controller.thaw_and_wait(unit).await?;
-            self.controller.stop_and_wait(unit).await?;
+            // unit and is required before stopping a possibly frozen one. A
+            // crashed child can make the daemon return to Home just before
+            // systemd finishes retiring the runner. In that narrow window the
+            // unit may still report active while MainPID is already zero, so
+            // thawing cannot be the terminal fence. Always continue to the
+            // bounded stop; reaching inactive is the safety property needed
+            // before a replacement generation starts.
+            let thaw_error = self.controller.thaw_and_wait(unit).await.err();
+            if let Err(stop_error) = self.controller.stop_and_wait(unit).await {
+                return Err(match thaw_error {
+                    Some(thaw_error) => format!(
+                        "could not settle stale runtime {unit}: thaw failed: {thaw_error}; stop failed: {stop_error}"
+                    ),
+                    None => stop_error,
+                });
+            }
+            if let Some(error) = thaw_error {
+                warn!(%id, %error, "stale runtime settled after thaw raced process exit");
+            }
             self.mark_session_process_stopped(id).await?;
             active = false;
             self.runtime_generations.write().await.remove(id);

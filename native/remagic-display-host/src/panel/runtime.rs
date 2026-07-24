@@ -112,7 +112,9 @@ impl<B: PanelBackend> PanelRuntime<B> {
 
     fn next_timeout(&self) -> Duration {
         let now = Instant::now();
-        let mut timeout = Duration::from_millis(50);
+        // Commands wake the channel immediately. This timeout exists only to
+        // service vendor Qt events while the panel is otherwise idle.
+        let mut timeout = Duration::from_millis(500);
         if !self.live_dirty.is_empty() {
             timeout = timeout
                 .min((self.last_live_submit + LIVE_SWAP_INTERVAL).saturating_duration_since(now));

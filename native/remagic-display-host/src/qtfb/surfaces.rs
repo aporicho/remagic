@@ -279,15 +279,8 @@ impl HostState {
         if self.prepared_foreground.lock().unwrap().is_some() {
             return Ok(());
         }
-        if let Some(lock) = *self.lock.lock().unwrap() {
-            let within_unlock = key == lock.foreground.key
-                && rect.x >= lock.unlock_region.x
-                && rect.y >= lock.unlock_region.y
-                && rect.right() <= lock.unlock_region.right()
-                && rect.bottom() <= lock.unlock_region.bottom();
-            if !within_unlock {
-                return Ok(());
-            }
+        if self.lock.lock().unwrap().is_some() {
+            return Ok(());
         }
         let foreground = self
             .foreground
@@ -366,18 +359,16 @@ impl HostState {
             self.suppressed_pen.store(true, Ordering::Release);
         }
         let active = std::mem::take(&mut *self.active_touches.lock().unwrap());
-        let lock_active = std::mem::take(&mut *self.lock_touches.lock().unwrap());
         let foreground_key = {
             let foreground = self.foreground.lock().unwrap();
             foreground.map(|lease| lease.key)
         };
         if let Some(key) = foreground_key {
-            for device_id in active.iter().chain(lock_active.iter()) {
+            for device_id in &active {
                 self.send_to_key(key, &input_packet(INPUT_TOUCH_RELEASE, *device_id, 0, 0, 0));
             }
         }
         let mut suppressed = self.suppressed_touches.lock().unwrap();
         suppressed.extend(active);
-        suppressed.extend(lock_active);
     }
 }

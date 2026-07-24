@@ -54,3 +54,28 @@ async fn request(request: Request) -> Result<(), Box<dyn std::error::Error>> {
         _ => Err("unexpected manager response".into()),
     }
 }
+
+#[cfg(feature = "device")]
+async fn power_status() -> Result<remagic_core::PowerSnapshot, Box<dyn std::error::Error>> {
+    power_request(Request::PowerStatus).await
+}
+
+#[cfg(feature = "device")]
+async fn set_idle_suspend(
+    seconds: u64,
+) -> Result<remagic_core::PowerSnapshot, Box<dyn std::error::Error>> {
+    power_request(Request::SetIdleSuspend { seconds }).await
+}
+
+#[cfg(feature = "device")]
+async fn power_request(
+    request: Request,
+) -> Result<remagic_core::PowerSnapshot, Box<dyn std::error::Error>> {
+    let mut stream = UnixStream::connect(remagic_protocol::DEFAULT_SOCKET).await?;
+    write_frame(&mut stream, &request).await?;
+    match read_frame::<_, Response>(&mut stream).await? {
+        Response::Power { snapshot } => Ok(snapshot),
+        Response::Error { message } => Err(message.into()),
+        _ => Err("unexpected manager power response".into()),
+    }
+}

@@ -2,7 +2,6 @@
 set -eu
 
 [ "$(id -u)" -eq 0 ] || { echo "install-device.sh must run as root" >&2; exit 1; }
-
 SOURCE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 COMMON=$SOURCE_DIR/scripts/lib/deployment-common.sh
 KOREADER_STORAGE_LIB=$SOURCE_DIR/scripts/lib/koreader-storage.sh
@@ -218,6 +217,7 @@ scripts/lib/device-test-isolation.sh
 scripts/lib/device-test-manifests.sh
 scripts/lib/device-test-recovery.sh
 scripts/remagic-recover
+scripts/remagic-app-failed
 scripts/remagic-register
 scripts/koreader-for-remagic
 scripts/koreader-data-migrate
@@ -239,12 +239,14 @@ scripts/device-acceptance-v2.sh
 scripts/device-fault-acceptance-v2.sh
 scripts/device-stress-acceptance-v2.sh
 scripts/device-lock-acceptance-v2.sh
+scripts/device-power-audit.sh
 manifests/magicpaper.toml
 manifests/koreader.toml
 systemd/remagicd.service
 systemd/remagic-display-host.service
 systemd/remagic-home.service
 systemd/remagic-app@.service
+systemd/remagic-app-failed@.service
 systemd/remagic-recover.service
 systemd/magicpaper-agent.service
 systemd/remagic-app@koreader.service.d/10-koreader-runtime.conf
@@ -375,7 +377,7 @@ $relative"
         bin/remagicd bin/remagicctl bin/remagic-home bin/remagic-runner \
         bin/remagic-vellum-worker bin/remagic-display-host \
         opt/magicpaper/magicpaper \
-        scripts/remagic-recover scripts/koreader-for-remagic \
+        scripts/remagic-recover scripts/remagic-app-failed scripts/koreader-for-remagic \
         scripts/remagic-register \
         scripts/koreader-data-migrate scripts/koreader-db-inspect \
         scripts/koreader-library-sync scripts/koreader-not-running \
@@ -490,7 +492,8 @@ stage_manager() {
     stage_file 0755 "$SOURCE_DIR/lib/libquill.so" "$stage/lib/libquill.so"
     stage_file 0755 "$SOURCE_DIR/shims/qtfb-shim.so" "$stage/shims/qtfb-shim.so"
     stage_file 0644 "$SOURCE_DIR/shims/LICENSE.qtfb-shim" "$stage/share/LICENSE.qtfb-shim"
-    for helper in deployment-common.sh koreader-release.sh remagic-recover remagic-register magicpaper-remagic \
+    for helper in deployment-common.sh koreader-release.sh remagic-recover \
+        remagic-app-failed remagic-register magicpaper-remagic \
         magicpaper-agent-remagic magicpaper-qtfb magicpaper-data-migrate remagic-schema-ready \
         uninstall-device.sh magicpaper-env; do
         source=$SOURCE_DIR/scripts/$helper
@@ -506,14 +509,15 @@ stage_manager() {
     stage_file 0755 "$SOURCE_DIR/scripts/lib/device-test-manifests.sh" "$stage/libexec/device-test-manifests.sh"
     stage_file 0755 "$SOURCE_DIR/scripts/lib/device-test-recovery.sh" \
         "$stage/libexec/device-test-recovery.sh"
-    for test_script in device-acceptance-v2.sh device-fault-acceptance-v2.sh device-stress-acceptance-v2.sh device-lock-acceptance-v2.sh; do
+    for test_script in device-acceptance-v2.sh device-fault-acceptance-v2.sh device-stress-acceptance-v2.sh device-lock-acceptance-v2.sh device-power-audit.sh; do
         stage_file 0755 "$SOURCE_DIR/scripts/$test_script" "$stage/share/$test_script"
     done
     stage_file 0644 "$SOURCE_DIR/share/build-info.txt" "$stage/share/build-info.txt"
     stage_file 0644 "$SOURCE_DIR/share/bundle.sha256" "$stage/share/bundle.sha256"
     stage_file 0644 "$SOURCE_DIR/share/vellum-bootstrap.sh" "$stage/share/vellum-bootstrap.sh"
     for unit in remagicd.service remagic-display-host.service remagic-home.service \
-        remagic-app@.service remagic-recover.service magicpaper-agent.service; do
+        remagic-app@.service remagic-app-failed@.service remagic-recover.service \
+        magicpaper-agent.service; do
         stage_file 0644 "$SOURCE_DIR/systemd/$unit" "$stage/share/systemd/$unit"
     done
     stage_file 0644 "$SOURCE_DIR/systemd/$KOREADER_UNIT_DROPIN_REL" \
@@ -620,6 +624,7 @@ snapshot_transaction_paths() {
     snapshot_path "$snapshots" unit_display "$UNIT_ROOT/remagic-display-host.service"
     snapshot_path "$snapshots" unit_home "$UNIT_ROOT/remagic-home.service"
     snapshot_path "$snapshots" unit_app "$UNIT_ROOT/remagic-app@.service"
+    snapshot_path "$snapshots" unit_app_failed "$UNIT_ROOT/remagic-app-failed@.service"
     snapshot_path "$snapshots" unit_recover "$UNIT_ROOT/remagic-recover.service"
     snapshot_path "$snapshots" unit_agent "$UNIT_ROOT/magicpaper-agent.service"
     snapshot_path "$snapshots" unit_koreader_dropin "$KOREADER_UNIT_DROPIN"
@@ -838,6 +843,8 @@ publish_file 0644 "$SOURCE_DIR/systemd/remagicd.service" "$UNIT_ROOT/remagicd.se
 publish_file 0644 "$SOURCE_DIR/systemd/remagic-display-host.service" "$UNIT_ROOT/remagic-display-host.service"
 publish_file 0644 "$SOURCE_DIR/systemd/remagic-home.service" "$UNIT_ROOT/remagic-home.service"
 publish_file 0644 "$SOURCE_DIR/systemd/remagic-app@.service" "$UNIT_ROOT/remagic-app@.service"
+publish_file 0644 "$SOURCE_DIR/systemd/remagic-app-failed@.service" \
+    "$UNIT_ROOT/remagic-app-failed@.service"
 publish_file 0644 "$SOURCE_DIR/systemd/remagic-recover.service" "$UNIT_ROOT/remagic-recover.service"
 publish_file 0644 "$SOURCE_DIR/systemd/magicpaper-agent.service" "$UNIT_ROOT/magicpaper-agent.service"
 publish_file 0644 "$SOURCE_DIR/systemd/$KOREADER_UNIT_DROPIN_REL" "$KOREADER_UNIT_DROPIN"

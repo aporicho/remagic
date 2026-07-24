@@ -40,8 +40,6 @@ impl WallpaperFit {
 pub(super) struct LockSettings {
     pub(super) wallpaper: String,
     pub(super) fit: WallpaperFit,
-    pub(super) show_clock: bool,
-    pub(super) show_hint: bool,
 }
 
 impl Default for LockSettings {
@@ -49,16 +47,25 @@ impl Default for LockSettings {
         Self {
             wallpaper: DEFAULT_WALLPAPER_ID.into(),
             fit: WallpaperFit::Cover,
-            show_clock: true,
-            show_hint: true,
         }
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
 pub(super) struct HomeSettings {
     pub(super) lock: LockSettings,
+    #[serde(skip)]
+    pub(super) idle_suspend_secs: u64,
+}
+
+impl Default for HomeSettings {
+    fn default() -> Self {
+        Self {
+            lock: LockSettings::default(),
+            idle_suspend_secs: remagic_core::DEFAULT_IDLE_SUSPEND_SECS,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -84,16 +91,12 @@ impl HomeSettings {
         save_to(Path::new(CONFIG_PATH), self)
     }
 
-    pub(super) fn cycle_wallpaper(&mut self, options: &[WallpaperOption]) {
-        if options.is_empty() {
-            self.lock.wallpaper = DEFAULT_WALLPAPER_ID.into();
-            return;
-        }
-        let current = options
-            .iter()
-            .position(|option| option.id == self.lock.wallpaper)
-            .unwrap_or(0);
-        self.lock.wallpaper = options[(current + 1) % options.len()].id.clone();
+    pub(super) fn select_wallpaper(&mut self, id: &str, options: &[WallpaperOption]) -> bool {
+        let Some(option) = options.iter().find(|option| option.id == id) else {
+            return false;
+        };
+        self.lock.wallpaper = option.id.clone();
+        true
     }
 
     pub(super) fn wallpaper<'a>(&self, options: &'a [WallpaperOption]) -> &'a WallpaperOption {
@@ -219,19 +222,18 @@ mod tests {
     }
 
     #[test]
-    fn settings_round_trip_and_unknown_fields_use_defaults() {
+    fn settings_round_trip_preserves_wallpaper_fit() {
         let root = temporary_directory("round-trip");
         let path = root.join("home.toml");
         let mut settings = HomeSettings::default();
         settings.lock.fit = WallpaperFit::Contain;
-        settings.lock.show_clock = false;
         save_to(&path, &settings).unwrap();
         assert_eq!(load_from(&path).unwrap(), settings);
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn wallpaper_catalog_rejects_symlinks_and_cycles_deterministically() {
+    fn wallpaper_catalog_rejects_symlinks_and_selection_is_validated() {
         use std::os::unix::fs::symlink;
 
         let root = temporary_directory("wallpapers");
@@ -247,12 +249,10 @@ mod tests {
         assert_eq!(options[2].label, "甲");
 
         let mut settings = HomeSettings::default();
-        settings.cycle_wallpaper(&options);
+        assert!(settings.select_wallpaper(&options[1].id, &options));
         assert_eq!(settings.lock.wallpaper, options[1].id);
-        settings.cycle_wallpaper(&options);
-        assert_eq!(settings.lock.wallpaper, options[2].id);
-        settings.cycle_wallpaper(&options);
-        assert_eq!(settings.lock.wallpaper, DEFAULT_WALLPAPER_ID);
+        assert!(!settings.select_wallpaper("custom:missing.png", &options));
+        assert_eq!(settings.lock.wallpaper, options[1].id);
         fs::remove_dir_all(root).unwrap();
     }
 }

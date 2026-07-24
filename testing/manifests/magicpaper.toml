@@ -45,6 +45,7 @@ migration_timeout_ms = 30000
 
 [runtime]
 profile = "qtfb_compat"
+background_execution = "freeze"
 required_libraries = []
 
 [runtime.directories]

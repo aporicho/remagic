@@ -43,6 +43,21 @@ impl Daemon {
             ControlIntent::Snapshot => ControlReply::Snapshot {
                 snapshot: self.supervisor_snapshot().await,
             },
+            ControlIntent::PowerSnapshot => ControlReply::Power {
+                snapshot: self.power.snapshot().await,
+                state_revision: revision,
+            },
+            ControlIntent::SetIdleSuspend { seconds } => {
+                match self.power.set_idle_suspend(seconds).await {
+                    Ok(_) => ControlReply::Power {
+                        snapshot: self.power.snapshot().await,
+                        state_revision: revision,
+                    },
+                    Err(message) => {
+                        error_reply(ControlErrorCode::InvalidRequest, message, revision)
+                    }
+                }
+            }
             ControlIntent::Subscribe { .. } => ControlReply::Subscribed {
                 state_revision: revision,
             },

@@ -38,28 +38,57 @@ impl Daemon {
         let domain = self.state.read().await.domain.clone();
         let was_foreground = matches!(&domain, DomainState::Foreground(current) if current == &id);
         let manifest = self.manifests.read().await.get(&id).cloned();
-        self.thaw_before_shutdown(&id).await?;
-        self.request_shutdown(&id, manifest.as_ref()).await;
-        if was_foreground {
-            self.reveal_manager_before_close().await?
-        }
-        self.controller.stop_and_wait(&utils::app_unit(&id)).await?;
-        self.clear_runtime_tracking(&id).await;
-        {
-            let mut state = self.state.write().await;
+        let controlled_exit = self.reserve_controlled_exit(&id).await;
+        let result = async {
+            self.thaw_before_shutdown(&id).await?;
+            self.request_shutdown(&id, manifest.as_ref()).await;
             if was_foreground {
-                state
-                    .apply(Transition::AppExited(id.clone()))
-                    .map_err(|error| error.to_string())?;
+                self.reveal_manager_before_close().await?
             }
-            clear_closed_last_app(&mut state, &id);
+            self.controller.stop_and_wait(&utils::app_unit(&id)).await?;
+            self.clear_runtime_tracking(&id).await;
+            {
+                let mut state = self.state.write().await;
+                if was_foreground {
+                    state
+                        .apply(Transition::AppExited(id.clone()))
+                        .map_err(|error| error.to_string())?;
+                }
+                clear_closed_last_app(&mut state, &id);
+            }
+            self.session_store.remove(&id).map_err(|e| e.to_string())?;
+            self.sessions.write().await.remove(&id);
+            if complete {
+                self.stop_background_service(manifest).await?
+            }
+            Ok(())
         }
-        self.session_store.remove(&id).map_err(|e| e.to_string())?;
-        self.sessions.write().await.remove(&id);
-        if complete {
-            self.stop_background_service(manifest).await?
+        .await;
+        if result.is_err() {
+            self.release_controlled_exit(&id, controlled_exit).await;
         }
-        Ok(())
+        result
+    }
+
+    async fn reserve_controlled_exit(&self, id: &AppId) -> Option<PendingExit> {
+        let generation = self.runtime_generations.read().await.get(id).copied()?;
+        let pending = PendingExit {
+            generation,
+            source: ExitReportSource::Controlled,
+        };
+        self.runtime_exit_reports
+            .write()
+            .await
+            .insert(id.clone(), pending);
+        Some(pending)
+    }
+
+    async fn release_controlled_exit(&self, id: &AppId, pending: Option<PendingExit>) {
+        let Some(pending) = pending else { return };
+        let mut reports = self.runtime_exit_reports.write().await;
+        if reports.get(id) == Some(&pending) {
+            reports.remove(id);
+        }
     }
 
     async fn thaw_before_shutdown(&self, id: &AppId) -> Result<(), String> {
@@ -153,10 +182,16 @@ impl Daemon {
             consume_exit_report(&mut reports, &id, pending)
         };
         if !accepted {
-            if source == ExitReportSource::Synthetic {
-                info!(%id, generation, "ignored synthetic exit superseded by runner report");
-            } else {
-                warn!(%id, generation, "ignored runner exit without a matching reservation");
+            match source {
+                ExitReportSource::Synthetic => {
+                    info!(%id, generation, "ignored synthetic exit superseded by runner report");
+                }
+                ExitReportSource::Runner => {
+                    warn!(%id, generation, "ignored runner exit without a matching reservation");
+                }
+                ExitReportSource::Controlled => {
+                    info!(%id, generation, "ignored completed controlled exit report");
+                }
             }
             return Ok(());
         }
@@ -329,9 +364,10 @@ mod exit_report_tests {
             session_store: remagic_core::SessionStore::new(session_root.clone()),
             manifest_store: remagic_core::ManifestStore::new(session_root.join("manifests")),
             controller: crate::system::SystemController::new(),
+            power: Arc::new(crate::power_manager::PowerManager::load()),
             transition_lock: Mutex::new(()),
             events,
-            power_control,
+            power_control: power_device::ControlSender::from_test_channel(power_control),
             next_generation: AtomicU64::new(1),
             next_foreground_epoch: AtomicU64::new(1),
             next_sleep_epoch: AtomicU64::new(1),

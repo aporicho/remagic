@@ -14,12 +14,12 @@ impl Display {
         self.fill(WHITE);
         let mut buttons = Vec::new();
         self.text(font, "设置", 54.0, 48, 82, BLACK);
-        self.text(font, "锁屏外观与显示参数", 25.0, 50, 128, DARK_GRAY);
+        self.text(font, "休眠、电源与锁屏外观", 25.0, 50, 128, DARK_GRAY);
         self.small_button(
             font,
             "返回",
             Button {
-                x: 760,
+                x: self.width - 194,
                 y: 38,
                 width: 152,
                 height: 72,
@@ -35,7 +35,7 @@ impl Display {
             "壁纸",
             &wallpaper.label,
             224,
-            Action::CycleWallpaper,
+            Action::OpenWallpaperBrowser,
             &mut buttons,
         );
         self.setting_row(
@@ -48,23 +48,15 @@ impl Display {
         );
         self.setting_row(
             font,
-            "显示时钟",
-            switch_label(settings.lock.show_clock),
+            "自动休眠",
+            idle_suspend_label(settings.idle_suspend_secs),
             524,
-            Action::ToggleLockClock,
-            &mut buttons,
-        );
-        self.setting_row(
-            font,
-            "显示唤醒提示",
-            switch_label(settings.lock.show_hint),
-            674,
-            Action::ToggleLockHint,
+            Action::CycleAutoSleep,
             &mut buttons,
         );
 
         let preview_y = self.height - 260;
-        self.round_rect(38, preview_y, self.width - 76, 104, BLACK);
+        self.rect(38, preview_y, self.width - 76, 104, BLACK);
         self.centered_text(font, "预览锁屏", 36.0, preview_y + 67, WHITE);
         buttons.push(Button {
             x: 38,
@@ -94,7 +86,7 @@ impl Display {
         buttons: &mut Vec<Button>,
     ) {
         let width = self.width - 76;
-        self.round_rect(38, y, width, 126, GRAY);
+        self.rect(38, y, width, 126, GRAY);
         self.text(font, title, 34.0, 72, y + 53, BLACK);
         self.text(font, value, 24.0, 72, y + 94, DARK_GRAY);
         self.text(font, "›", 42.0, self.width - 104, y + 76, BLACK);
@@ -114,7 +106,7 @@ impl Display {
         button: Button,
         buttons: &mut Vec<Button>,
     ) {
-        self.round_rect(button.x, button.y, button.width, button.height, GRAY);
+        self.rect(button.x, button.y, button.width, button.height, GRAY);
         let baseline = button.y + button.height / 2 + 12;
         let text_width = super::text_width(font, text, 28.0);
         self.text(
@@ -129,21 +121,25 @@ impl Display {
     }
 }
 
-fn switch_label(enabled: bool) -> &'static str {
-    if enabled {
-        "已开启"
-    } else {
-        "已关闭"
+fn idle_suspend_label(seconds: u64) -> &'static str {
+    match seconds {
+        0 => "永不自动休眠",
+        60 => "无操作 1 分钟",
+        120 => "无操作 2 分钟",
+        300 => "无操作 5 分钟",
+        600 => "无操作 10 分钟",
+        1_800 => "无操作 30 分钟",
+        _ => "使用系统配置",
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::switch_label;
+    use super::idle_suspend_label;
 
     #[test]
-    fn switches_have_unambiguous_paper_labels() {
-        assert_eq!(switch_label(true), "已开启");
-        assert_eq!(switch_label(false), "已关闭");
+    fn idle_suspend_labels_explain_the_policy() {
+        assert_eq!(idle_suspend_label(0), "永不自动休眠");
+        assert_eq!(idle_suspend_label(120), "无操作 2 分钟");
     }
 }

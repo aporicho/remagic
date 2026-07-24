@@ -1,4 +1,5 @@
 use remagic_device::{DeviceProduct, DeviceProfile};
+use remagic_display_host::activity::ActivityReporter;
 use remagic_display_host::control::ControlServer;
 use remagic_display_host::input::{CapturedInput, InputThreads};
 #[cfg(feature = "device")]
@@ -105,7 +106,9 @@ where
     let input_dispatch = std::thread::Builder::new()
         .name("remagic-input-dispatch".into())
         .spawn(move || {
+            let mut activity = ActivityReporter::new();
             while let Ok(captured) = input_rx.recv() {
+                activity.observe(&captured);
                 let _ = input_state.dispatch_captured_input(captured);
                 if input_state.is_shutdown() {
                     break;
@@ -140,7 +143,7 @@ where
             hardware_failure = Some("marker or touch input worker stopped unexpectedly".into());
             break;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(500));
     }
     state.shutdown();
     drop(input_threads);

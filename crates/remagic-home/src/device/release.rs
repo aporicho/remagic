@@ -18,6 +18,7 @@ pub(super) struct Context<'a> {
     pub(super) store_error: &'a mut Option<String>,
     pub(super) store_catalog: &'a mut Vec<super::store::CatalogApp>,
     pub(super) system_update: &'a mut super::store::SystemUpdateInfo,
+    pub(super) wallpaper_page: &'a mut usize,
 }
 
 pub(super) async fn handle(
@@ -44,6 +45,7 @@ pub(super) async fn handle(
             context.mode,
             context.settings,
             context.wallpapers,
+            context.wallpaper_page,
         )
         .await?
     {
@@ -258,25 +260,13 @@ async fn handle_manager(
 ) -> Result<(), Box<dyn std::error::Error>> {
     match (*context.mode, action) {
         (UiMode::Manager, Action::Sleep) => sleep(context).await?,
-        (UiMode::Locked, Action::Wake) => {
-            unlock(
-                context.display,
-                context.font,
-                context.apps,
-                context.buttons,
-                context.mode,
-                context.settings,
-                context.wallpapers,
-            )
-            .await?;
-        }
         (UiMode::Manager, action) => execute_manager_action(context, action).await?,
         _ => {}
     }
     Ok(())
 }
 
-async fn sleep(context: &mut Context<'_>) -> Result<(), Box<dyn std::error::Error>> {
+pub(super) async fn sleep(context: &mut Context<'_>) -> Result<(), Box<dyn std::error::Error>> {
     // Publish authoritative lock pixels before asking remagicd to fence the
     // surface and release the wakelock.
     *context.buttons =

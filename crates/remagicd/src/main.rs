@@ -2,6 +2,7 @@ mod app_runtime;
 mod daemon;
 mod display_host;
 mod power_device;
+mod power_manager;
 mod system;
 
 #[tokio::main]
