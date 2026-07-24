@@ -27,6 +27,6 @@ sh tests/test-device-test-isolation.sh
 sh tests/test-magicpaper-config-isolation.sh
 sh tests/test-magicpaper-data-migrate.sh
 sh tests/test-system-release.sh
-sh tests/test-dual-usb-tools.sh
+bash tests/test-dual-usb-tools.sh
 
 echo "remagic checks passed"

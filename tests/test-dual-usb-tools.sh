@@ -1,5 +1,5 @@
-#!/bin/sh
-set -eu
+#!/bin/bash
+set -euo pipefail
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 TMP=$(mktemp -d /tmp/remagic-dual-usb-test.XXXXXX)
