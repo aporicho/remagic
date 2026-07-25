@@ -85,25 +85,13 @@ pub(super) async fn run(mut apps: Vec<AppView>) -> Result<(), Box<dyn std::error
     let mut resume_target: Option<ResumeTarget> = None;
     let mut deferred_cover_sleep = false;
     let (task_tx, mut task_rx) = tokio::sync::mpsc::unbounded_channel();
+    #[rustfmt::skip]
+    macro_rules! context {
+        () => { release::Context { display: &mut display, font: &font, apps: &mut apps, buttons: &mut buttons, mode: &mut mode, settings: &mut settings, wallpapers: &mut wallpapers, store_error: &mut store_error, store_catalog: &mut store_catalog, store_progress: &mut store_progress, system_update_error: &mut system_update_error, system_update: &mut system_update, system_update_progress: &mut system_update_progress, wallpaper_page: &mut wallpaper_page, task_tx: &task_tx } };
+    }
     loop {
         while let Ok(result) = task_rx.try_recv() {
-            let mut context = release::Context {
-                display: &mut display,
-                font: &font,
-                apps: &mut apps,
-                buttons: &mut buttons,
-                mode: &mut mode,
-                settings: &mut settings,
-                wallpapers: &mut wallpapers,
-                store_error: &mut store_error,
-                store_catalog: &mut store_catalog,
-                store_progress: &mut store_progress,
-                system_update_error: &mut system_update_error,
-                system_update: &mut system_update,
-                system_update_progress: &mut system_update_progress,
-                wallpaper_page: &mut wallpaper_page,
-                task_tx: &task_tx,
-            };
+            let mut context = context!();
             release::handle_task_result(
                 &mut context,
                 result,
@@ -116,23 +104,7 @@ pub(super) async fn run(mut apps: Vec<AppView>) -> Result<(), Box<dyn std::error
             match event {
                 home_events::Event::AutoSleep if mode != UiMode::Locked => {
                     pressed = None;
-                    let mut context = release::Context {
-                        display: &mut display,
-                        font: &font,
-                        apps: &mut apps,
-                        buttons: &mut buttons,
-                        mode: &mut mode,
-                        settings: &mut settings,
-                        wallpapers: &mut wallpapers,
-                        store_error: &mut store_error,
-                        store_catalog: &mut store_catalog,
-                        store_progress: &mut store_progress,
-                        system_update_error: &mut system_update_error,
-                        system_update: &mut system_update,
-                        system_update_progress: &mut system_update_progress,
-                        wallpaper_page: &mut wallpaper_page,
-                        task_tx: &task_tx,
-                    };
+                    let mut context = context!();
                     release::sleep(&mut context).await?;
                 }
                 home_events::Event::AutoSleep => {}
@@ -141,23 +113,7 @@ pub(super) async fn run(mut apps: Vec<AppView>) -> Result<(), Box<dyn std::error
                     let target = app_id
                         .map(ResumeTarget::App)
                         .unwrap_or_else(|| resume_target_for_mode(mode));
-                    let mut context = release::Context {
-                        display: &mut display,
-                        font: &font,
-                        apps: &mut apps,
-                        buttons: &mut buttons,
-                        mode: &mut mode,
-                        settings: &mut settings,
-                        wallpapers: &mut wallpapers,
-                        store_error: &mut store_error,
-                        store_catalog: &mut store_catalog,
-                        store_progress: &mut store_progress,
-                        system_update_error: &mut system_update_error,
-                        system_update: &mut system_update,
-                        system_update_progress: &mut system_update_progress,
-                        wallpaper_page: &mut wallpaper_page,
-                        task_tx: &task_tx,
-                    };
+                    let mut context = context!();
                     release::cover_sleep(
                         &mut context,
                         &mut resume_target,
@@ -172,44 +128,12 @@ pub(super) async fn run(mut apps: Vec<AppView>) -> Result<(), Box<dyn std::error
                     if let Some(app_id) = app_id {
                         resume_target = Some(ResumeTarget::App(app_id));
                     }
-                    let mut context = release::Context {
-                        display: &mut display,
-                        font: &font,
-                        apps: &mut apps,
-                        buttons: &mut buttons,
-                        mode: &mut mode,
-                        settings: &mut settings,
-                        wallpapers: &mut wallpapers,
-                        store_error: &mut store_error,
-                        store_catalog: &mut store_catalog,
-                        store_progress: &mut store_progress,
-                        system_update_error: &mut system_update_error,
-                        system_update: &mut system_update,
-                        system_update_progress: &mut system_update_progress,
-                        wallpaper_page: &mut wallpaper_page,
-                        task_tx: &task_tx,
-                    };
+                    let mut context = context!();
                     release::resume_unlock(&mut context, resume_target.take()).await?;
                 }
                 home_events::Event::ResumeUnlock { app_id } => {
                     if let Some(app_id) = app_id {
-                        let mut context = release::Context {
-                            display: &mut display,
-                            font: &font,
-                            apps: &mut apps,
-                            buttons: &mut buttons,
-                            mode: &mut mode,
-                            settings: &mut settings,
-                            wallpapers: &mut wallpapers,
-                            store_error: &mut store_error,
-                            store_catalog: &mut store_catalog,
-                            store_progress: &mut store_progress,
-                            system_update_error: &mut system_update_error,
-                            system_update: &mut system_update,
-                            system_update_progress: &mut system_update_progress,
-                            wallpaper_page: &mut wallpaper_page,
-                            task_tx: &task_tx,
-                        };
+                        let mut context = context!();
                         release::launch_resume_app(&mut context, app_id).await?;
                     }
                 }
@@ -230,29 +154,7 @@ pub(super) async fn run(mut apps: Vec<AppView>) -> Result<(), Box<dyn std::error
                     handle_press(&mut display, &buttons, &mut pressed, x, y)?;
                 }
                 crate::qtfb::TouchEvent::Release { x, y } => {
-                    release::handle(
-                        release::Context {
-                            display: &mut display,
-                            font: &font,
-                            apps: &mut apps,
-                            buttons: &mut buttons,
-                            mode: &mut mode,
-                            settings: &mut settings,
-                            wallpapers: &mut wallpapers,
-                            store_error: &mut store_error,
-                            store_catalog: &mut store_catalog,
-                            store_progress: &mut store_progress,
-                            system_update_error: &mut system_update_error,
-                            system_update: &mut system_update,
-                            system_update_progress: &mut system_update_progress,
-                            wallpaper_page: &mut wallpaper_page,
-                            task_tx: &task_tx,
-                        },
-                        &mut pressed,
-                        x,
-                        y,
-                    )
-                    .await?;
+                    release::handle(context!(), &mut pressed, x, y).await?;
                 }
             }
         }

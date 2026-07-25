@@ -2,7 +2,7 @@ use remagic_core::power::{ClickTracker, PowerAction};
 use std::ffi::CString;
 use std::io;
 use std::os::fd::RawFd;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -124,136 +124,224 @@ impl WakeGuard {
 pub fn spawn(
     events: tokio_mpsc::Sender<QueuedEvent>,
     launch_interrupt_epoch: Arc<AtomicU64>,
-    cover_closed: Arc<std::sync::atomic::AtomicBool>,
+    cover_closed: Arc<AtomicBool>,
 ) -> (std::thread::JoinHandle<()>, ControlSender) {
     let (control_tx, control_rx) = mpsc::channel();
     let wake = Arc::new(WakeEvent::create().expect("eventfd is required for power control"));
     let thread_wake = Arc::clone(&wake);
     let thread = std::thread::spawn(move || {
-        let mut device = loop {
-            match PowerDevice::open() {
-                Ok(device) => break device,
-                Err(error) => {
-                    eprintln!("remagicd: power device unavailable: {error}");
-                    std::thread::sleep(Duration::from_secs(2));
-                }
-            }
-        };
-        let mut tracker = ClickTracker::default();
-        let mut wake_guard = WakeGuard::default();
-        let mut cover = CoverDevice::open().map_or_else(
-            |error| {
-                eprintln!("remagicd: cover sensor unavailable: {error}");
-                None
-            },
-            Some,
-        );
-        let mut observed_cover_closed = None;
-        if let Some(cover_device) = &cover {
-            match cover_device.initial_closed() {
-                Ok(closed) => {
-                    observed_cover_closed = Some(closed);
-                    cover_closed.store(closed, std::sync::atomic::Ordering::Release);
-                    if closed {
-                        let _ = events.blocking_send(QueuedEvent::unattended(
-                            Event::CoverClosed,
-                            &launch_interrupt_epoch,
-                        ));
-                    }
-                }
-                Err(error) => eprintln!("remagicd: cannot query initial cover state: {error}"),
-            }
-        }
-        loop {
-            wait_for_input_or_control(
-                device.fd,
-                cover.as_ref().map_or(-1, |device| device.fd),
-                thread_wake.fd(),
-                next_deadline(&tracker, &wake_guard),
-            );
-            thread_wake.drain();
-            while let Ok(control) = control_rx.try_recv() {
-                match control {
-                    Control::Grab { grab, reply } => {
-                        // Domain ownership changes form an input fence. Never
-                        // carry a partial click or wake gesture across it.
-                        tracker.clear();
-                        wake_guard.cancel();
-                        let mut result = device.set_grab(grab);
-                        if result.is_err() && !grab {
-                            // Closing the input fd is the kernel-level escape
-                            // hatch for a failed EVIOCGRAB(false).  Reopen it
-                            // afterwards so future triple presses still work.
-                            result = device.force_release_and_reopen();
-                        }
-                        let _ = reply.send(result.map_err(|error| error.to_string()));
-                    }
-                    Control::ArmWakeGuard { reply } => {
-                        tracker.clear();
-                        let result = if device.grabbed {
-                            wake_guard.arm()
-                        } else {
-                            Err("cannot arm wake guard while the power key is not grabbed".into())
-                        };
-                        let _ = reply.send(result);
-                    }
-                    Control::ResumeWakeGuard { reply } => {
-                        let _ = reply.send(wake_guard.resume(Instant::now()));
-                    }
-                    Control::CancelWakeGuard { reply } => {
-                        tracker.clear();
-                        wake_guard.cancel();
-                        let _ = reply.send(Ok(()));
-                    }
-                }
-            }
-            for value in device.drain() {
-                let now = Instant::now();
-                if consume_wake_guard_event(&mut wake_guard, value, now, &launch_interrupt_epoch) {
-                    continue;
-                }
-                let action = if value == 1 {
-                    // Invalidate auto-resuspend and cancellable launches on
-                    // physical contact, not 800 ms later when a single click
-                    // is finally distinguishable from a triple click.
-                    note_power_press(&launch_interrupt_epoch);
-                    let _ = events.blocking_send(QueuedEvent::unattended(
-                        Event::UserActivity,
-                        &launch_interrupt_epoch,
-                    ));
-                    tracker.press(now);
-                    PowerAction::None
-                } else if value == 0 {
-                    tracker.release(now)
-                } else {
-                    PowerAction::None
-                };
-                send_action(action, &events, &launch_interrupt_epoch);
-            }
-            if let Some(cover_device) = &mut cover {
-                for closed in cover_device.drain() {
-                    if observed_cover_closed == Some(closed) {
-                        continue;
-                    }
-                    observed_cover_closed = Some(closed);
-                    cover_closed.store(closed, std::sync::atomic::Ordering::Release);
-                    let event = if closed {
-                        Event::CoverClosed
-                    } else {
-                        Event::CoverOpened
-                    };
-                    let _ = events
-                        .blocking_send(QueuedEvent::unattended(event, &launch_interrupt_epoch));
-                }
-            }
-            let now = Instant::now();
-            wake_guard.poll(now);
-            if !wake_guard.active {
-                send_action(tracker.poll(now), &events, &launch_interrupt_epoch);
-            }
-        }
+        InputThread::new(
+            events,
+            launch_interrupt_epoch,
+            cover_closed,
+            control_rx,
+            thread_wake,
+        )
+        .run();
     });
     (thread, ControlSender::new(control_tx, wake))
+}
+
+struct InputThread {
+    events: tokio_mpsc::Sender<QueuedEvent>,
+    launch_interrupt_epoch: Arc<AtomicU64>,
+    cover_closed: Arc<AtomicBool>,
+    control_rx: mpsc::Receiver<Control>,
+    thread_wake: Arc<WakeEvent>,
+    device: PowerDevice,
+    tracker: ClickTracker,
+    wake_guard: WakeGuard,
+    cover: Option<CoverDevice>,
+    observed_cover_closed: Option<bool>,
+}
+
+impl InputThread {
+    fn new(
+        events: tokio_mpsc::Sender<QueuedEvent>,
+        launch_interrupt_epoch: Arc<AtomicU64>,
+        cover_closed: Arc<AtomicBool>,
+        control_rx: mpsc::Receiver<Control>,
+        thread_wake: Arc<WakeEvent>,
+    ) -> Self {
+        let mut thread = Self {
+            events,
+            launch_interrupt_epoch,
+            cover_closed,
+            control_rx,
+            thread_wake,
+            device: open_power_device(),
+            tracker: ClickTracker::default(),
+            wake_guard: WakeGuard::default(),
+            cover: open_cover_device(),
+            observed_cover_closed: None,
+        };
+        thread.observe_initial_cover();
+        thread
+    }
+
+    fn run(&mut self) {
+        loop {
+            wait_for_input_or_control(
+                self.device.fd,
+                self.cover.as_ref().map_or(-1, |device| device.fd),
+                self.thread_wake.fd(),
+                next_deadline(&self.tracker, &self.wake_guard),
+            );
+            self.thread_wake.drain();
+            self.handle_controls();
+            self.handle_power_events();
+            self.handle_cover_events();
+            self.poll_pending_click();
+        }
+    }
+
+    fn observe_initial_cover(&mut self) {
+        let Some(cover_device) = &self.cover else {
+            return;
+        };
+        match cover_device.initial_closed() {
+            Ok(closed) => {
+                self.observed_cover_closed = Some(closed);
+                self.cover_closed
+                    .store(closed, std::sync::atomic::Ordering::Release);
+                if closed {
+                    self.send_cover_event(Event::CoverClosed);
+                }
+            }
+            Err(error) => eprintln!("remagicd: cannot query initial cover state: {error}"),
+        }
+    }
+
+    fn handle_controls(&mut self) {
+        while let Ok(control) = self.control_rx.try_recv() {
+            match control {
+                Control::Grab { grab, reply } => self.handle_grab(grab, reply),
+                Control::ArmWakeGuard { reply } => self.handle_arm_wake_guard(reply),
+                Control::ResumeWakeGuard { reply } => {
+                    let _ = reply.send(self.wake_guard.resume(Instant::now()));
+                }
+                Control::CancelWakeGuard { reply } => {
+                    self.tracker.clear();
+                    self.wake_guard.cancel();
+                    let _ = reply.send(Ok(()));
+                }
+            }
+        }
+    }
+
+    fn handle_grab(&mut self, grab: bool, reply: tokio::sync::oneshot::Sender<Result<(), String>>) {
+        self.tracker.clear();
+        self.wake_guard.cancel();
+        let mut result = self.device.set_grab(grab);
+        if result.is_err() && !grab {
+            result = self.device.force_release_and_reopen();
+        }
+        let _ = reply.send(result.map_err(|error| error.to_string()));
+    }
+
+    fn handle_arm_wake_guard(&mut self, reply: tokio::sync::oneshot::Sender<Result<(), String>>) {
+        self.tracker.clear();
+        let result = if self.device.grabbed {
+            self.wake_guard.arm()
+        } else {
+            Err("cannot arm wake guard while the power key is not grabbed".into())
+        };
+        let _ = reply.send(result);
+    }
+
+    fn handle_power_events(&mut self) {
+        for value in self.device.drain() {
+            let now = Instant::now();
+            if consume_wake_guard_event(
+                &mut self.wake_guard,
+                value,
+                now,
+                &self.launch_interrupt_epoch,
+            ) {
+                continue;
+            }
+            let action = self.track_power_value(value, now);
+            send_action(action, &self.events, &self.launch_interrupt_epoch);
+        }
+    }
+
+    fn track_power_value(&mut self, value: i32, now: Instant) -> PowerAction {
+        match value {
+            1 => {
+                note_power_press(&self.launch_interrupt_epoch);
+                let _ = self.events.blocking_send(QueuedEvent::unattended(
+                    Event::UserActivity,
+                    &self.launch_interrupt_epoch,
+                ));
+                self.tracker.press(now);
+                PowerAction::None
+            }
+            0 => self.tracker.release(now),
+            _ => PowerAction::None,
+        }
+    }
+
+    fn handle_cover_events(&mut self) {
+        let states = {
+            let Some(cover_device) = &mut self.cover else {
+                return;
+            };
+            cover_device.drain()
+        };
+        for closed in states {
+            if self.observed_cover_closed == Some(closed) {
+                continue;
+            }
+            self.observed_cover_closed = Some(closed);
+            self.cover_closed
+                .store(closed, std::sync::atomic::Ordering::Release);
+            self.send_cover_event(if closed {
+                Event::CoverClosed
+            } else {
+                Event::CoverOpened
+            });
+        }
+    }
+
+    fn send_cover_event(&self, event: Event) {
+        let _ = self
+            .events
+            .blocking_send(QueuedEvent::unattended(event, &self.launch_interrupt_epoch));
+    }
+
+    fn poll_pending_click(&mut self) {
+        let now = Instant::now();
+        self.wake_guard.poll(now);
+        if !self.wake_guard.active {
+            send_action(
+                self.tracker.poll(now),
+                &self.events,
+                &self.launch_interrupt_epoch,
+            );
+        }
+    }
+}
+
+fn open_power_device() -> PowerDevice {
+    loop {
+        match PowerDevice::open() {
+            Ok(device) => return device,
+            Err(error) => {
+                eprintln!("remagicd: power device unavailable: {error}");
+                std::thread::sleep(Duration::from_secs(2));
+            }
+        }
+    }
+}
+
+fn open_cover_device() -> Option<CoverDevice> {
+    CoverDevice::open().map_or_else(
+        |error| {
+            eprintln!("remagicd: cover sensor unavailable: {error}");
+            None
+        },
+        Some,
+    )
 }
 
 fn next_deadline(tracker: &ClickTracker, wake_guard: &WakeGuard) -> Option<Instant> {
