@@ -77,6 +77,8 @@ pub(in crate::daemon) fn daemon_with_events(
         next_sleep_epoch: AtomicU64::new(1),
         sleep_transaction: sleep::SleepTransaction::default(),
         launch_interrupt_epoch: Arc::new(AtomicU64::new(1)),
+        cover_closed: Arc::new(AtomicBool::new(false)),
+        cover_resume_app: RwLock::new(None),
         manager_repair_pending: AtomicBool::new(false),
         domain_recovery_pending: AtomicBool::new(false),
     };

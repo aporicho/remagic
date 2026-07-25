@@ -21,6 +21,8 @@ pub(super) enum Action {
     StoreInstall(String),
     StoreUpgrade(String),
     StoreUninstall(String),
+    OpenSystemUpdate,
+    RefreshSystemUpdate,
     SystemUpdate,
     Unavailable,
     System,
@@ -43,8 +45,15 @@ enum UiMode {
     Settings,
     WallpaperBrowser,
     Store,
+    SystemUpdate,
     LockPreview,
     Locked,
+}
+
+#[derive(Clone)]
+enum ResumeTarget {
+    Ui(UiMode),
+    App(AppId),
 }
 
 #[derive(Clone)]
@@ -68,9 +77,41 @@ pub(super) async fn run(mut apps: Vec<AppView>) -> Result<(), Box<dyn std::error
     let mut pressed: Option<(Button, Vec<u32>)> = None;
     let mut store_error: Option<String> = None;
     let mut store_catalog = Vec::new();
+    let mut store_progress: Option<store::OperationProgress> = None;
+    let mut system_update_error: Option<String> = None;
     let mut system_update = store::SystemUpdateInfo::default();
+    let mut system_update_progress: Option<store::OperationProgress> = None;
     let mut wallpaper_page = 0_usize;
+    let mut resume_target: Option<ResumeTarget> = None;
+    let mut deferred_cover_sleep = false;
+    let (task_tx, mut task_rx) = tokio::sync::mpsc::unbounded_channel();
     loop {
+        while let Ok(result) = task_rx.try_recv() {
+            let mut context = release::Context {
+                display: &mut display,
+                font: &font,
+                apps: &mut apps,
+                buttons: &mut buttons,
+                mode: &mut mode,
+                settings: &mut settings,
+                wallpapers: &mut wallpapers,
+                store_error: &mut store_error,
+                store_catalog: &mut store_catalog,
+                store_progress: &mut store_progress,
+                system_update_error: &mut system_update_error,
+                system_update: &mut system_update,
+                system_update_progress: &mut system_update_progress,
+                wallpaper_page: &mut wallpaper_page,
+                task_tx: &task_tx,
+            };
+            release::handle_task_result(
+                &mut context,
+                result,
+                &mut resume_target,
+                &mut deferred_cover_sleep,
+            )
+            .await?;
+        }
         for event in home_events.drain()? {
             match event {
                 home_events::Event::AutoSleep if mode != UiMode::Locked => {
@@ -85,26 +126,93 @@ pub(super) async fn run(mut apps: Vec<AppView>) -> Result<(), Box<dyn std::error
                         wallpapers: &mut wallpapers,
                         store_error: &mut store_error,
                         store_catalog: &mut store_catalog,
+                        store_progress: &mut store_progress,
+                        system_update_error: &mut system_update_error,
                         system_update: &mut system_update,
+                        system_update_progress: &mut system_update_progress,
                         wallpaper_page: &mut wallpaper_page,
+                        task_tx: &task_tx,
                     };
                     release::sleep(&mut context).await?;
                 }
                 home_events::Event::AutoSleep => {}
-                home_events::Event::ResumeUnlock if mode == UiMode::Locked => {
+                home_events::Event::CoverSleep { app_id } => {
                     pressed = None;
-                    unlock(
-                        &mut display,
-                        &font,
-                        &mut apps,
-                        &mut buttons,
-                        &mut mode,
-                        &settings,
-                        &wallpapers,
+                    let target = app_id
+                        .map(ResumeTarget::App)
+                        .unwrap_or_else(|| resume_target_for_mode(mode));
+                    let mut context = release::Context {
+                        display: &mut display,
+                        font: &font,
+                        apps: &mut apps,
+                        buttons: &mut buttons,
+                        mode: &mut mode,
+                        settings: &mut settings,
+                        wallpapers: &mut wallpapers,
+                        store_error: &mut store_error,
+                        store_catalog: &mut store_catalog,
+                        store_progress: &mut store_progress,
+                        system_update_error: &mut system_update_error,
+                        system_update: &mut system_update,
+                        system_update_progress: &mut system_update_progress,
+                        wallpaper_page: &mut wallpaper_page,
+                        task_tx: &task_tx,
+                    };
+                    release::cover_sleep(
+                        &mut context,
+                        &mut resume_target,
+                        target,
+                        &mut deferred_cover_sleep,
                     )
                     .await?;
                 }
-                home_events::Event::ResumeUnlock => {}
+                home_events::Event::ResumeUnlock { app_id } if mode == UiMode::Locked => {
+                    pressed = None;
+                    deferred_cover_sleep = false;
+                    if let Some(app_id) = app_id {
+                        resume_target = Some(ResumeTarget::App(app_id));
+                    }
+                    let mut context = release::Context {
+                        display: &mut display,
+                        font: &font,
+                        apps: &mut apps,
+                        buttons: &mut buttons,
+                        mode: &mut mode,
+                        settings: &mut settings,
+                        wallpapers: &mut wallpapers,
+                        store_error: &mut store_error,
+                        store_catalog: &mut store_catalog,
+                        store_progress: &mut store_progress,
+                        system_update_error: &mut system_update_error,
+                        system_update: &mut system_update,
+                        system_update_progress: &mut system_update_progress,
+                        wallpaper_page: &mut wallpaper_page,
+                        task_tx: &task_tx,
+                    };
+                    release::resume_unlock(&mut context, resume_target.take()).await?;
+                }
+                home_events::Event::ResumeUnlock { app_id } => {
+                    if let Some(app_id) = app_id {
+                        let mut context = release::Context {
+                            display: &mut display,
+                            font: &font,
+                            apps: &mut apps,
+                            buttons: &mut buttons,
+                            mode: &mut mode,
+                            settings: &mut settings,
+                            wallpapers: &mut wallpapers,
+                            store_error: &mut store_error,
+                            store_catalog: &mut store_catalog,
+                            store_progress: &mut store_progress,
+                            system_update_error: &mut system_update_error,
+                            system_update: &mut system_update,
+                            system_update_progress: &mut system_update_progress,
+                            wallpaper_page: &mut wallpaper_page,
+                            task_tx: &task_tx,
+                        };
+                        release::launch_resume_app(&mut context, app_id).await?;
+                    }
+                }
                 home_events::Event::WallpapersChanged => settings_ui::wallpapers_changed(
                     &mut display,
                     &font,
@@ -133,8 +241,12 @@ pub(super) async fn run(mut apps: Vec<AppView>) -> Result<(), Box<dyn std::error
                             wallpapers: &mut wallpapers,
                             store_error: &mut store_error,
                             store_catalog: &mut store_catalog,
+                            store_progress: &mut store_progress,
+                            system_update_error: &mut system_update_error,
                             system_update: &mut system_update,
+                            system_update_progress: &mut system_update_progress,
                             wallpaper_page: &mut wallpaper_page,
+                            task_tx: &task_tx,
                         },
                         &mut pressed,
                         x,
@@ -144,7 +256,24 @@ pub(super) async fn run(mut apps: Vec<AppView>) -> Result<(), Box<dyn std::error
                 }
             }
         }
-        home_events.wait_with_input(display.input_fd(), None)?;
+        let wait_timeout = (progress_is_active(&store_progress)
+            || progress_is_active(&system_update_progress))
+        .then_some(Duration::from_millis(250));
+        home_events.wait_with_input(display.input_fd(), wait_timeout)?;
+    }
+}
+
+fn progress_is_active(progress: &Option<store::OperationProgress>) -> bool {
+    progress
+        .as_ref()
+        .is_some_and(|progress| progress.fraction != Some(1.0))
+}
+
+fn resume_target_for_mode(mode: UiMode) -> ResumeTarget {
+    match mode {
+        UiMode::Locked => ResumeTarget::Ui(UiMode::Manager),
+        UiMode::LockPreview => ResumeTarget::Ui(UiMode::Settings),
+        mode => ResumeTarget::Ui(mode),
     }
 }
 
@@ -174,9 +303,11 @@ async fn initial_page(
         }
         UiMode::Manager => display.render(font, apps)?,
         UiMode::Locked => display.render_locked(font, settings, wallpapers, false)?,
-        UiMode::Settings | UiMode::WallpaperBrowser | UiMode::Store | UiMode::LockPreview => {
-            unreachable!()
-        }
+        UiMode::Settings
+        | UiMode::WallpaperBrowser
+        | UiMode::Store
+        | UiMode::SystemUpdate
+        | UiMode::LockPreview => unreachable!(),
     };
     // A restarted Home commits a new surface and then requests one idempotent
     // foreground transaction; no periodic supervisor polling is required.
@@ -284,6 +415,8 @@ async fn execute_action(
         | Action::StoreInstall(_)
         | Action::StoreUpgrade(_)
         | Action::StoreUninstall(_)
+        | Action::OpenSystemUpdate
+        | Action::RefreshSystemUpdate
         | Action::SystemUpdate
         | Action::ToggleWallpaperFit
         | Action::CycleAutoSleep

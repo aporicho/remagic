@@ -70,6 +70,7 @@ impl Daemon {
             .apply(Transition::ManagedReady)
             .map_err(|e| e.to_string())?;
         self.power.enter_managed().await;
+        self.queue_cover_closed_if_current().await;
         Ok(())
     }
 
@@ -122,6 +123,19 @@ impl Daemon {
             .map_err(|e| e.to_string())?;
         self.power.enter_stock().await;
         Ok(())
+    }
+
+    async fn queue_cover_closed_if_current(&self) {
+        if !self.cover_closed.load(Ordering::Acquire) {
+            return;
+        }
+        let _ = self
+            .events
+            .send(QueuedEvent::unattended(
+                Event::CoverClosed,
+                &self.launch_interrupt_epoch,
+            ))
+            .await;
     }
 
     async fn stop_managed_apps(&self) -> Result<(), String> {

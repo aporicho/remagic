@@ -15,7 +15,7 @@ impl Display {
         self.fill(WHITE);
         let mut buttons = Vec::new();
         self.text(font, "设置", 54.0, 48, 82, BLACK);
-        self.text(font, "休眠、电源与锁屏外观", 25.0, 50, 128, DARK_GRAY);
+        self.text(font, "系统、电源与锁屏外观", 25.0, 50, 128, DARK_GRAY);
         self.small_button(
             font,
             "返回",
@@ -29,13 +29,31 @@ impl Display {
             &mut buttons,
         );
 
-        self.text(font, "锁屏", 36.0, 50, 194, BLACK);
+        self.text(font, "系统", 36.0, 50, 194, BLACK);
+        self.setting_row(
+            font,
+            "系统更新",
+            "检查并安装 ReMagic 系统更新",
+            224,
+            Action::OpenSystemUpdate,
+            &mut buttons,
+        );
+        self.setting_row(
+            font,
+            "返回原版系统",
+            "退出 ReMagic，回到 reMarkable 原版系统",
+            374,
+            Action::System,
+            &mut buttons,
+        );
+
+        self.text(font, "锁屏", 36.0, 50, 554, BLACK);
         let wallpaper = settings.wallpaper(wallpapers);
         self.setting_row(
             font,
             "壁纸",
             &wallpaper.label,
-            224,
+            584,
             Action::OpenWallpaperBrowser,
             &mut buttons,
         );
@@ -43,7 +61,7 @@ impl Display {
             font,
             "壁纸布局",
             settings.lock.fit.label(),
-            374,
+            734,
             Action::ToggleWallpaperFit,
             &mut buttons,
         );
@@ -51,7 +69,7 @@ impl Display {
             font,
             "自动休眠",
             idle_suspend_label(settings.idle_suspend_secs),
-            524,
+            884,
             Action::CycleAutoSleep,
             &mut buttons,
         );

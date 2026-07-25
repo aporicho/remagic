@@ -197,6 +197,10 @@ impl Daemon {
         }
         let awake = self.sleep_transaction.mark_awake(sleep_epoch)?;
         self.schedule_locked_resuspend(awake);
+        if self.cover_closed.load(Ordering::Acquire) {
+            info!("physical resume retained the lock because the cover is closed");
+            return Ok(());
+        }
         if let Err(error) = self.request_home_unlock().await {
             // The panel remains safely locked. Notification loss is
             // recoverable UI state, so the next single press may retry it.

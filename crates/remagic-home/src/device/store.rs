@@ -31,6 +31,42 @@ pub(super) struct SystemUpdateInfo {
     pub(super) update_available: bool,
 }
 
+#[derive(Clone, Debug)]
+pub(super) struct OperationProgress {
+    pub(super) target_id: String,
+    pub(super) label: String,
+    pub(super) fraction: Option<f32>,
+}
+
+#[derive(Debug)]
+pub(super) enum TaskResult {
+    Store {
+        app_id: String,
+        result: Result<(), String>,
+    },
+    SystemInstall {
+        result: Result<(), String>,
+    },
+}
+
+impl OperationProgress {
+    pub(super) fn indeterminate(target_id: &str, label: &str) -> Self {
+        Self {
+            target_id: target_id.to_owned(),
+            label: label.to_owned(),
+            fraction: None,
+        }
+    }
+
+    pub(super) fn complete(target_id: &str, label: &str) -> Self {
+        Self {
+            target_id: target_id.to_owned(),
+            label: label.to_owned(),
+            fraction: Some(1.0),
+        }
+    }
+}
+
 const SYSTEM_RELEASE_URL: &str =
     "https://github.com/aporicho/remagic/releases/latest/download/remagic-release-v1.json";
 const SYSTEM_SIGNATURE_URL: &str =

@@ -44,6 +44,13 @@ pub(super) struct Display {
     client: crate::qtfb::Client,
 }
 
+struct TileSpec<'a> {
+    title: &'a str,
+    status: &'a str,
+    icon: &'a str,
+    action: Action,
+}
+
 impl Display {
     pub(super) fn open() -> io::Result<Self> {
         let client = crate::qtfb::Client::connect()?;
@@ -60,10 +67,8 @@ impl Display {
         self.fill(WHITE);
         let mut buttons = Vec::new();
         self.render_header(font, &mut buttons);
-        let y = self.render_system_card(font, &mut buttons);
-        let y = self.render_store_card(font, &mut buttons, y);
+        let y = 178;
         self.render_app_cards(font, apps, &mut buttons, y);
-        self.render_sleep_button(font, &mut buttons);
         self.client.update_all()?;
         Ok(buttons)
     }
@@ -87,32 +92,35 @@ impl Display {
             128,
             DARK_GRAY,
         );
-        let x = self.width - 190;
-        self.rect(x, 38, 142, 72, GRAY);
-        self.text(font, "设置", 28.0, x + 42, 84, BLACK);
-        buttons.push(Button {
-            x,
-            y: 38,
-            width: 142,
-            height: 72,
-            action: Action::OpenSettings,
-        });
-    }
-
-    fn render_system_card(&mut self, font: &FontArc, buttons: &mut Vec<Button>) -> i32 {
-        let y = 178;
-        let card_h = 132;
-        self.card(38, y, self.width - 76, card_h);
-        self.text(font, "原版系统", 40.0, 72, y + 57, BLACK);
-        self.text(font, "reMarkable + 镇纸", 24.0, 72, y + 96, DARK_GRAY);
-        buttons.push(Button {
-            x: 38,
-            y,
-            width: self.width - 76,
-            height: card_h,
-            action: Action::System,
-        });
-        y + card_h + 22
+        let button_w = 142;
+        let button_h = 72;
+        let gap = 18;
+        let settings_x = self.width - 48 - button_w;
+        let sleep_x = settings_x - gap - button_w;
+        self.header_button(
+            font,
+            "休眠",
+            Button {
+                x: sleep_x,
+                y: 38,
+                width: button_w,
+                height: button_h,
+                action: Action::Sleep,
+            },
+            buttons,
+        );
+        self.header_button(
+            font,
+            "设置",
+            Button {
+                x: settings_x,
+                y: 38,
+                width: button_w,
+                height: button_h,
+                action: Action::OpenSettings,
+            },
+            buttons,
+        );
     }
 
     fn render_app_cards(
@@ -120,31 +128,127 @@ impl Display {
         font: &FontArc,
         apps: &[AppView],
         buttons: &mut Vec<Button>,
-        mut y: i32,
+        y: i32,
     ) -> i32 {
-        let card_h = 132;
+        let tile = 224;
+        let gap = 24;
+        let columns = ((self.width - 76 + gap) / (tile + gap)).max(1);
+        let grid_width = columns * tile + (columns - 1) * gap;
+        let start_x = (self.width - grid_width) / 2;
+        let mut index = 0;
+        self.render_action_tile(
+            font,
+            TileSpec {
+                title: "应用商店",
+                status: "安装和管理应用",
+                icon: "店",
+                action: Action::OpenStore,
+            },
+            buttons,
+            start_x,
+            y,
+            tile,
+        );
+        index += 1;
         for app in apps
             .iter()
             .filter(|app| app.id.as_str() != "remagic-store")
-            .take(7)
+            .take(12)
         {
-            if y + card_h > self.height - 210 {
+            let column = index % columns;
+            let row = index / columns;
+            let x = start_x + column * (tile + gap);
+            let tile_y = y + row * (tile + gap);
+            if tile_y + tile > self.height - 180 {
                 break;
             }
-            self.card(38, y, self.width - 76, card_h);
-            self.text(font, &app.name, 39.0, 72, y + 54, BLACK);
-            self.text(font, &app_status(app), 24.0, 72, y + 96, DARK_GRAY);
-            self.render_close_button(font, app, buttons, y);
+            self.render_app_tile(font, app, buttons, x, tile_y, tile);
             buttons.push(Button {
-                x: 38,
-                y,
-                width: self.width - 76,
-                height: card_h,
+                x,
+                y: tile_y,
+                width: tile,
+                height: tile,
                 action: app_action(app),
             });
-            y += card_h + 22;
+            index += 1;
         }
-        y
+        y + ((index + columns - 1) / columns) * (tile + gap)
+    }
+
+    fn render_app_tile(
+        &mut self,
+        font: &FontArc,
+        app: &AppView,
+        buttons: &mut Vec<Button>,
+        x: i32,
+        y: i32,
+        size: i32,
+    ) {
+        self.card(x, y, size, size);
+        let icon = 94;
+        let icon_x = x + (size - icon) / 2;
+        self.rect(icon_x, y + 24, icon, icon, BLACK);
+        self.centered_text_in_rect(font, &app_icon_text(app), 43.0, icon_x, icon, y + 84, WHITE);
+        self.centered_text_in_rect(
+            font,
+            &truncate_to_width(font, &app.name, 26.0, size - 28),
+            26.0,
+            x,
+            size,
+            y + 152,
+            BLACK,
+        );
+        self.centered_text_in_rect(
+            font,
+            &truncate_to_width(font, &app_status(app), 18.0, size - 24),
+            18.0,
+            x,
+            size,
+            y + 186,
+            DARK_GRAY,
+        );
+        self.render_close_button(font, app, buttons, x, y);
+    }
+
+    fn render_action_tile(
+        &mut self,
+        font: &FontArc,
+        spec: TileSpec<'_>,
+        buttons: &mut Vec<Button>,
+        x: i32,
+        y: i32,
+        size: i32,
+    ) {
+        self.card(x, y, size, size);
+        let icon = 94;
+        let icon_x = x + (size - icon) / 2;
+        self.rect(icon_x, y + 24, icon, icon, BLACK);
+        self.centered_text_in_rect(font, spec.icon, 38.0, icon_x, icon, y + 84, WHITE);
+        self.centered_text_in_rect(
+            font,
+            &truncate_to_width(font, spec.title, 26.0, size - 28),
+            26.0,
+            x,
+            size,
+            y + 152,
+            BLACK,
+        );
+        self.centered_text_in_rect(
+            font,
+            &truncate_to_width(font, spec.status, 18.0, size - 24),
+            18.0,
+            x,
+            size,
+            y + 186,
+            DARK_GRAY,
+        );
+        buttons.push(Button {
+            x,
+            y,
+            width: size,
+            height: size,
+            action: spec.action,
+        });
     }
 
     fn render_close_button(
@@ -152,38 +256,61 @@ impl Display {
         font: &FontArc,
         app: &AppView,
         buttons: &mut Vec<Button>,
+        tile_x: i32,
         y: i32,
     ) {
         if app.session.is_none() && !app.background_active {
             return;
         }
-        self.rect(self.width - 190, y + 28, 112, 70, 0xFFD0_CECB);
-        self.text(font, "关闭", 25.0, self.width - 164, y + 72, BLACK);
-        buttons.push(Button {
-            x: self.width - 190,
-            y: y + 28,
-            width: 112,
-            height: 70,
+        let button = Button {
+            x: tile_x + 150,
+            y: y + 18,
+            width: 54,
+            height: 42,
             action: Action::Close(app.id.clone()),
-        });
-    }
-
-    fn render_sleep_button(&mut self, font: &FontArc, buttons: &mut Vec<Button>) {
-        let y = self.height - 150;
-        self.rect(38, y, self.width - 76, 104, BLACK);
-        self.text(font, "休眠", 38.0, self.width / 2 - 46, y + 67, WHITE);
+        };
+        self.rect(button.x, button.y, button.width, button.height, 0xFFD0_CECB);
+        self.centered_text_in_rect(
+            font,
+            "关",
+            22.0,
+            button.x,
+            button.width,
+            button.y + 29,
+            BLACK,
+        );
         buttons.push(Button {
-            x: 38,
-            y,
-            width: self.width - 76,
-            height: 104,
-            action: Action::Sleep,
+            x: button.x,
+            y: button.y,
+            width: button.width,
+            height: button.height,
+            action: button.action,
         });
     }
 
     fn card(&mut self, x: i32, y: i32, width: i32, height: i32) {
         self.rect(x, y, width, height, GRAY);
         self.hline(x + 18, x + width - 18, y + height - 1, 0xFFD2_D0CB);
+    }
+
+    fn header_button(
+        &mut self,
+        font: &FontArc,
+        text: &str,
+        button: Button,
+        buttons: &mut Vec<Button>,
+    ) {
+        self.rect(button.x, button.y, button.width, button.height, GRAY);
+        self.centered_text_in_rect(
+            font,
+            text,
+            28.0,
+            button.x,
+            button.width,
+            button.y + 47,
+            BLACK,
+        );
+        buttons.push(button);
     }
 
     pub(super) fn press(&mut self, button: &Button) -> io::Result<Vec<u32>> {
@@ -279,6 +406,29 @@ impl Display {
         self.text(font, text, size, x.max(0), baseline, color);
     }
 
+    fn centered_text_in_rect(
+        &mut self,
+        font: &FontArc,
+        text: &str,
+        size: f32,
+        x: i32,
+        width: i32,
+        baseline: i32,
+        color: u32,
+    ) {
+        let text_width = text_width(font, text, size);
+        let text_x = x + ((width as f32 - text_width) / 2.0).round() as i32;
+        self.text(font, text, size, text_x.max(x), baseline, color);
+    }
+
+    fn progress_bar(&mut self, x: i32, y: i32, width: i32, height: i32, fraction: Option<f32>) {
+        self.rect(x, y, width, height, 0xFFD0_CECB);
+        let inner = ((width - 8) as f32 * fraction.unwrap_or(0.36).clamp(0.0, 1.0)).round() as i32;
+        if inner > 0 {
+            self.rect(x + 4, y + 4, inner, height - 8, BLACK);
+        }
+    }
+
     fn pixel(&mut self, x: i32, y: i32, color: u32) {
         if x < 0 || y < 0 || x >= self.width || y >= self.height {
             return;
@@ -318,6 +468,41 @@ fn text_width(font: &FontArc, text: &str, size: f32) -> f32 {
         previous = Some(id);
     }
     width
+}
+
+fn truncate_to_width(font: &FontArc, text: &str, size: f32, max_width: i32) -> String {
+    if text_width(font, text, size) <= max_width as f32 {
+        return text.to_owned();
+    }
+    let suffix = "...";
+    let suffix_width = text_width(font, suffix, size);
+    let mut output = String::new();
+    for ch in text.chars() {
+        let candidate = format!("{output}{ch}");
+        if text_width(font, &candidate, size) + suffix_width > max_width as f32 {
+            break;
+        }
+        output.push(ch);
+    }
+    if output.is_empty() {
+        suffix.to_owned()
+    } else {
+        output.push_str(suffix);
+        output
+    }
+}
+
+fn app_icon_text(app: &AppView) -> String {
+    match app.id.as_str() {
+        "magicpaper" => "M".into(),
+        "koreader" => "K".into(),
+        "upload" | "remagic-upload" => "U".into(),
+        value => value
+            .chars()
+            .find(|ch| ch.is_ascii_alphanumeric())
+            .map(|ch| ch.to_ascii_uppercase().to_string())
+            .unwrap_or_else(|| "?".into()),
+    }
 }
 
 fn app_status(app: &AppView) -> String {

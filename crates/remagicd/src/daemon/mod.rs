@@ -49,6 +49,8 @@ pub(super) enum Event {
     #[cfg(test)]
     EnsureManager,
     ReturnSystem,
+    CoverClosed,
+    CoverOpened,
     Sleep(u64),
     Wake(u64),
     Resuspend {
@@ -92,6 +94,8 @@ impl Event {
                 | Self::RuntimeLaunch { .. }
                 | Self::OpenManager
                 | Self::ReturnSystem
+                | Self::CoverClosed
+                | Self::CoverOpened
                 | Self::Sleep(_)
                 | Self::Wake(_)
                 | Self::Close(_, _)
@@ -242,6 +246,8 @@ pub(super) struct Daemon {
     pub(super) next_sleep_epoch: AtomicU64,
     sleep_transaction: sleep::SleepTransaction,
     pub(super) launch_interrupt_epoch: Arc<AtomicU64>,
+    pub(super) cover_closed: Arc<AtomicBool>,
+    pub(super) cover_resume_app: RwLock<Option<AppId>>,
     #[cfg(test)]
     pub(super) manager_repair_pending: AtomicBool,
     pub(super) domain_recovery_pending: AtomicBool,

@@ -2,7 +2,7 @@ use super::{
     refresh_apps, settings, Action, Button, Display, HomeSettings, UiMode, WallpaperOption,
 };
 use ab_glyph::FontArc;
-use remagic_protocol::AppView;
+use remagic_protocol::{AppView, Request};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn wallpapers_changed(
@@ -69,6 +69,11 @@ pub(super) async fn handle(
                 Err(error) => eprintln!("remagic-home: idle suspend update failed: {error}"),
             }
             *buttons = display.render_settings(font, home_settings, wallpapers)?;
+        }
+        (UiMode::Settings, Action::System) => {
+            if let Err(error) = super::request(Request::ReturnSystem).await {
+                eprintln!("remagic-home: settings return failed: {error}");
+            }
         }
         (UiMode::Settings, Action::PreviewLock) => {
             *buttons = display.render_locked(font, home_settings, wallpapers, true)?;

@@ -15,7 +15,9 @@ pub use control::ControlSender;
 use control::WakeEvent;
 
 const EV_KEY: u16 = 1;
+const EV_SW: u16 = 5;
 const KEY_POWER: u16 = 116;
+const SW_LID: u16 = 0;
 const EVIOCGRAB: libc::c_ulong = 0x40044590;
 const WAKE_GUARD_QUIET: Duration = Duration::from_millis(800);
 
@@ -122,6 +124,7 @@ impl WakeGuard {
 pub fn spawn(
     events: tokio_mpsc::Sender<QueuedEvent>,
     launch_interrupt_epoch: Arc<AtomicU64>,
+    cover_closed: Arc<std::sync::atomic::AtomicBool>,
 ) -> (std::thread::JoinHandle<()>, ControlSender) {
     let (control_tx, control_rx) = mpsc::channel();
     let wake = Arc::new(WakeEvent::create().expect("eventfd is required for power control"));
@@ -138,9 +141,33 @@ pub fn spawn(
         };
         let mut tracker = ClickTracker::default();
         let mut wake_guard = WakeGuard::default();
+        let mut cover = CoverDevice::open().map_or_else(
+            |error| {
+                eprintln!("remagicd: cover sensor unavailable: {error}");
+                None
+            },
+            Some,
+        );
+        let mut observed_cover_closed = None;
+        if let Some(cover_device) = &cover {
+            match cover_device.initial_closed() {
+                Ok(closed) => {
+                    observed_cover_closed = Some(closed);
+                    cover_closed.store(closed, std::sync::atomic::Ordering::Release);
+                    if closed {
+                        let _ = events.blocking_send(QueuedEvent::unattended(
+                            Event::CoverClosed,
+                            &launch_interrupt_epoch,
+                        ));
+                    }
+                }
+                Err(error) => eprintln!("remagicd: cannot query initial cover state: {error}"),
+            }
+        }
         loop {
             wait_for_input_or_control(
                 device.fd,
+                cover.as_ref().map_or(-1, |device| device.fd),
                 thread_wake.fd(),
                 next_deadline(&tracker, &wake_guard),
             );
@@ -203,6 +230,22 @@ pub fn spawn(
                 };
                 send_action(action, &events, &launch_interrupt_epoch);
             }
+            if let Some(cover_device) = &mut cover {
+                for closed in cover_device.drain() {
+                    if observed_cover_closed == Some(closed) {
+                        continue;
+                    }
+                    observed_cover_closed = Some(closed);
+                    cover_closed.store(closed, std::sync::atomic::Ordering::Release);
+                    let event = if closed {
+                        Event::CoverClosed
+                    } else {
+                        Event::CoverOpened
+                    };
+                    let _ = events
+                        .blocking_send(QueuedEvent::unattended(event, &launch_interrupt_epoch));
+                }
+            }
             let now = Instant::now();
             wake_guard.poll(now);
             if !wake_guard.active {
@@ -221,7 +264,12 @@ fn next_deadline(tracker: &ClickTracker, wake_guard: &WakeGuard) -> Option<Insta
     }
 }
 
-fn wait_for_input_or_control(device_fd: RawFd, wake_fd: RawFd, deadline: Option<Instant>) {
+fn wait_for_input_or_control(
+    device_fd: RawFd,
+    cover_fd: RawFd,
+    wake_fd: RawFd,
+    deadline: Option<Instant>,
+) {
     let timeout = deadline.map_or(-1, |deadline| {
         deadline
             .saturating_duration_since(Instant::now())
@@ -231,6 +279,11 @@ fn wait_for_input_or_control(device_fd: RawFd, wake_fd: RawFd, deadline: Option<
     let mut descriptors = [
         libc::pollfd {
             fd: device_fd,
+            events: libc::POLLIN | libc::POLLERR | libc::POLLHUP,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: cover_fd,
             events: libc::POLLIN | libc::POLLERR | libc::POLLHUP,
             revents: 0,
         },
@@ -252,6 +305,57 @@ fn wait_for_input_or_control(device_fd: RawFd, wake_fd: RawFd, deadline: Option<
             return;
         }
     }
+}
+
+fn input_event_size() -> usize {
+    std::mem::size_of::<libc::timeval>() + 8
+}
+
+fn eviocgsw(length: usize) -> libc::c_ulong {
+    const IOC_NRBITS: libc::c_ulong = 8;
+    const IOC_TYPEBITS: libc::c_ulong = 8;
+    const IOC_SIZEBITS: libc::c_ulong = 14;
+    const IOC_NRSHIFT: libc::c_ulong = 0;
+    const IOC_TYPESHIFT: libc::c_ulong = IOC_NRSHIFT + IOC_NRBITS;
+    const IOC_SIZESHIFT: libc::c_ulong = IOC_TYPESHIFT + IOC_TYPEBITS;
+    const IOC_DIRSHIFT: libc::c_ulong = IOC_SIZESHIFT + IOC_SIZEBITS;
+    const IOC_READ: libc::c_ulong = 2;
+
+    (IOC_READ << IOC_DIRSHIFT)
+        | ((b'E' as libc::c_ulong) << IOC_TYPESHIFT)
+        | (0x1b << IOC_NRSHIFT)
+        | ((length as libc::c_ulong) << IOC_SIZESHIFT)
+}
+
+fn read_input_values(fd: RawFd, expected_kind: u16, expected_code: u16) -> Vec<i32> {
+    let event_size = input_event_size();
+    let mut values = Vec::new();
+    let mut buffer = [0u8; 24 * 16];
+    loop {
+        let count =
+            unsafe { libc::read(fd, buffer.as_mut_ptr().cast::<libc::c_void>(), buffer.len()) };
+        if count <= 0 {
+            break;
+        }
+        for event in buffer[..count as usize].chunks_exact(event_size) {
+            if let Some(value) = parse_input_event(event, expected_kind, expected_code) {
+                values.push(value);
+            }
+        }
+    }
+    values
+}
+
+fn parse_input_event(event: &[u8], expected_kind: u16, expected_code: u16) -> Option<i32> {
+    let event_size = input_event_size();
+    if event.len() != event_size {
+        return None;
+    }
+    let offset = event_size - 8;
+    let kind = u16::from_ne_bytes([event[offset], event[offset + 1]]);
+    let code = u16::from_ne_bytes([event[offset + 2], event[offset + 3]]);
+    let value = i32::from_ne_bytes(event[offset + 4..offset + 8].try_into().ok()?);
+    (kind == expected_kind && code == expected_code).then_some(value)
 }
 
 fn note_power_press(interaction_epoch: &AtomicU64) -> u64 {
@@ -345,31 +449,72 @@ impl PowerDevice {
     }
 
     fn drain(&mut self) -> Vec<i32> {
-        let event_size = std::mem::size_of::<libc::timeval>() + 8;
-        let mut values = Vec::new();
-        let mut buffer = [0u8; 24 * 16];
-        loop {
-            let count = unsafe {
-                libc::read(
-                    self.fd,
-                    buffer.as_mut_ptr().cast::<libc::c_void>(),
-                    buffer.len(),
-                )
-            };
-            if count <= 0 {
-                break;
+        read_input_values(self.fd, EV_KEY, KEY_POWER)
+            .into_iter()
+            .filter(|value| matches!(value, 0 | 1))
+            .collect()
+    }
+}
+
+struct CoverDevice {
+    fd: RawFd,
+}
+
+impl CoverDevice {
+    fn open() -> io::Result<Self> {
+        for index in 0..32 {
+            let name =
+                std::fs::read_to_string(format!("/sys/class/input/event{index}/device/name"))
+                    .unwrap_or_default()
+                    .to_lowercase();
+            if !name.contains("hall") {
+                continue;
             }
-            for event in buffer[..count as usize].chunks_exact(event_size) {
-                let offset = event_size - 8;
-                let kind = u16::from_ne_bytes([event[offset], event[offset + 1]]);
-                let code = u16::from_ne_bytes([event[offset + 2], event[offset + 3]]);
-                let value = i32::from_ne_bytes(event[offset + 4..offset + 8].try_into().unwrap());
-                if kind == EV_KEY && code == KEY_POWER && matches!(value, 0 | 1) {
-                    values.push(value);
-                }
+            let path = CString::new(format!("/dev/input/event{index}")).unwrap();
+            let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK) };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
             }
+            return Ok(Self { fd });
         }
-        values
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Hall effect input not found",
+        ))
+    }
+
+    fn drain(&mut self) -> Vec<bool> {
+        read_input_values(self.fd, EV_SW, SW_LID)
+            .into_iter()
+            .filter_map(|value| match value {
+                0 => Some(false),
+                1 => Some(true),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn initial_closed(&self) -> io::Result<bool> {
+        let mut switches: libc::c_ulong = 0;
+        let result = unsafe {
+            libc::ioctl(
+                self.fd,
+                eviocgsw(std::mem::size_of_val(&switches)),
+                &mut switches,
+            )
+        };
+        if result < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok((switches & (1 << SW_LID)) != 0)
+    }
+}
+
+impl Drop for CoverDevice {
+    fn drop(&mut self) {
+        if self.fd >= 0 {
+            unsafe { libc::close(self.fd) };
+        }
     }
 }
 
@@ -460,5 +605,28 @@ mod tests {
             &epoch,
         ));
         assert_eq!(epoch.load(std::sync::atomic::Ordering::Acquire), 42);
+    }
+
+    #[test]
+    fn parses_only_lid_switch_events_for_cover_state() {
+        let mut event = vec![0_u8; input_event_size()];
+        let offset = input_event_size() - 8;
+        event[offset..offset + 2].copy_from_slice(&EV_SW.to_ne_bytes());
+        event[offset + 2..offset + 4].copy_from_slice(&SW_LID.to_ne_bytes());
+        event[offset + 4..offset + 8].copy_from_slice(&1_i32.to_ne_bytes());
+
+        assert_eq!(parse_input_event(&event, EV_SW, SW_LID), Some(1));
+
+        event[offset + 2..offset + 4].copy_from_slice(&15_u16.to_ne_bytes());
+        assert_eq!(parse_input_event(&event, EV_SW, SW_LID), None);
+
+        event[offset + 2..offset + 4].copy_from_slice(&SW_LID.to_ne_bytes());
+        event[offset..offset + 2].copy_from_slice(&EV_KEY.to_ne_bytes());
+        assert_eq!(parse_input_event(&event, EV_SW, SW_LID), None);
+    }
+
+    #[test]
+    fn constructs_linux_switch_state_ioctl() {
+        assert_eq!(eviocgsw(std::mem::size_of::<libc::c_ulong>()), 0x8008451b);
     }
 }

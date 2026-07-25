@@ -6,7 +6,7 @@ use remagic_protocol::{read_frame, write_frame, ControlRequest, Request, Respons
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 use tokio::net::{UnixListener, UnixStream};
@@ -59,9 +59,13 @@ fn create_daemon() -> Result<DaemonParts, Box<dyn std::error::Error>> {
     let sessions = session_store.load_all()?;
     let (events, event_rx) = mpsc::channel(64);
     let launch_interrupt_epoch = Arc::new(AtomicU64::new(1));
+    let cover_closed = Arc::new(AtomicBool::new(false));
     let power = Arc::new(crate::power_manager::PowerManager::load());
-    let (power_thread, power_control) =
-        power_device::spawn(events.clone(), launch_interrupt_epoch.clone());
+    let (power_thread, power_control) = power_device::spawn(
+        events.clone(),
+        launch_interrupt_epoch.clone(),
+        cover_closed.clone(),
+    );
     let daemon = Arc::new(Daemon {
         state: RwLock::new(ManagerState::default()),
         manifests: RwLock::new(manifests),
@@ -84,6 +88,8 @@ fn create_daemon() -> Result<DaemonParts, Box<dyn std::error::Error>> {
         next_sleep_epoch: AtomicU64::new(1),
         sleep_transaction: sleep::SleepTransaction::default(),
         launch_interrupt_epoch,
+        cover_closed,
+        cover_resume_app: RwLock::new(None),
         #[cfg(test)]
         manager_repair_pending: AtomicBool::new(false),
         domain_recovery_pending: AtomicBool::new(false),

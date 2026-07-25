@@ -10,10 +10,11 @@ use std::time::Duration;
 
 const SOCKET_PATH: &str = "/run/remagic/home-events.sock";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Event {
     AutoSleep,
-    ResumeUnlock,
+    CoverSleep { app_id: Option<remagic_core::AppId> },
+    ResumeUnlock { app_id: Option<remagic_core::AppId> },
     WallpapersChanged,
 }
 
@@ -37,12 +38,22 @@ impl Receiver {
             match self.socket.recv(&mut packet) {
                 Ok(length) if &packet[..length] == b"auto_sleep\n" => events.push(Event::AutoSleep),
                 Ok(length) if &packet[..length] == b"resume_unlock\n" => {
-                    events.push(Event::ResumeUnlock)
+                    events.push(Event::ResumeUnlock { app_id: None })
+                }
+                Ok(length) if &packet[..length] == b"cover_sleep\n" => {
+                    events.push(Event::CoverSleep { app_id: None })
+                }
+                Ok(length) if &packet[..length] == b"cover_open\n" => {
+                    events.push(Event::ResumeUnlock { app_id: None })
                 }
                 Ok(length) if &packet[..length] == b"wallpapers_changed\n" => {
                     events.push(Event::WallpapersChanged)
                 }
-                Ok(_) => {}
+                Ok(length) => {
+                    if let Some(event) = parse_event(&packet[..length]) {
+                        events.push(event);
+                    }
+                }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) => return Err(error),
@@ -87,6 +98,21 @@ impl Receiver {
                 return Err(error);
             }
         }
+    }
+}
+
+fn parse_event(bytes: &[u8]) -> Option<Event> {
+    let text = std::str::from_utf8(bytes).ok()?.trim_end_matches('\n');
+    let (command, value) = text.split_once(' ')?;
+    let app_id = remagic_core::AppId::new(value.to_owned()).ok()?;
+    match command {
+        "cover_sleep_app" => Some(Event::CoverSleep {
+            app_id: Some(app_id),
+        }),
+        "cover_open_app" | "resume_unlock_app" => Some(Event::ResumeUnlock {
+            app_id: Some(app_id),
+        }),
+        _ => None,
     }
 }
 

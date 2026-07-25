@@ -233,6 +233,8 @@ impl Daemon {
             #[cfg(test)]
             Event::EnsureManager => self.handle_ensure_manager().await,
             Event::ReturnSystem => self.restore_system().await,
+            Event::CoverClosed => self.handle_cover_closed(interrupt_epoch).await,
+            Event::CoverOpened => self.handle_cover_opened(interrupt_epoch).await,
             Event::Sleep(lock_surface_sequence) => {
                 self.sleep(lock_surface_sequence, &request_fence).await
             }
