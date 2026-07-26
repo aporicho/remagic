@@ -48,7 +48,7 @@ pub(super) async fn handle(
     match (*mode, action) {
         (UiMode::Manager, Action::OpenSettings) => {
             *wallpapers = settings::wallpapers();
-            refresh_power_settings(home_settings).await;
+            refresh_system_settings(home_settings).await;
             *buttons = display.render_settings(font, home_settings, wallpapers)?;
             *mode = UiMode::Settings;
         }
@@ -61,6 +61,29 @@ pub(super) async fn handle(
             home_settings.lock.fit.toggle();
             super::persist_settings(home_settings);
             *buttons = display.render_settings(font, home_settings, wallpapers)?;
+        }
+        (UiMode::Settings, Action::OpenBacklight) => {
+            refresh_backlight_settings(home_settings).await;
+            *buttons = display.render_backlight_settings(font, home_settings.backlight.as_ref())?;
+            *mode = UiMode::Backlight;
+        }
+        (UiMode::Backlight, Action::BackSettings) => {
+            *buttons = display.render_settings(font, home_settings, wallpapers)?;
+            *mode = UiMode::Settings;
+        }
+        (UiMode::Backlight, Action::SetBacklight(percent)) => {
+            set_backlight(*percent, home_settings).await;
+            *buttons = display.render_backlight_settings(font, home_settings.backlight.as_ref())?;
+        }
+        (UiMode::Backlight, Action::AdjustBacklight(delta)) => {
+            let current = home_settings
+                .backlight
+                .as_ref()
+                .and_then(|snapshot| snapshot.percent)
+                .unwrap_or(0) as i16;
+            let percent = (current + *delta as i16).clamp(0, 100) as u8;
+            set_backlight(percent, home_settings).await;
+            *buttons = display.render_backlight_settings(font, home_settings.backlight.as_ref())?;
         }
         (UiMode::Settings, Action::CycleAutoSleep) => {
             let seconds = next_idle_suspend(home_settings.idle_suspend_secs);
@@ -154,10 +177,40 @@ fn redraw_wallpapers(
     Ok(())
 }
 
+async fn refresh_system_settings(settings: &mut HomeSettings) {
+    refresh_power_settings(settings).await;
+    refresh_backlight_settings(settings).await;
+}
+
 async fn refresh_power_settings(settings: &mut HomeSettings) {
     match crate::power_status().await {
         Ok(snapshot) => settings.idle_suspend_secs = snapshot.idle_suspend_secs,
         Err(error) => eprintln!("remagic-home: power settings refresh failed: {error}"),
+    }
+}
+
+pub(super) async fn refresh_backlight_settings(settings: &mut HomeSettings) {
+    match crate::backlight_status().await {
+        Ok(snapshot) => settings.backlight = Some(snapshot),
+        Err(error) => {
+            eprintln!("remagic-home: backlight settings refresh failed: {error}");
+            settings.backlight = Some(remagic_core::BacklightSnapshot::unsupported(
+                error.to_string(),
+            ));
+        }
+    }
+}
+
+async fn set_backlight(percent: u8, settings: &mut HomeSettings) {
+    match crate::set_backlight(percent).await {
+        Ok(snapshot) => settings.backlight = Some(snapshot),
+        Err(error) => {
+            eprintln!("remagic-home: backlight update failed: {error}");
+            refresh_backlight_settings(settings).await;
+            if let Some(snapshot) = &mut settings.backlight {
+                snapshot.error = Some(error.to_string());
+            }
+        }
     }
 }
 

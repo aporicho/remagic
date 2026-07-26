@@ -57,6 +57,8 @@ pub(super) struct HomeSettings {
     pub(super) lock: LockSettings,
     #[serde(skip)]
     pub(super) idle_suspend_secs: u64,
+    #[serde(skip)]
+    pub(super) backlight: Option<remagic_core::BacklightSnapshot>,
 }
 
 impl Default for HomeSettings {
@@ -64,6 +66,7 @@ impl Default for HomeSettings {
         Self {
             lock: LockSettings::default(),
             idle_suspend_secs: remagic_core::DEFAULT_IDLE_SUSPEND_SECS,
+            backlight: None,
         }
     }
 }

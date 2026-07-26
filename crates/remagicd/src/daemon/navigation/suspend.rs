@@ -108,6 +108,7 @@ impl Daemon {
         if let Err(error) = self.sleep_transaction.mark_locked(sleep_epoch) {
             return self.rollback_sleep(sleep_epoch, error).await;
         }
+        self.backlight.force_off("lock");
         self.power.begin_suspend().await;
         Ok((sleep_epoch, interaction_epoch))
     }
@@ -148,6 +149,7 @@ impl Daemon {
             self.cancel_wake_guard().await?;
             return Ok(());
         }
+        self.backlight.force_off("locked resuspend");
         self.power.suspended().await;
         let suspend_result = self.controller.suspend().await;
         let wakelock_result = self.controller.acquire_wakelock();
@@ -327,6 +329,7 @@ impl Daemon {
             .map_err(|error| error.to_string())?;
         self.sleep_transaction.finish_unlock(sleep_epoch)?;
         self.power.resumed("power key").await;
+        self.backlight.restore_desired();
         Ok(())
     }
 
@@ -396,6 +399,7 @@ impl Daemon {
             .map_err(|error| error.to_string())?;
         self.sleep_transaction.finish_unlock(sleep_epoch)?;
         self.power.cancel_quiescing("sleep rollback").await;
+        self.backlight.restore_desired();
         Err(cause)
     }
 }

@@ -605,6 +605,14 @@ async fn render_resume_target(
             *context.mode = UiMode::Settings;
             Ok(None)
         }
+        ResumeTarget::Ui(UiMode::Backlight) => {
+            settings_ui::refresh_backlight_settings(context.settings).await;
+            *context.buttons = context
+                .display
+                .render_backlight_settings(context.font, context.settings.backlight.as_ref())?;
+            *context.mode = UiMode::Backlight;
+            Ok(None)
+        }
         ResumeTarget::Ui(UiMode::WallpaperBrowser) => {
             let (buttons, page) = context.display.render_wallpaper_browser(
                 context.font,

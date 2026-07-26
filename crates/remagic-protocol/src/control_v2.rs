@@ -3,8 +3,9 @@
 
 use crate::{Envelope, PackageOperation};
 use remagic_core::{
-    AppId, AppInstance, AppKind, AppSession, Capability, DeviceProduct, PowerSnapshot,
-    PreflightReport, RuntimeProfile, SupervisorState, SystemDomainState, UninstallPolicy,
+    AppId, AppInstance, AppKind, AppSession, BacklightSnapshot, Capability, DeviceProduct,
+    PowerSnapshot, PreflightReport, RuntimeProfile, SupervisorState, SystemDomainState,
+    UninstallPolicy,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -19,8 +20,12 @@ pub type ControlEventEnvelope = Envelope<ControlEvent>;
 pub enum ControlIntent {
     Snapshot,
     PowerSnapshot,
+    BacklightSnapshot,
     SetIdleSuspend {
         seconds: u64,
+    },
+    SetBacklight {
+        percent: u8,
     },
     Subscribe {
         #[serde(default)]
@@ -82,6 +87,10 @@ pub enum ControlReply {
     },
     Power {
         snapshot: PowerSnapshot,
+        state_revision: u64,
+    },
+    Backlight {
+        snapshot: BacklightSnapshot,
         state_revision: u64,
     },
     Subscribed {
@@ -242,7 +251,9 @@ impl TryFrom<crate::Request> for ControlIntent {
         Ok(match request {
             Request::Status | Request::ListApps => Self::Snapshot,
             Request::PowerStatus => Self::PowerSnapshot,
+            Request::BacklightStatus => Self::BacklightSnapshot,
             Request::SetIdleSuspend { seconds } => Self::SetIdleSuspend { seconds },
+            Request::SetBacklight { percent } => Self::SetBacklight { percent },
             Request::ReloadManifests => Self::ReloadManifests,
             Request::OpenManager => Self::ShowHome,
             Request::ReturnSystem => Self::ReturnStock,

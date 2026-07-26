@@ -365,6 +365,7 @@ mod exit_report_tests {
             manifest_store: remagic_core::ManifestStore::new(session_root.join("manifests")),
             controller: crate::system::SystemController::new(),
             power: Arc::new(crate::power_manager::PowerManager::load()),
+            backlight: Arc::new(crate::backlight::BacklightManager::load()),
             transition_lock: Mutex::new(()),
             events,
             power_control: power_device::ControlSender::from_test_channel(power_control),

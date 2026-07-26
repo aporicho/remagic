@@ -30,6 +30,9 @@ pub(super) enum Action {
     OpenSettings,
     BackManager,
     BackSettings,
+    OpenBacklight,
+    SetBacklight(u8),
+    AdjustBacklight(i8),
     OpenWallpaperBrowser,
     SelectWallpaper(String),
     WallpaperPage(i32),
@@ -43,6 +46,7 @@ enum UiMode {
     Welcome,
     Manager,
     Settings,
+    Backlight,
     WallpaperBrowser,
     Store,
     SystemUpdate,
@@ -206,6 +210,7 @@ async fn initial_page(
         UiMode::Manager => display.render(font, apps)?,
         UiMode::Locked => display.render_locked(font, settings, wallpapers, false)?,
         UiMode::Settings
+        | UiMode::Backlight
         | UiMode::WallpaperBrowser
         | UiMode::Store
         | UiMode::SystemUpdate
@@ -310,6 +315,9 @@ async fn execute_action(
         Action::OpenSettings
         | Action::BackManager
         | Action::BackSettings
+        | Action::OpenBacklight
+        | Action::SetBacklight(_)
+        | Action::AdjustBacklight(_)
         | Action::OpenWallpaperBrowser
         | Action::SelectWallpaper(_)
         | Action::WallpaperPage(_)

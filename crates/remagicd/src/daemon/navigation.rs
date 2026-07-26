@@ -70,6 +70,7 @@ impl Daemon {
             .apply(Transition::ManagedReady)
             .map_err(|e| e.to_string())?;
         self.power.enter_managed().await;
+        self.backlight.restore_desired();
         self.queue_cover_closed_if_current().await;
         Ok(())
     }
@@ -94,6 +95,7 @@ impl Daemon {
         if let Err(error) = self.cancel_wake_guard().await {
             warn!(%error, "could not cancel wake guard during system restore");
         }
+        self.backlight.restore_desired();
         let _ = display_host::clear_foreground().await;
         self.controller.stop_and_wait(HOME_UNIT).await?;
         self.stop_managed_apps().await?;

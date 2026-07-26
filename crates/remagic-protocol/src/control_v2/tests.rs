@@ -134,6 +134,10 @@ fn every_control_intent_variant_round_trips() {
     let app = id("magicpaper");
     let intents = vec![
         ControlIntent::Snapshot,
+        ControlIntent::PowerSnapshot,
+        ControlIntent::BacklightSnapshot,
+        ControlIntent::SetIdleSuspend { seconds: 120 },
+        ControlIntent::SetBacklight { percent: 40 },
         ControlIntent::Subscribe {
             since_revision: Some(10),
         },
@@ -190,6 +194,20 @@ fn every_control_reply_and_event_variant_round_trips() {
         ControlReply::Ack { state_revision: 1 },
         ControlReply::Snapshot {
             snapshot: snapshot(),
+        },
+        ControlReply::Backlight {
+            snapshot: remagic_core::BacklightSnapshot {
+                supported: true,
+                percent: Some(40),
+                forced_off: false,
+                provider: Some("rm_frontlight".into()),
+                brightness: Some(819),
+                max_brightness: Some(2047),
+                bl_power: Some(0),
+                linear_mapping: Some("no".into()),
+                error: None,
+            },
+            state_revision: 2,
         },
         ControlReply::Subscribed { state_revision: 2 },
         ControlReply::Preflight {

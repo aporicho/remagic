@@ -69,6 +69,7 @@ pub(in crate::daemon) fn daemon_with_events(
         manifest_store: ManifestStore::new(root.join("manifests")),
         controller: crate::system::SystemController::new(),
         power: Arc::new(crate::power_manager::PowerManager::load()),
+        backlight: Arc::new(crate::backlight::BacklightManager::load()),
         transition_lock: Mutex::new(()),
         events,
         power_control: power_device::ControlSender::from_test_channel(power_control),

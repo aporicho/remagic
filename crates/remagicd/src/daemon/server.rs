@@ -61,6 +61,7 @@ fn create_daemon() -> Result<DaemonParts, Box<dyn std::error::Error>> {
     let launch_interrupt_epoch = Arc::new(AtomicU64::new(1));
     let cover_closed = Arc::new(AtomicBool::new(false));
     let power = Arc::new(crate::power_manager::PowerManager::load());
+    let backlight = Arc::new(crate::backlight::BacklightManager::load());
     let (power_thread, power_control) = power_device::spawn(
         events.clone(),
         launch_interrupt_epoch.clone(),
@@ -80,6 +81,7 @@ fn create_daemon() -> Result<DaemonParts, Box<dyn std::error::Error>> {
         manifest_store,
         controller: SystemController::new(),
         power: power.clone(),
+        backlight,
         transition_lock: Mutex::new(()),
         events,
         power_control,

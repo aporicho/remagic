@@ -14,7 +14,10 @@ mod supervision;
 mod sync;
 mod utils;
 
-use crate::{power_device, power_manager::PowerManager, system::SystemController};
+use crate::{
+    backlight::BacklightManager, power_device, power_manager::PowerManager,
+    system::SystemController,
+};
 use remagic_core::{AppId, AppSession, AppToken, ManagerState, ManifestStore, SessionStore};
 use remagic_protocol::PackageOperation;
 use std::collections::BTreeMap;
@@ -236,6 +239,7 @@ pub(super) struct Daemon {
     pub(super) manifest_store: ManifestStore,
     pub(super) controller: SystemController,
     pub(super) power: Arc<PowerManager>,
+    pub(super) backlight: Arc<BacklightManager>,
     pub(super) transition_lock: Mutex<()>,
     pub(super) events: mpsc::Sender<QueuedEvent>,
     pub(super) power_control: power_device::ControlSender,

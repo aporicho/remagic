@@ -89,6 +89,7 @@ fn parse_v2(args: &[String]) -> Result<Option<ControlIntent>, Box<dyn std::error
     let intent = match command {
         "snapshot" => ControlIntent::Snapshot,
         "power" => ControlIntent::PowerSnapshot,
+        "backlight" => ControlIntent::BacklightSnapshot,
         "set-idle-suspend" => ControlIntent::SetIdleSuspend {
             seconds: args
                 .get(1)
@@ -96,6 +97,19 @@ fn parse_v2(args: &[String]) -> Result<Option<ControlIntent>, Box<dyn std::error
                 .parse()
                 .map_err(|_| "set-idle-suspend seconds must be an unsigned integer")?,
         },
+        "set-backlight" => {
+            let percent: u16 = args
+                .get(1)
+                .ok_or("set-backlight requires percent")?
+                .parse()
+                .map_err(|_| "set-backlight percent must be an unsigned integer")?;
+            if percent > 100 {
+                return Err("set-backlight percent must be between 0 and 100".into());
+            }
+            ControlIntent::SetBacklight {
+                percent: percent as u8,
+            }
+        }
         "preflight" => ControlIntent::Preflight {
             app_id: AppId::new(args.get(1).ok_or("preflight requires an app id")?.clone())?,
         },
@@ -337,5 +351,19 @@ mod tests {
                 bundle: Some(path),
             } if app_id.as_str() == "koreader" && path == std::path::Path::new("/tmp/koreader.tar.gz")
         ));
+    }
+
+    #[test]
+    fn parses_backlight_commands_on_control_v2() {
+        assert!(matches!(
+            parse_v2(&args(&["backlight"])).unwrap().unwrap(),
+            ControlIntent::BacklightSnapshot
+        ));
+        assert!(matches!(
+            parse_v2(&args(&["set-backlight", "75"])).unwrap().unwrap(),
+            ControlIntent::SetBacklight { percent: 75 }
+        ));
+        let error = parse_v2(&args(&["set-backlight", "101"])).unwrap_err();
+        assert!(error.to_string().contains("between 0 and 100"));
     }
 }

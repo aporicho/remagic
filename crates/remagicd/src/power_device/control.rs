@@ -44,6 +44,7 @@ impl ControlSender {
 pub(super) struct WakeEvent(RawFd);
 
 impl WakeEvent {
+    #[cfg(target_os = "linux")]
     pub(super) fn create() -> io::Result<Self> {
         let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
         if fd < 0 {
@@ -51,6 +52,14 @@ impl WakeEvent {
         } else {
             Ok(Self(fd))
         }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(super) fn create() -> io::Result<Self> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "power wake event requires Linux eventfd",
+        ))
     }
 
     pub(super) fn fd(&self) -> RawFd {

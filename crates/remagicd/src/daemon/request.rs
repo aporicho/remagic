@@ -15,11 +15,18 @@ impl Daemon {
             Request::PowerStatus => Response::Power {
                 snapshot: self.power.snapshot().await,
             },
+            Request::BacklightStatus => Response::Backlight {
+                snapshot: self.backlight.snapshot(),
+            },
             Request::SetIdleSuspend { seconds } => match self.power.set_idle_suspend(seconds).await
             {
                 Ok(_) => Response::Power {
                     snapshot: self.power.snapshot().await,
                 },
+                Err(message) => Response::Error { message },
+            },
+            Request::SetBacklight { percent } => match self.backlight.set_percent(percent) {
+                Ok(snapshot) => Response::Backlight { snapshot },
                 Err(message) => Response::Error { message },
             },
             Request::ListApps => Response::Apps {

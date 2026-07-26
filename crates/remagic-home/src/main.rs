@@ -61,10 +61,22 @@ async fn power_status() -> Result<remagic_core::PowerSnapshot, Box<dyn std::erro
 }
 
 #[cfg(feature = "device")]
+async fn backlight_status() -> Result<remagic_core::BacklightSnapshot, Box<dyn std::error::Error>> {
+    backlight_request(Request::BacklightStatus).await
+}
+
+#[cfg(feature = "device")]
 async fn set_idle_suspend(
     seconds: u64,
 ) -> Result<remagic_core::PowerSnapshot, Box<dyn std::error::Error>> {
     power_request(Request::SetIdleSuspend { seconds }).await
+}
+
+#[cfg(feature = "device")]
+async fn set_backlight(
+    percent: u8,
+) -> Result<remagic_core::BacklightSnapshot, Box<dyn std::error::Error>> {
+    backlight_request(Request::SetBacklight { percent }).await
 }
 
 #[cfg(feature = "device")]
@@ -77,5 +89,18 @@ async fn power_request(
         Response::Power { snapshot } => Ok(snapshot),
         Response::Error { message } => Err(message.into()),
         _ => Err("unexpected manager power response".into()),
+    }
+}
+
+#[cfg(feature = "device")]
+async fn backlight_request(
+    request: Request,
+) -> Result<remagic_core::BacklightSnapshot, Box<dyn std::error::Error>> {
+    let mut stream = UnixStream::connect(remagic_protocol::DEFAULT_SOCKET).await?;
+    write_frame(&mut stream, &request).await?;
+    match read_frame::<_, Response>(&mut stream).await? {
+        Response::Backlight { snapshot } => Ok(snapshot),
+        Response::Error { message } => Err(message.into()),
+        _ => Err("unexpected manager backlight response".into()),
     }
 }

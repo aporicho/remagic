@@ -1,4 +1,4 @@
-use remagic_core::{AppId, AppSession, DomainState, PowerSnapshot};
+use remagic_core::{AppId, AppSession, BacklightSnapshot, DomainState, PowerSnapshot};
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::PathBuf;
@@ -94,10 +94,14 @@ pub enum ProtocolValidationError {
 pub enum Request {
     Status,
     PowerStatus,
+    BacklightStatus,
     SetIdleSuspend {
         /// Zero disables automatic suspension; otherwise the platform
         /// validates the system-supported range.
         seconds: u64,
+    },
+    SetBacklight {
+        percent: u8,
     },
     ListApps,
     ReloadManifests,
@@ -205,6 +209,9 @@ pub enum Response {
     },
     Power {
         snapshot: PowerSnapshot,
+    },
+    Backlight {
+        snapshot: BacklightSnapshot,
     },
     Apps {
         apps: Vec<AppView>,
@@ -338,7 +345,9 @@ mod tests {
     fn power_policy_requests_round_trip_without_legacy_ambiguity() {
         for request in [
             Request::PowerStatus,
+            Request::BacklightStatus,
             Request::SetIdleSuspend { seconds: 120 },
+            Request::SetBacklight { percent: 40 },
         ] {
             let encoded = serde_json::to_vec(&request).unwrap();
             assert_eq!(

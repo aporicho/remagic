@@ -47,6 +47,10 @@ impl Daemon {
                 snapshot: self.power.snapshot().await,
                 state_revision: revision,
             },
+            ControlIntent::BacklightSnapshot => ControlReply::Backlight {
+                snapshot: self.backlight.snapshot(),
+                state_revision: revision,
+            },
             ControlIntent::SetIdleSuspend { seconds } => {
                 match self.power.set_idle_suspend(seconds).await {
                     Ok(_) => ControlReply::Power {
@@ -58,6 +62,7 @@ impl Daemon {
                     }
                 }
             }
+            ControlIntent::SetBacklight { percent } => self.set_backlight_reply(percent, revision),
             ControlIntent::Subscribe { .. } => ControlReply::Subscribed {
                 state_revision: revision,
             },
@@ -90,6 +95,30 @@ impl Daemon {
             },
         };
         reply(request_id, body)
+    }
+
+    fn set_backlight_reply(&self, percent: u8, revision: u64) -> ControlReply {
+        if percent > 100 {
+            return error_reply(
+                ControlErrorCode::InvalidRequest,
+                "backlight percent must be between 0 and 100".into(),
+                revision,
+            );
+        }
+        match self.backlight.set_percent(percent) {
+            Ok(snapshot) => ControlReply::Backlight {
+                snapshot,
+                state_revision: revision,
+            },
+            Err(message) => {
+                let code = if self.backlight.snapshot().supported {
+                    ControlErrorCode::Internal
+                } else {
+                    ControlErrorCode::UnsupportedDevice
+                };
+                error_reply(code, message, revision)
+            }
+        }
     }
 
     async fn supervisor_snapshot(&self) -> SupervisorSnapshot {
@@ -228,6 +257,9 @@ fn check(checks: &mut Vec<PreflightCheck>, id: &str, passed: bool, message: Stri
 
 fn legacy_request(intent: ControlIntent) -> Result<Request, String> {
     Ok(match intent {
+        ControlIntent::BacklightSnapshot | ControlIntent::SetBacklight { .. } => {
+            return Err("backlight requests are handled directly on control v2".into())
+        }
         ControlIntent::ReloadManifests => Request::ReloadManifests,
         ControlIntent::ShowHome => Request::OpenManager,
         ControlIntent::ReturnStock => Request::ReturnSystem,

@@ -206,7 +206,7 @@ fn wait_fd(fd: RawFd, events: i16, timeout: Duration) -> io::Result<()> {
 fn connect_socket(socket: &str) -> io::Result<RawFd> {
     let path = CString::new(socket)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "QTFB path contains NUL"))?;
-    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0) };
+    let fd = unsafe { libc::socket(libc::AF_UNIX, socket_type(), 0) };
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -232,6 +232,17 @@ fn connect_socket(socket: &str) -> io::Result<RawFd> {
         let error = io::Error::last_os_error();
         unsafe { libc::close(fd) };
         Err(error)
+    }
+}
+
+fn socket_type() -> libc::c_int {
+    #[cfg(target_os = "linux")]
+    {
+        libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        libc::SOCK_SEQPACKET
     }
 }
 

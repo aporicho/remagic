@@ -1,5 +1,6 @@
 //! Shared model and persistence for ReMagic.
 
+pub mod backlight;
 pub mod manifest;
 pub mod power;
 pub mod power_policy;
@@ -13,6 +14,7 @@ pub use remagic_device::{
     DEVICE_PROFILE_ENV, DEVICE_PROFILE_SCHEMA_V1,
 };
 
+pub use backlight::BacklightSnapshot;
 pub use manifest::{
     AppId, AppKind, AppManifest, BackgroundRestartPolicy, BackgroundService, DataSchema,
     ManifestStore, ParkStrategy, ReadinessMode, ReadinessPolicy, ShutdownPolicy, SyncProvider,

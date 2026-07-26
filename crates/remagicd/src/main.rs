@@ -1,4 +1,5 @@
 mod app_runtime;
+mod backlight;
 mod daemon;
 mod display_host;
 mod power_device;
