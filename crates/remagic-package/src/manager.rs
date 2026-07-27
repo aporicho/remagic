@@ -38,7 +38,10 @@ impl Default for PackagePaths {
                 "REMAGIC_PACKAGE_STATE_ROOT",
                 "/home/root/.local/state/remagic/packages",
             ),
-            books_root: env_path("REMAGIC_BOOKS_ROOT", "/home/root/books"),
+            books_root: env_path(
+                "REMAGIC_BOOKS_ROOT",
+                "/home/root/.local/share/remarkable/xochitl",
+            ),
         }
     }
 }

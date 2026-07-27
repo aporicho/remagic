@@ -124,7 +124,7 @@ USB 物理接口，并在执行前核验 Ferrari/Chiappa 身份，避免同 IP �
 1. 在任何停服前复核 release 与逐文件 SHA-256。
 2. 恢复原版显示所有权，再原子替换 ReMagic 系统树。
 3. 事务安装不可普通卸载的 ReMagic Store。
-4. 保留 `/home/root/books`、应用数据、阅读位置、API 配置、原版系统和镇纸。
+4. 保留原版 xochitl 书库、应用数据、阅读位置、API 配置、原版系统和镇纸。
 5. 健康检查失败时恢复上一系统版本和已发布 manifest/unit。
 
 重装镇纸不会修改 `/home/root/apps/remagic`；若第三方安装器重写 systemd 注册，重新

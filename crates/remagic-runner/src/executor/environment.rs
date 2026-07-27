@@ -246,7 +246,7 @@ fn insert_shared_storage_variables(
         (
             "storage:books-write-v1",
             "REMAGIC_BOOKS_DIR",
-            platform.home_root.join("books"),
+            platform.home_root.join(".local/share/remarkable/xochitl"),
         ),
         (
             "storage:wallpapers-write-v1",

@@ -94,7 +94,7 @@ flowchart TB
     end
     ko_environment@{ shape: rect, label: "ReMagic 提供的应用边界<br/>QTFB surface · 触摸 · 生命周期 · cgroup" }
     ko_adapter@{ shape: rect, label: "KOReader for ReMagic 适配层<br/>manifest · QTFB shim · HOME/XDG · 字体 · 书库路径" }
-    ko_books@{ shape: rect, label: "统一书库<br/>/home/root/books" }
+    ko_books@{ shape: rect, label: "官方书库<br/>xochitl" }
     ko_progress@{ shape: rect, label: "阅读位置 · 书签 · 历史" }
     ko_upstream@{ shape: rect, label: "KOReader 上游应用<br/>不修改阅读业务逻辑" }
     ko_launch@{ shape: rect, label: "启动<br/>进入书籍目录或指定书籍" }
@@ -120,7 +120,7 @@ flowchart TB
       up_stream@{ shape: rect, label: "有界流式接收<br/>Content-Length · 超时 · 取消" }
       up_validate@{ shape: rect, label: "格式与内容校验<br/>书籍签名 · PNG 完整解码" }
       up_atomic@{ shape: rect, label: "同目录原子发布<br/>不覆盖 · 中文重名后缀" }
-      up_books@{ shape: rect, label: "统一书库<br/>/home/root/books" }
+      up_books@{ shape: rect, label: "官方书库<br/>xochitl" }
       up_wallpapers@{ shape: rect, label: "ReMagic 壁纸库<br/>只加入列表，不自动应用" }
     end
     up_environment@{ shape: rect, label: "ReMagic API 6 应用边界<br/>QTFB · 触摸 · 生命周期 · 局域网对等连接 · 受控数据同步" }

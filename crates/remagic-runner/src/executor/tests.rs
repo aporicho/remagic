@@ -443,7 +443,11 @@ fn upload_capabilities_inject_only_safe_shared_storage_roots() {
     let plan = prepare_execution(&manifest, &descriptor, &platform).unwrap();
     assert_eq!(
         plan.variables["REMAGIC_BOOKS_DIR"],
-        platform.home_root.join("books").display().to_string()
+        platform
+            .home_root
+            .join(".local/share/remarkable/xochitl")
+            .display()
+            .to_string()
     );
     assert_eq!(
         plan.variables["REMAGIC_WALLPAPERS_DIR"],
