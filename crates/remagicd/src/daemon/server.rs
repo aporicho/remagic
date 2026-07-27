@@ -2,18 +2,30 @@ use super::*;
 use crate::display_host;
 use remagic_core::DomainState;
 use remagic_package::PackageManager;
-use remagic_protocol::{read_frame, write_frame, ControlRequest, Request, Response};
+use remagic_protocol::{
+    read_frame, write_frame, ControlErrorCode, ControlIntent, ControlReply, ControlRequest,
+    Request, Response,
+};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
 mod app_requests;
+
+const CONTROL_READ_TIMEOUT: Duration = Duration::from_secs(5);
+const FAST_CONTROL_TIMEOUT: Duration = Duration::from_secs(3);
+const LIST_CONTROL_TIMEOUT: Duration = Duration::from_secs(20);
+const DEFAULT_CONTROL_TIMEOUT: Duration = Duration::from_secs(60);
+const LONG_CONTROL_TIMEOUT: Duration = Duration::from_secs(180);
+const PACKAGE_CONTROL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const SHUTDOWN_RESTORE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(super) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(RUNTIME_ROOT)?;
@@ -108,7 +120,11 @@ type DaemonParts = (
 
 impl Daemon {
     async fn initialize_system(&self) -> Result<(), String> {
-        self.controller.ensure_system().await
+        self.controller.ensure_system().await?;
+        if let Err(error) = utils::set_foreground_marker(None) {
+            warn!(%error, "could not clear stale foreground marker during startup recovery");
+        }
+        Ok(())
     }
 }
 
@@ -205,14 +221,34 @@ async fn accept_loop<F, Fut>(
 fn spawn_signal_handler(daemon: Arc<Daemon>) {
     tokio::spawn(async move {
         let _ = tokio::signal::ctrl_c().await;
-        let mut exit_code = 0;
-        let needs_restore = !matches!(daemon.state.read().await.domain, DomainState::System);
-        if needs_restore && daemon.restore_system().await.is_err() {
-            error!("system restore failed while stopping daemon");
-            exit_code = 1;
-        }
+        let exit_code =
+            match tokio::time::timeout(SHUTDOWN_RESTORE_TIMEOUT, shutdown_restore(&daemon)).await {
+                Ok(Ok(())) => 0,
+                Ok(Err(error)) => {
+                    error!(%error, "system restore failed while stopping daemon");
+                    1
+                }
+                Err(_) => {
+                    error!(
+                        timeout_ms = SHUTDOWN_RESTORE_TIMEOUT.as_millis(),
+                        "system restore timed out while stopping daemon"
+                    );
+                    1
+                }
+            };
         std::process::exit(exit_code);
     });
+}
+
+async fn shutdown_restore(daemon: &Daemon) -> Result<(), String> {
+    if let Err(error) = utils::set_foreground_marker(None) {
+        warn!(%error, "could not clear foreground marker while stopping daemon");
+    }
+    if let Err(error) = daemon.sleep_transaction.reset() {
+        warn!(%error, "could not reset sleep transaction while stopping daemon");
+    }
+    daemon.backlight.restore_desired();
+    daemon.controller.ensure_system().await
 }
 
 async fn event_loop(
@@ -297,21 +333,114 @@ async fn serve_control_client(
         .await?;
         return Ok(());
     }
-    let value: serde_json::Value = read_frame(&mut stream).await?;
+    let value: serde_json::Value =
+        tokio::time::timeout(CONTROL_READ_TIMEOUT, read_frame(&mut stream))
+            .await
+            .map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "control frame read timed out")
+            })??;
     if value.get("protocol").is_some() {
         let request: ControlRequest = serde_json::from_value(value)?;
-        write_frame(&mut stream, &daemon.control_v2(request).await).await?;
+        let timeout = control_v2_timeout(&request.body);
+        let request_id = request.request_id.clone();
+        let response = match tokio::time::timeout(timeout, daemon.control_v2(request)).await {
+            Ok(response) => response,
+            Err(_) => control_v2_timeout_response(request_id, timeout),
+        };
+        write_frame(&mut stream, &response).await?;
     } else {
         let request: Request = serde_json::from_value(value)?;
-        write_frame(&mut stream, &daemon.request(request).await).await?;
+        let timeout = legacy_control_timeout(&request);
+        let response = match tokio::time::timeout(timeout, daemon.request(request)).await {
+            Ok(response) => response,
+            Err(_) => Response::Error {
+                message: format!(
+                    "manager control request timed out after {} ms",
+                    timeout.as_millis()
+                ),
+            },
+        };
+        write_frame(&mut stream, &response).await?;
     }
     Ok(())
 }
 
+fn control_v2_timeout(intent: &ControlIntent) -> Duration {
+    match intent {
+        ControlIntent::Snapshot
+        | ControlIntent::PowerSnapshot
+        | ControlIntent::BacklightSnapshot
+        | ControlIntent::SetIdleSuspend { .. }
+        | ControlIntent::SetBacklight { .. }
+        | ControlIntent::Subscribe { .. } => FAST_CONTROL_TIMEOUT,
+        ControlIntent::Preflight { .. } => LIST_CONTROL_TIMEOUT,
+        ControlIntent::Install { .. }
+        | ControlIntent::Upgrade { .. }
+        | ControlIntent::Rollback { .. }
+        | ControlIntent::Uninstall { .. } => PACKAGE_CONTROL_TIMEOUT,
+        ControlIntent::LegacyPackage { .. } => LONG_CONTROL_TIMEOUT,
+        ControlIntent::ReloadManifests
+        | ControlIntent::ShowHome
+        | ControlIntent::ReturnStock
+        | ControlIntent::Sleep
+        | ControlIntent::Wake
+        | ControlIntent::Launch { .. }
+        | ControlIntent::OpenPath { .. }
+        | ControlIntent::ParkCurrent
+        | ControlIntent::Close { .. } => DEFAULT_CONTROL_TIMEOUT,
+    }
+}
+
+fn legacy_control_timeout(request: &Request) -> Duration {
+    match request {
+        Request::Status
+        | Request::PowerStatus
+        | Request::BacklightStatus
+        | Request::SetIdleSuspend { .. }
+        | Request::SetBacklight { .. }
+        | Request::Notify { .. } => FAST_CONTROL_TIMEOUT,
+        Request::ListApps => LIST_CONTROL_TIMEOUT,
+        Request::Package { .. } | Request::Sync { .. } => LONG_CONTROL_TIMEOUT,
+        Request::ReloadManifests
+        | Request::OpenManager
+        | Request::ReturnSystem
+        | Request::Sleep { .. }
+        | Request::Wake { .. }
+        | Request::Launch { .. }
+        | Request::ParkCurrent
+        | Request::Close { .. }
+        | Request::RuntimeExited { .. }
+        | Request::Ready { .. }
+        | Request::Parked { .. } => DEFAULT_CONTROL_TIMEOUT,
+    }
+}
+
+fn control_v2_timeout_response(
+    request_id: String,
+    timeout: Duration,
+) -> remagic_protocol::ControlResponse {
+    remagic_protocol::Envelope::new(
+        request_id,
+        ControlReply::Error {
+            code: ControlErrorCode::Timeout,
+            message: format!(
+                "manager control request timed out after {} ms",
+                timeout.as_millis()
+            ),
+            state_revision: None,
+        },
+    )
+}
+
 #[cfg(test)]
 mod recovery_tests {
-    use super::should_retain_sleeping_failure;
+    use super::{
+        control_v2_timeout, control_v2_timeout_response, legacy_control_timeout,
+        should_retain_sleeping_failure, FAST_CONTROL_TIMEOUT, LONG_CONTROL_TIMEOUT,
+        PACKAGE_CONTROL_TIMEOUT,
+    };
     use crate::daemon::sleep;
+    use remagic_protocol::{ControlErrorCode, ControlIntent, ControlReply, Request};
 
     #[test]
     fn healthy_notification_failure_never_selects_stock_restore() {
@@ -322,5 +451,40 @@ mod recovery_tests {
             "Home datagram failed",
             true
         ));
+    }
+
+    #[test]
+    fn status_controls_have_short_deadlines() {
+        assert_eq!(
+            legacy_control_timeout(&Request::Status),
+            FAST_CONTROL_TIMEOUT
+        );
+        assert_eq!(
+            control_v2_timeout(&ControlIntent::Snapshot),
+            FAST_CONTROL_TIMEOUT
+        );
+        assert_eq!(
+            control_v2_timeout(&ControlIntent::Install {
+                bundle: "/tmp/app.remagic".into()
+            }),
+            PACKAGE_CONTROL_TIMEOUT
+        );
+        assert_eq!(
+            legacy_control_timeout(&Request::Sync {
+                requester: remagic_core::AppId::new("upload").unwrap(),
+                provider: remagic_core::AppId::new("koreader").unwrap(),
+                action: remagic_protocol::SyncAction::Prepare,
+            }),
+            LONG_CONTROL_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn v2_timeout_uses_explicit_error_code() {
+        let response = control_v2_timeout_response("request-1".into(), FAST_CONTROL_TIMEOUT);
+        match response.body {
+            ControlReply::Error { code, .. } => assert_eq!(code, ControlErrorCode::Timeout),
+            other => panic!("unexpected timeout response: {other:?}"),
+        }
     }
 }
