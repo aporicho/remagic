@@ -86,7 +86,8 @@ fn force_off_restores_without_overwriting_desired_percent() {
     let manager = BacklightManager::load_at(root.join("config.toml"), sysfs.clone());
 
     manager.set_percent(75).unwrap();
-    manager.force_off("test");
+    assert!(manager.force_off("test"));
+    assert!(!manager.force_off("test"));
     assert_eq!(
         fs::read_to_string(sysfs.join(FRONTLIGHT_PROVIDER).join("brightness")).unwrap(),
         "0\n"
@@ -107,6 +108,22 @@ fn force_off_restores_without_overwriting_desired_percent() {
     assert!(fs::read_to_string(root.join("config.toml"))
         .unwrap()
         .contains("desired_percent = 75"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn force_off_does_not_rewrite_an_already_powered_off_frontlight() {
+    let root = root("force-already-off");
+    let sysfs = root.join("backlight");
+    write_frontlight(&sysfs, 0, 2047, BACKLIGHT_OFF_POWER);
+    let manager = BacklightManager::load_at(root.join("config.toml"), sysfs);
+
+    assert!(!manager.force_off("test"));
+    let snapshot = manager.snapshot();
+    assert_eq!(snapshot.brightness, Some(0));
+    assert_eq!(snapshot.bl_power, Some(BACKLIGHT_OFF_POWER));
+    assert!(snapshot.forced_off);
+
     fs::remove_dir_all(root).unwrap();
 }
 

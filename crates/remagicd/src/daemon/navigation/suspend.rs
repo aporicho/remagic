@@ -8,6 +8,8 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 const LOCK_AWAKE_TIMEOUT: Duration = Duration::from_secs(30);
+const FRONTLIGHT_POWER_SETTLE: Duration = Duration::from_secs(8);
+const SUSPEND_INTERRUPT_POLL: Duration = Duration::from_millis(50);
 
 impl Daemon {
     pub(in crate::daemon) async fn sleep(
@@ -31,7 +33,7 @@ impl Daemon {
                 .await;
         }
         self.power.suspended().await;
-        let suspend_result = self.controller.suspend().await;
+        let suspend_result = self.suspend_or_user_interrupt(interaction_epoch).await;
         // The managed owner must be awake-locked again before any display or
         // input recovery work is attempted.
         let wakelock_result = self.controller.acquire_wakelock();
@@ -45,7 +47,16 @@ impl Daemon {
             if let Err(guard_error) = guard_result {
                 return Err(format!("{error}; wake-key recovery: {guard_error}"));
             }
-            self.schedule_blocked_resuspend(self.sleep_transaction.snapshot(), interaction_epoch);
+            if self.user_requested_unlock_during_suspend(interaction_epoch) {
+                if let Err(unlock_error) = self.request_home_unlock().await {
+                    warn!(%unlock_error, "Home unlock request was lost after failed suspend");
+                }
+            }
+            self.schedule_failed_resuspend(
+                &error,
+                self.sleep_transaction.snapshot(),
+                interaction_epoch,
+            );
             // The lock page and input fence were already committed. A power
             // inhibitor is not permission to expose Home again: retain the
             // retryable Sleeping domain. A later single power press asks Home
@@ -108,7 +119,7 @@ impl Daemon {
         if let Err(error) = self.sleep_transaction.mark_locked(sleep_epoch) {
             return self.rollback_sleep(sleep_epoch, error).await;
         }
-        self.backlight.force_off("lock");
+        self.settle_frontlight_after_force_off("lock").await;
         self.power.begin_suspend().await;
         Ok((sleep_epoch, interaction_epoch))
     }
@@ -149,15 +160,22 @@ impl Daemon {
             self.cancel_wake_guard().await?;
             return Ok(());
         }
-        self.backlight.force_off("locked resuspend");
+        self.settle_frontlight_after_force_off("locked resuspend")
+            .await;
         self.power.suspended().await;
-        let suspend_result = self.controller.suspend().await;
+        let suspend_result = self.suspend_or_user_interrupt(interaction_epoch).await;
         let wakelock_result = self.controller.acquire_wakelock();
         if let Err(suspend_error) = suspend_result {
             self.power.externally_blocked(&suspend_error).await;
             let guard_result = self.cancel_wake_guard().await;
             if wakelock_result.is_ok() && guard_result.is_ok() {
-                self.schedule_blocked_resuspend(
+                if self.user_requested_unlock_during_suspend(interaction_epoch) {
+                    if let Err(unlock_error) = self.request_home_unlock().await {
+                        warn!(%unlock_error, "Home unlock request was lost after failed resuspend");
+                    }
+                }
+                self.schedule_failed_resuspend(
+                    &suspend_error,
                     self.sleep_transaction.snapshot(),
                     interaction_epoch,
                 );
@@ -268,8 +286,21 @@ impl Daemon {
         });
     }
 
+    fn schedule_failed_resuspend(
+        &self,
+        error: &str,
+        sleep: sleep::SleepSnapshot,
+        interaction_epoch: u64,
+    ) {
+        if suspend_error_requires_wake_lock_clear(error) {
+            self.schedule_blocked_resuspend(sleep, interaction_epoch);
+        } else {
+            self.schedule_locked_resuspend(sleep);
+        }
+    }
+
     /// A charger wake lock is expected while USB power is attached. Keep the
-    /// lock page committed and retry only after every external blocker has
+    /// lock page committed and retry after every external blocker has
     /// disappeared. The interaction epoch cancels this observer immediately
     /// when the user unlocks, restores stock, or starts another transition.
     fn schedule_blocked_resuspend(&self, sleep: sleep::SleepSnapshot, interaction_epoch: u64) {
@@ -277,6 +308,10 @@ impl Daemon {
         let launch_interrupt_epoch = self.launch_interrupt_epoch.clone();
         tokio::spawn(async move {
             loop {
+                if launch_interrupt_epoch.load(Ordering::Acquire) != interaction_epoch {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
                 if launch_interrupt_epoch.load(Ordering::Acquire) != interaction_epoch {
                     return;
                 }
@@ -296,6 +331,37 @@ impl Daemon {
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
         });
+    }
+
+    async fn settle_frontlight_after_force_off(&self, reason: &str) {
+        if self.backlight.force_off(reason) {
+            tokio::time::sleep(FRONTLIGHT_POWER_SETTLE).await;
+        }
+    }
+
+    fn user_requested_unlock_during_suspend(&self, interaction_epoch: u64) -> bool {
+        !self.cover_closed.load(Ordering::Acquire)
+            && self.launch_interrupt_epoch.load(Ordering::Acquire) != interaction_epoch
+    }
+
+    async fn suspend_or_user_interrupt(&self, interaction_epoch: u64) -> Result<(), String> {
+        let suspend = self.controller.suspend();
+        tokio::pin!(suspend);
+        tokio::select! {
+            result = &mut suspend => result,
+            _ = self.wait_for_suspend_interrupt(interaction_epoch) => {
+                Err("suspend cancelled by power key before kernel resume".into())
+            }
+        }
+    }
+
+    async fn wait_for_suspend_interrupt(&self, interaction_epoch: u64) {
+        loop {
+            if self.launch_interrupt_epoch.load(Ordering::Acquire) != interaction_epoch {
+                return;
+            }
+            tokio::time::sleep(SUSPEND_INTERRUPT_POLL).await;
+        }
     }
 
     pub(in crate::daemon) async fn wake(
@@ -443,9 +509,16 @@ fn wake_guard_is_already_armed(error: &str) -> bool {
     error == "power wake guard is already armed"
 }
 
+fn suspend_error_requires_wake_lock_clear(error: &str) -> bool {
+    error.starts_with("kernel suspend is blocked by active wake locks:")
+}
+
 #[cfg(test)]
 mod power_tests {
-    use super::{wake_guard_is_already_armed, wake_lock_text_is_clear};
+    use super::{
+        suspend_error_requires_wake_lock_clear, wake_guard_is_already_armed,
+        wake_lock_text_is_clear,
+    };
 
     #[test]
     fn blocked_retry_waits_for_the_charger_to_disappear() {
@@ -461,6 +534,19 @@ mod power_tests {
         ));
         assert!(!wake_guard_is_already_armed(
             "power wake guard is not armed"
+        ));
+    }
+
+    #[test]
+    fn only_external_wake_lock_errors_wait_for_wake_locks_to_clear() {
+        assert!(suspend_error_requires_wake_lock_clear(
+            "kernel suspend is blocked by active wake locks: udev.charger"
+        ));
+        assert!(!suspend_error_requires_wake_lock_clear(
+            "systemctl start --wait systemd-suspend.service failed: failed"
+        ));
+        assert!(!suspend_error_requires_wake_lock_clear(
+            "system suspend returned without advancing kernel suspend counter"
         ));
     }
 }

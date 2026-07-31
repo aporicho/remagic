@@ -81,6 +81,7 @@ impl Daemon {
             DomainState::System => self.enter_manager().await,
             DomainState::Foreground(app) => self.park(app, false, true).await,
             DomainState::Manager => self.ensure_manager_surface().await,
+            DomainState::Sleeping => retain_sleeping_unlock(self.request_home_unlock().await),
             _ => Ok(()),
         }
     }

@@ -14,9 +14,11 @@ use systemd::{command_output, parse_active_state, run};
 const WAKELOCK: &[u8] = b"remagic-managed\n";
 const WAKELOCK_NAME: &str = "remagic-managed";
 const AUTOSLEEP: &str = "/sys/power/autosleep";
+const EXPECTED_AUTOSLEEP: &str = "mem";
 const SUSPEND_SUCCESS: &str = "/sys/power/suspend_stats/success";
-const SUSPEND_START_TIMEOUT: Duration = Duration::from_secs(5);
-const SUSPEND_POLL_INTERVAL: Duration = Duration::from_millis(20);
+const SUSPEND_FAIL: &str = "/sys/power/suspend_stats/fail";
+const SUSPEND_START_TIMEOUT: Duration = Duration::from_secs(90);
+const SUSPEND_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const MANAGED_DOMAIN_MARKER: &str = "/run/remagic/managed-domain";
 const MANAGED_DOMAIN_UNITS: [&str; 4] = [
     "remagic-home.service",
@@ -133,10 +135,11 @@ impl SystemController {
     pub async fn suspend(&self) -> Result<(), String> {
         let autosleep = fs::read_to_string(AUTOSLEEP)
             .map_err(|error| format!("cannot inspect kernel autosleep mode: {error}"))?;
-        if autosleep.trim() != "mem" {
+        let autosleep_mode = autosleep.trim();
+        if autosleep_mode != EXPECTED_AUTOSLEEP {
             return Err(format!(
-                "kernel autosleep mode is {:?}, expected mem",
-                autosleep.trim()
+                "kernel autosleep mode is {:?}, expected {EXPECTED_AUTOSLEEP}",
+                autosleep_mode
             ));
         }
         let active = fs::read_to_string("/sys/power/wake_lock")
@@ -149,17 +152,18 @@ impl SystemController {
             ));
         }
 
-        // This device already runs the kernel autosleep worker. Writing
-        // /sys/power/state after releasing the final wakelock races that
-        // worker and is rejected with EBUSY. Capture a durable witness while
-        // our lock still prevents sleep, release it, then wait until the
-        // process resumes and the kernel success counter has advanced.
-        let baseline = read_suspend_success()?;
+        // The rM kernel already owns the autosleep loop.  Calling
+        // systemd-suspend.service runs board-specific sleep hooks that can
+        // race the frontlight regulator on Paper Pro devices.  Releasing our
+        // named wakelock lets the kernel enter the same autosleep path used by
+        // the stock shell, and this task resumes only after userspace thaws.
+        let baseline_success = read_suspend_success()?;
+        let baseline_fail = read_suspend_fail().unwrap_or(0);
         self.release_wakelock()?;
         let wait_for_resume = async {
             loop {
                 let current = read_suspend_success()?;
-                if current > baseline {
+                if current > baseline_success {
                     return Ok(());
                 }
                 tokio::time::sleep(SUSPEND_POLL_INTERVAL).await;
@@ -168,11 +172,18 @@ impl SystemController {
         tokio::time::timeout(SUSPEND_START_TIMEOUT, wait_for_resume)
             .await
             .map_err(|_| {
+                let current_success = read_suspend_success()
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|error| format!("unavailable ({error})"));
+                let current_fail = read_suspend_fail()
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|error| format!("unavailable ({error})"));
                 let active = fs::read_to_string("/sys/power/wake_lock")
                     .unwrap_or_else(|_| "unavailable".into());
                 format!(
-                    "kernel autosleep did not complete within {} ms; active wake locks: {}",
+                    "kernel autosleep did not complete within {} ms (success {baseline_success}->{current_success}, fail {baseline_fail}->{current_fail}, {}); active wake locks: {}",
                     SUSPEND_START_TIMEOUT.as_millis(),
+                    suspend_failure_summary(),
                     active.trim()
                 )
             })?
@@ -311,6 +322,29 @@ fn read_suspend_success() -> Result<u64, String> {
     let value = fs::read_to_string(SUSPEND_SUCCESS)
         .map_err(|error| format!("cannot inspect kernel suspend counter: {error}"))?;
     parse_suspend_success(&value)
+}
+
+fn read_suspend_fail() -> Result<u64, String> {
+    let value = fs::read_to_string(SUSPEND_FAIL)
+        .map_err(|error| format!("cannot inspect kernel suspend fail counter: {error}"))?;
+    parse_suspend_success(&value)
+}
+
+fn suspend_failure_summary() -> String {
+    let dev = read_trimmed("/sys/power/suspend_stats/last_failed_dev")
+        .unwrap_or_else(|| "unknown".into());
+    let errno = read_trimmed("/sys/power/suspend_stats/last_failed_errno")
+        .unwrap_or_else(|| "unknown".into());
+    let step = read_trimmed("/sys/power/suspend_stats/last_failed_step")
+        .unwrap_or_else(|| "unknown".into());
+    format!("last_failed_dev={dev}, last_failed_errno={errno}, last_failed_step={step}")
+}
+
+fn read_trimmed(path: &str) -> Option<String> {
+    fs::read_to_string(path)
+        .ok()
+        .map(|text| text.trim().to_owned())
+        .filter(|text| !text.is_empty())
 }
 
 fn parse_suspend_success(value: &str) -> Result<u64, String> {

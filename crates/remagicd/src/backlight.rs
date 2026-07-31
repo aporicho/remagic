@@ -115,6 +115,19 @@ impl BacklightProvider {
         Ok(percent_from_native(brightness, max))
     }
 
+    fn is_powered_off(&self) -> Result<bool, String> {
+        let brightness = read_u32(
+            &self
+                .path
+                .join("actual_brightness")
+                .is_file()
+                .then(|| self.path.join("actual_brightness"))
+                .unwrap_or_else(|| self.path.join("brightness")),
+        )?;
+        let bl_power = read_u32(&self.path.join("bl_power"))?;
+        Ok(brightness == 0 && bl_power == BACKLIGHT_OFF_POWER)
+    }
+
     fn apply_percent(&self, percent: u8) -> Result<(), String> {
         let max = read_u32(&self.path.join("max_brightness"))?;
         if max == 0 {
@@ -230,7 +243,7 @@ impl BacklightManager {
         Ok(self.snapshot_locked(&state))
     }
 
-    pub fn force_off(&self, reason: &str) {
+    pub fn force_off(&self, reason: &str) -> bool {
         let mut state = self
             .state
             .lock()
@@ -240,16 +253,32 @@ impl BacklightManager {
             state.last_error = Some(format!(
                 "cannot force frontlight off for {reason}: {FRONTLIGHT_PROVIDER} is unavailable"
             ));
-            return;
+            return false;
         };
+        if state.forced_off {
+            return false;
+        }
+        match provider.is_powered_off() {
+            Ok(true) => {
+                state.forced_off = true;
+                state.last_error = None;
+                return false;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                warn!(%error, "cannot inspect frontlight power state before force-off");
+            }
+        }
         match provider.apply_percent(0) {
             Ok(()) => {
                 state.forced_off = true;
                 state.last_error = None;
+                true
             }
             Err(error) => {
                 state.last_error =
                     Some(format!("cannot force frontlight off for {reason}: {error}"));
+                false
             }
         }
     }
