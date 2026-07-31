@@ -1,15 +1,19 @@
 use std::fs;
 use std::io;
 use std::path::Path;
-use std::time::Duration;
-use tracing::warn;
+use std::time::{Duration, Instant};
+use tracing::{info, warn};
 
 mod background;
 mod freezer;
 mod systemd;
+mod wakeup;
 
 pub use background::managed_background_unit;
 use systemd::{command_output, parse_active_state, run};
+use wakeup::{active_wakeup_source_summary, read_wakeup_snapshot, wakeup_source_delta_summary};
+#[cfg(test)]
+use wakeup::{WakeupSnapshot, WakeupSource};
 
 const WAKELOCK: &[u8] = b"remagic-managed\n";
 const WAKELOCK_NAME: &str = "remagic-managed";
@@ -19,6 +23,9 @@ const SUSPEND_SUCCESS: &str = "/sys/power/suspend_stats/success";
 const SUSPEND_FAIL: &str = "/sys/power/suspend_stats/fail";
 const SUSPEND_START_TIMEOUT: Duration = Duration::from_secs(90);
 const SUSPEND_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const SUSPEND_DIAGNOSTIC_INTERVAL: Duration = Duration::from_secs(10);
+const WAKEUP_SOURCE_SETTLE_TIMEOUT: Duration = Duration::from_secs(35);
+const WAKEUP_SOURCE_SETTLE_INTERVAL: Duration = Duration::from_millis(150);
 const MANAGED_DOMAIN_MARKER: &str = "/run/remagic/managed-domain";
 const MANAGED_DOMAIN_UNITS: [&str; 4] = [
     "remagic-home.service",
@@ -159,34 +166,114 @@ impl SystemController {
         // the stock shell, and this task resumes only after userspace thaws.
         let baseline_success = read_suspend_success()?;
         let baseline_fail = read_suspend_fail().unwrap_or(0);
+        let baseline_wakeup = read_wakeup_snapshot();
+        self.wait_wakeup_sources_quiet().await?;
+        let release_wakeup = read_wakeup_snapshot();
         self.release_wakelock()?;
-        let wait_for_resume = async {
-            loop {
-                let current = read_suspend_success()?;
-                if current > baseline_success {
-                    return Ok(());
-                }
-                tokio::time::sleep(SUSPEND_POLL_INTERVAL).await;
+        let started = Instant::now();
+        let mut next_diagnostic = SUSPEND_DIAGNOSTIC_INTERVAL;
+        loop {
+            let current = read_suspend_success()?;
+            if current > baseline_success {
+                return Ok(());
             }
-        };
-        tokio::time::timeout(SUSPEND_START_TIMEOUT, wait_for_resume)
-            .await
-            .map_err(|_| {
-                let current_success = read_suspend_success()
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|error| format!("unavailable ({error})"));
+
+            let active_locks =
+                fs::read_to_string("/sys/power/wake_lock").unwrap_or_else(|_| String::new());
+            let blockers = external_wake_locks(&active_locks);
+            let elapsed = started.elapsed();
+            if !blockers.is_empty() {
+                let current_wakeup = read_wakeup_snapshot();
+                let blocker_text = blockers.join(" ");
+                let elapsed_ms = elapsed.as_millis();
                 let current_fail = read_suspend_fail()
                     .map(|value| value.to_string())
                     .unwrap_or_else(|error| format!("unavailable ({error})"));
-                let active = fs::read_to_string("/sys/power/wake_lock")
-                    .unwrap_or_else(|_| "unavailable".into());
-                format!(
-                    "kernel autosleep did not complete within {} ms (success {baseline_success}->{current_success}, fail {baseline_fail}->{current_fail}, {}); active wake locks: {}",
+                let source_delta = wakeup_source_delta_summary(&release_wakeup, &current_wakeup);
+                return Err(format!(
+                    "kernel suspend is blocked by active wake locks: {blocker_text}; autosleep wait aborted after {elapsed_ms} ms (success {baseline_success}->{current}, fail {baseline_fail}->{current_fail}, wakeup source changes: {source_delta})"
+                ));
+            }
+
+            if elapsed >= SUSPEND_START_TIMEOUT {
+                let current_success = current.to_string();
+                let current_fail = read_suspend_fail()
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|error| format!("unavailable ({error})"));
+                let current_wakeup = read_wakeup_snapshot();
+                let active_sources = active_wakeup_source_summary(&current_wakeup);
+                let source_delta = wakeup_source_delta_summary(&baseline_wakeup, &current_wakeup);
+                if active_sources == "none" || active_sources == "unavailable" {
+                    return Err(format!(
+                        "kernel autosleep did not complete within {} ms (success {baseline_success}->{current_success}, fail {baseline_fail}->{current_fail}, {}); active wake locks: {}; wakeup source changes: {}",
+                        SUSPEND_START_TIMEOUT.as_millis(),
+                        suspend_failure_summary(),
+                        active_locks.trim(),
+                        source_delta
+                    ));
+                }
+                return Err(format!(
+                    "kernel autosleep did not complete within {} ms (success {baseline_success}->{current_success}, fail {baseline_fail}->{current_fail}, {}); active wake locks: {}; active wakeup sources: {}; wakeup source changes: {}",
                     SUSPEND_START_TIMEOUT.as_millis(),
                     suspend_failure_summary(),
-                    active.trim()
-                )
-            })?
+                    active_locks.trim(),
+                    active_sources,
+                    source_delta
+                ));
+            }
+
+            if elapsed >= next_diagnostic {
+                let current_wakeup = read_wakeup_snapshot();
+                let active_sources = active_wakeup_source_summary(&current_wakeup);
+                if active_sources != "none" && active_sources != "unavailable" {
+                    info!(
+                        elapsed_ms = elapsed.as_millis(),
+                        active_wakeup_sources = %active_sources,
+                        wakeup_source_changes = %wakeup_source_delta_summary(&release_wakeup, &current_wakeup),
+                        "kernel autosleep is waiting for wakeup sources to settle"
+                    );
+                }
+                next_diagnostic += SUSPEND_DIAGNOSTIC_INTERVAL;
+            }
+
+            tokio::time::sleep(SUSPEND_POLL_INTERVAL).await;
+        }
+    }
+
+    async fn wait_wakeup_sources_quiet(&self) -> Result<(), String> {
+        let started = Instant::now();
+        let mut next_diagnostic = SUSPEND_DIAGNOSTIC_INTERVAL;
+        loop {
+            let snapshot = read_wakeup_snapshot();
+            if !snapshot.available {
+                return Ok(());
+            }
+            let active_sources = active_wakeup_source_summary(&snapshot);
+            if active_sources == "none" {
+                return Ok(());
+            }
+            let elapsed = started.elapsed();
+            if elapsed >= WAKEUP_SOURCE_SETTLE_TIMEOUT {
+                warn!(
+                    elapsed_ms = elapsed.as_millis(),
+                    active_wakeup_sources = %active_sources,
+                    "wakeup sources remained active before releasing managed wake lock"
+                );
+                return Err(format!(
+                    "kernel suspend is blocked by active wakeup sources: {active_sources}; wakeup source settle timed out after {} ms before releasing managed wake lock",
+                    WAKEUP_SOURCE_SETTLE_TIMEOUT.as_millis()
+                ));
+            }
+            if elapsed >= next_diagnostic {
+                info!(
+                    elapsed_ms = elapsed.as_millis(),
+                    active_wakeup_sources = %active_sources,
+                    "waiting for wakeup sources to settle before releasing managed wake lock"
+                );
+                next_diagnostic += SUSPEND_DIAGNOSTIC_INTERVAL;
+            }
+            tokio::time::sleep(WAKEUP_SOURCE_SETTLE_INTERVAL).await;
+        }
     }
 
     pub fn acquire_wakelock(&self) -> Result<(), String> {

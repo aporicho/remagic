@@ -11,15 +11,17 @@ use tokio::sync::mpsc as tokio_mpsc;
 use crate::daemon::{Event, QueuedEvent};
 
 mod control;
+mod wake_guard;
 pub use control::ControlSender;
 use control::WakeEvent;
+pub use wake_guard::WakeGesture;
+use wake_guard::WakeGuard;
 
 const EV_KEY: u16 = 1;
 const EV_SW: u16 = 5;
 const KEY_POWER: u16 = 116;
 const SW_LID: u16 = 0;
 const EVIOCGRAB: libc::c_ulong = 0x40044590;
-const WAKE_GUARD_QUIET: Duration = Duration::from_millis(800);
 
 #[derive(Debug)]
 pub enum Control {
@@ -35,90 +37,11 @@ pub enum Control {
     /// Mark the point at which the suspend syscall returned. The guard stays
     /// active until the key is up and the evdev stream has remained quiet.
     ResumeWakeGuard {
-        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
+        reply: tokio::sync::oneshot::Sender<Result<WakeGesture, String>>,
     },
     CancelWakeGuard {
         reply: tokio::sync::oneshot::Sender<Result<(), String>>,
     },
-}
-
-#[derive(Debug, Default)]
-struct WakeGuard {
-    active: bool,
-    resumed_at: Option<Instant>,
-    last_event_at: Option<Instant>,
-    key_down: bool,
-}
-
-impl WakeGuard {
-    fn next_deadline(&self) -> Option<Instant> {
-        let resumed_at = self.resumed_at?;
-        if self.key_down {
-            return None;
-        }
-        Some(
-            self.last_event_at
-                .filter(|event| *event > resumed_at)
-                .unwrap_or(resumed_at)
-                + WAKE_GUARD_QUIET,
-        )
-    }
-
-    fn arm(&mut self) -> Result<(), String> {
-        if self.active {
-            return Err("power wake guard is already armed".into());
-        }
-        self.active = true;
-        self.resumed_at = None;
-        self.last_event_at = None;
-        self.key_down = false;
-        Ok(())
-    }
-
-    fn resume(&mut self, now: Instant) -> Result<(), String> {
-        if !self.active {
-            return Err("power wake guard is not armed".into());
-        }
-        if self.resumed_at.is_some() {
-            return Err("power wake guard was already resumed".into());
-        }
-        self.resumed_at = Some(now);
-        Ok(())
-    }
-
-    /// Returns true while this raw event belongs to the suspend/wake fence.
-    fn consume(&mut self, value: i32, now: Instant) -> bool {
-        if !self.active {
-            return false;
-        }
-        match value {
-            1 => self.key_down = true,
-            0 => self.key_down = false,
-            _ => return true,
-        }
-        self.last_event_at = Some(now);
-        true
-    }
-
-    fn poll(&mut self, now: Instant) {
-        let Some(resumed_at) = self.resumed_at else {
-            return;
-        };
-        if self.key_down {
-            return;
-        }
-        let quiet_since = self
-            .last_event_at
-            .filter(|event| *event > resumed_at)
-            .unwrap_or(resumed_at);
-        if now.duration_since(quiet_since) >= WAKE_GUARD_QUIET {
-            self.cancel();
-        }
-    }
-
-    fn cancel(&mut self) {
-        *self = Self::default();
-    }
 }
 
 pub fn spawn(
@@ -218,7 +141,7 @@ impl InputThread {
                 Control::Grab { grab, reply } => self.handle_grab(grab, reply),
                 Control::ArmWakeGuard { reply } => self.handle_arm_wake_guard(reply),
                 Control::ResumeWakeGuard { reply } => {
-                    let _ = reply.send(self.wake_guard.resume(Instant::now()));
+                    self.wake_guard.resume_and_report(Instant::now(), reply);
                 }
                 Control::CancelWakeGuard { reply } => {
                     self.tracker.clear();
@@ -461,7 +384,7 @@ fn consume_wake_guard_event(
     // A press between arming the guard and entering the kernel is user intent,
     // not a wake gesture yet. Record it before consuming the raw event so the
     // suspend transaction's final fence check can yield to the user.
-    if wake_guard.active && wake_guard.resumed_at.is_none() && value == 1 {
+    if wake_guard.is_armed_before_resume() && value == 1 {
         note_power_press(interaction_epoch);
     }
     wake_guard.consume(value, now)
@@ -618,55 +541,6 @@ impl Drop for PowerDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn wake_press_and_release_are_consumed_until_the_quiet_window() {
-        let t = Instant::now();
-        let mut guard = WakeGuard::default();
-        guard.arm().unwrap();
-        assert!(guard.consume(1, t));
-        guard.resume(t + Duration::from_millis(20)).unwrap();
-        assert!(guard.consume(0, t + Duration::from_millis(80)));
-        guard.poll(t + Duration::from_millis(879));
-        assert!(guard.active);
-        guard.poll(t + Duration::from_millis(880));
-        assert!(!guard.active);
-    }
-
-    #[test]
-    fn non_power_wake_is_released_after_a_quiet_window() {
-        let t = Instant::now();
-        let mut guard = WakeGuard::default();
-        guard.arm().unwrap();
-        guard.resume(t).unwrap();
-        guard.poll(t + WAKE_GUARD_QUIET);
-        assert!(!guard.active);
-        assert!(!guard.consume(1, t + WAKE_GUARD_QUIET));
-    }
-
-    #[test]
-    fn held_wake_key_keeps_the_guard_armed() {
-        let t = Instant::now();
-        let mut guard = WakeGuard::default();
-        guard.arm().unwrap();
-        assert!(guard.consume(1, t));
-        guard.resume(t + Duration::from_millis(10)).unwrap();
-        guard.poll(t + Duration::from_secs(5));
-        assert!(guard.active);
-        assert!(guard.consume(0, t + Duration::from_secs(5)));
-        guard.poll(t + Duration::from_secs(5) + WAKE_GUARD_QUIET);
-        assert!(!guard.active);
-    }
-
-    #[test]
-    fn duplicate_arm_and_resume_are_rejected() {
-        let t = Instant::now();
-        let mut guard = WakeGuard::default();
-        guard.arm().unwrap();
-        assert!(guard.arm().is_err());
-        guard.resume(t).unwrap();
-        assert!(guard.resume(t).is_err());
-    }
 
     #[test]
     fn raw_power_press_invalidates_a_pending_auto_resuspend_immediately() {

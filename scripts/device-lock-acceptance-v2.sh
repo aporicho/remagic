@@ -5,9 +5,13 @@ CTL=${REMAGIC_CTL:-/home/root/apps/remagic/bin/remagicctl}
 HOME_KEY=245209900
 SUSPEND_SUCCESS=/sys/power/suspend_stats/success
 REAL_SUSPEND=${REMAGIC_REAL_SUSPEND:-0}
+WAKEUP_MONITOR_ROOT=${REMAGIC_WAKEUP_MONITOR_ROOT:-/tmp/remagic-lock-acceptance-wakeup}
+WAKEUP_MONITOR_DIR=
+WAKEUP_MONITOR_PID=
 
 fail() {
     echo "[lock-acceptance] FAIL: $*" >&2
+    print_wakeup_monitor_tail >&2 || true
     "$CTL" status >&2 || true
     "$CTL" display-status >&2 || true
     "$CTL" display-submissions >&2 || true
@@ -20,6 +24,10 @@ status() {
 
 display_status() {
     "$CTL" display-status
+}
+
+power_status() {
+    "$CTL" power
 }
 
 display_number() {
@@ -92,6 +100,66 @@ read_suspend_success() {
     printf '%s\n' "$value"
 }
 
+wakeup_value() {
+    path=$1
+    [ -r "$path" ] && sed -n '1p' "$path" || printf '0\n'
+}
+
+snapshot_wakeup_sources() {
+    printf '[wakeup] unix=%s uptime=%s\n' \
+        "$(date +%s 2>/dev/null || echo unknown)" \
+        "$(sed -n '1p' /proc/uptime 2>/dev/null || echo unknown)"
+    printf '[wakeup] wake_lock=%s\n' \
+        "$(cat /sys/power/wake_lock 2>/dev/null || echo unavailable)"
+    printf '[wakeup] suspend_success=%s suspend_fail=%s\n' \
+        "$(wakeup_value /sys/power/suspend_stats/success)" \
+        "$(wakeup_value /sys/power/suspend_stats/fail)"
+    for source in /sys/class/wakeup/*; do
+        [ -r "$source/name" ] || continue
+        name=$(sed -n '1p' "$source/name" 2>/dev/null || basename "$source")
+        active_ms=$(wakeup_value "$source/active_time_ms")
+        prevent_ms=$(wakeup_value "$source/prevent_suspend_time_ms")
+        active_count=$(wakeup_value "$source/active_count")
+        event_count=$(wakeup_value "$source/event_count")
+        wakeup_count=$(wakeup_value "$source/wakeup_count")
+        case "$active_ms:$prevent_ms:$active_count:$event_count:$wakeup_count" in
+            0:0:0:0:0) continue ;;
+        esac
+        printf '[wakeup-source] name=%s active_ms=%s prevent_ms=%s active_count=%s event_count=%s wakeup_count=%s\n' \
+            "$name" "$active_ms" "$prevent_ms" "$active_count" "$event_count" "$wakeup_count"
+    done
+}
+
+start_wakeup_monitor() {
+    [ -z "$WAKEUP_MONITOR_PID" ] || return 0
+    WAKEUP_MONITOR_DIR=$WAKEUP_MONITOR_ROOT.$$
+    rm -rf "$WAKEUP_MONITOR_DIR"
+    mkdir -p "$WAKEUP_MONITOR_DIR"
+    (
+        while [ ! -e "$WAKEUP_MONITOR_DIR/stop" ]; do
+            snapshot_wakeup_sources
+            sleep 1
+        done
+    ) >"$WAKEUP_MONITOR_DIR/wakeup.log" 2>&1 &
+    WAKEUP_MONITOR_PID=$!
+    echo "[lock-acceptance] wakeup monitor: $WAKEUP_MONITOR_DIR/wakeup.log"
+}
+
+stop_wakeup_monitor() {
+    [ -n "$WAKEUP_MONITOR_PID" ] || return 0
+    : >"$WAKEUP_MONITOR_DIR/stop" 2>/dev/null || true
+    kill "$WAKEUP_MONITOR_PID" 2>/dev/null || true
+    wait "$WAKEUP_MONITOR_PID" 2>/dev/null || true
+    WAKEUP_MONITOR_PID=
+}
+
+print_wakeup_monitor_tail() {
+    [ -n "$WAKEUP_MONITOR_DIR" ] || return 0
+    [ -r "$WAKEUP_MONITOR_DIR/wakeup.log" ] || return 0
+    echo "[lock-acceptance] wakeup monitor tail: $WAKEUP_MONITOR_DIR/wakeup.log"
+    tail -120 "$WAKEUP_MONITOR_DIR/wakeup.log" 2>/dev/null || true
+}
+
 wait_external_wake_locks_clear() {
     attempts=${1:-1200}
     while [ "$attempts" -gt 0 ]; do
@@ -104,6 +172,12 @@ wait_external_wake_locks_clear() {
     done
     fail "external wake locks did not clear after unplug: ${blockers:-unknown}"
 }
+
+cleanup() {
+    stop_wakeup_monitor
+}
+
+trap cleanup EXIT INT TERM
 
 [ -x "$CTL" ] || fail "remagicctl is not installed"
 
@@ -161,7 +235,8 @@ assert_no_submission_reason "$baseline" lock_refresh
     exit 0
 }
 
-echo "[lock-acceptance] unplug power; then press the physical power key once after suspend"
+echo "[lock-acceptance] unplug power; wait about 45 seconds for suspend; then press the physical power key once"
+start_wakeup_monitor
 wait_external_wake_locks_clear
 baseline=$(last_submission_sequence)
 baseline_full=$(display_number full_refresh_count)
@@ -177,6 +252,9 @@ wait_submission_reason "$baseline" unlock_screen 6000
 final_suspend_success=$(read_suspend_success)
 [ "$final_suspend_success" -gt "$baseline_suspend_success" ] \
     || fail "kernel never completed a real suspend/resume cycle"
+power_after_resume=$(power_status)
+printf '%s\n' "$power_after_resume" | grep -Fq '"last_wake_reason": "power key"' \
+    || fail "resume was not attributed to the physical power key"
 assert_full_refresh_delta "$baseline_full" 2 "physical lock/resume"
 assert_no_submission_reason "$baseline" lock_refresh
 [ "$(display_number lock_epoch)" = 0 ] || fail "lock epoch survived unlock"
@@ -188,4 +266,5 @@ printf '%s\n' "$current_display_status" | grep -Fq '"lock_committed": false' \
 [ "$(display_number panel_failure_count)" = "$baseline_failures" ] \
     || fail "panel failure count changed during the lock transaction"
 
+stop_wakeup_monitor
 echo "[lock-acceptance] PASS"

@@ -283,6 +283,17 @@ impl PowerManager {
         self.changed.notify_one();
     }
 
+    pub async fn retained_lock_resume(&self, reason: &str) {
+        let mut runtime = self.runtime.lock().await;
+        runtime.phase = PowerPhase::Resuming;
+        runtime.presentation = PresentationState::Lock;
+        runtime.workload = WorkloadState::Idle;
+        runtime.last_wake_reason = Some(reason.into());
+        runtime.external_blocker = None;
+        drop(runtime);
+        self.changed.notify_one();
+    }
+
     pub async fn set_presentation(&self, presentation: PresentationState) {
         self.runtime.lock().await.presentation = presentation;
     }

@@ -1,13 +1,16 @@
-use super::super::{sleep, Daemon, Event, QueuedEvent, RequestFence};
+mod retry;
+
+use super::super::{sleep, Daemon, RequestFence};
 use crate::display_host;
+use crate::power_device::WakeGesture;
 use remagic_core::{DomainState, Transition};
 use sleep::SleepPhase;
-use std::fs;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tracing::{info, warn};
 
 const LOCK_AWAKE_TIMEOUT: Duration = Duration::from_secs(30);
+const NON_USER_RESUME_RESUSPEND_DELAY: Duration = Duration::from_secs(2);
 const FRONTLIGHT_POWER_SETTLE: Duration = Duration::from_secs(8);
 const SUSPEND_INTERRUPT_POLL: Duration = Duration::from_millis(50);
 
@@ -66,8 +69,8 @@ impl Daemon {
         }
         let guard_result = self.resume_wake_guard().await;
         wakelock_result?;
-        guard_result?;
-        self.finish_physical_resume(sleep_epoch).await
+        let gesture = guard_result?;
+        self.finish_physical_resume(sleep_epoch, gesture).await
     }
 
     async fn prepare_sleep_lock(
@@ -197,21 +200,24 @@ impl Daemon {
         }
         let guard_result = self.resume_wake_guard().await;
         let mut failures = Vec::new();
-        for (stage, result) in [
-            ("wake-lock recovery", wakelock_result),
-            ("wake-key recovery", guard_result),
-        ] {
-            if let Err(error) = result {
-                failures.push(format!("{stage}: {error}"));
-            }
+        if let Err(error) = wakelock_result {
+            failures.push(format!("wake-lock recovery: {error}"));
         }
+        let gesture = match guard_result {
+            Ok(gesture) => Some(gesture),
+            Err(error) => {
+                failures.push(format!("wake-key recovery: {error}"));
+                None
+            }
+        };
         if !failures.is_empty() {
             return Err(format!(
                 "locked resuspend transaction failed: {}",
                 failures.join("; ")
             ));
         }
-        self.finish_physical_resume(sleep_epoch).await
+        self.finish_physical_resume(sleep_epoch, gesture.expect("gesture was checked above"))
+            .await
     }
 
     async fn arm_wake_guard_for_locked_resuspend(&self) -> Result<(), String> {
@@ -226,7 +232,11 @@ impl Daemon {
         }
     }
 
-    async fn finish_physical_resume(&self, sleep_epoch: u64) -> Result<(), String> {
+    async fn finish_physical_resume(
+        &self,
+        sleep_epoch: u64,
+        gesture: WakeGesture,
+    ) -> Result<(), String> {
         // The e-paper panel already retains the committed lock image. Do not
         // repaint it after resume: Home will prepare the manager surface and
         // replace the lock with one full transaction as soon as this request
@@ -241,11 +251,29 @@ impl Daemon {
             ));
         }
         let awake = self.sleep_transaction.mark_awake(sleep_epoch)?;
-        self.schedule_locked_resuspend(awake);
         if self.cover_closed.load(Ordering::Acquire) {
+            self.power
+                .retained_lock_resume("cover remained closed after resume")
+                .await;
+            self.schedule_locked_resuspend_after(awake, NON_USER_RESUME_RESUSPEND_DELAY);
             info!("physical resume retained the lock because the cover is closed");
-            return Ok(());
+            return Err(sleep::retained_lock_error(
+                "physical resume retained the lock because the cover is closed",
+            ));
         }
+        if !gesture.power_key {
+            self.power
+                .retained_lock_resume("non-user wake source")
+                .await;
+            self.schedule_locked_resuspend_after(awake, NON_USER_RESUME_RESUSPEND_DELAY);
+            info!(
+                "physical resume retained the lock because no power-key wake gesture was observed"
+            );
+            return Err(sleep::retained_lock_error(
+                "physical resume retained the lock because no power-key wake gesture was observed",
+            ));
+        }
+        self.schedule_locked_resuspend(awake);
         if let Err(error) = self.request_home_unlock().await {
             // The panel remains safely locked. Notification loss is
             // recoverable UI state, so the next single press may retry it.
@@ -262,75 +290,6 @@ impl Daemon {
             .await
             .map_err(|error| format!("cannot notify Home to unlock: {error}"))?;
         Ok(())
-    }
-
-    fn schedule_locked_resuspend(&self, sleep: sleep::SleepSnapshot) {
-        let events = self.events.clone();
-        let launch_interrupt_epoch = self.launch_interrupt_epoch.clone();
-        let interaction_epoch = launch_interrupt_epoch.load(Ordering::Acquire);
-        tokio::spawn(async move {
-            tokio::time::sleep(LOCK_AWAKE_TIMEOUT).await;
-            if launch_interrupt_epoch.load(Ordering::Acquire) != interaction_epoch {
-                return;
-            }
-            let _ = events
-                .send(QueuedEvent::unattended(
-                    Event::Resuspend {
-                        sleep_epoch: sleep.epoch,
-                        sleep_revision: sleep.revision,
-                        interaction_epoch,
-                    },
-                    &launch_interrupt_epoch,
-                ))
-                .await;
-        });
-    }
-
-    fn schedule_failed_resuspend(
-        &self,
-        error: &str,
-        sleep: sleep::SleepSnapshot,
-        interaction_epoch: u64,
-    ) {
-        if suspend_error_requires_wake_lock_clear(error) {
-            self.schedule_blocked_resuspend(sleep, interaction_epoch);
-        } else {
-            self.schedule_locked_resuspend(sleep);
-        }
-    }
-
-    /// A charger wake lock is expected while USB power is attached. Keep the
-    /// lock page committed and retry after every external blocker has
-    /// disappeared. The interaction epoch cancels this observer immediately
-    /// when the user unlocks, restores stock, or starts another transition.
-    fn schedule_blocked_resuspend(&self, sleep: sleep::SleepSnapshot, interaction_epoch: u64) {
-        let events = self.events.clone();
-        let launch_interrupt_epoch = self.launch_interrupt_epoch.clone();
-        tokio::spawn(async move {
-            loop {
-                if launch_interrupt_epoch.load(Ordering::Acquire) != interaction_epoch {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_secs(2)).await;
-                if launch_interrupt_epoch.load(Ordering::Acquire) != interaction_epoch {
-                    return;
-                }
-                if external_wake_locks_are_clear() {
-                    let _ = events
-                        .send(QueuedEvent::unattended(
-                            Event::Resuspend {
-                                sleep_epoch: sleep.epoch,
-                                sleep_revision: sleep.revision,
-                                interaction_epoch,
-                            },
-                            &launch_interrupt_epoch,
-                        ))
-                        .await;
-                    return;
-                }
-                tokio::time::sleep(Duration::from_secs(2)).await;
-            }
-        });
     }
 
     async fn settle_frontlight_after_force_off(&self, reason: &str) {
@@ -495,37 +454,13 @@ impl Daemon {
     }
 }
 
-fn external_wake_locks_are_clear() -> bool {
-    fs::read_to_string("/sys/power/wake_lock").is_ok_and(|value| wake_lock_text_is_clear(&value))
-}
-
-fn wake_lock_text_is_clear(value: &str) -> bool {
-    value
-        .split_whitespace()
-        .all(|owner| owner == "remagic-managed")
-}
-
 fn wake_guard_is_already_armed(error: &str) -> bool {
     error == "power wake guard is already armed"
 }
 
-fn suspend_error_requires_wake_lock_clear(error: &str) -> bool {
-    error.starts_with("kernel suspend is blocked by active wake locks:")
-}
-
 #[cfg(test)]
 mod power_tests {
-    use super::{
-        suspend_error_requires_wake_lock_clear, wake_guard_is_already_armed,
-        wake_lock_text_is_clear,
-    };
-
-    #[test]
-    fn blocked_retry_waits_for_the_charger_to_disappear() {
-        assert!(!wake_lock_text_is_clear("remagic-managed udev.charger"));
-        assert!(wake_lock_text_is_clear("remagic-managed"));
-        assert!(wake_lock_text_is_clear(""));
-    }
+    use super::wake_guard_is_already_armed;
 
     #[test]
     fn stale_guard_recovery_is_exact() {
@@ -534,19 +469,6 @@ mod power_tests {
         ));
         assert!(!wake_guard_is_already_armed(
             "power wake guard is not armed"
-        ));
-    }
-
-    #[test]
-    fn only_external_wake_lock_errors_wait_for_wake_locks_to_clear() {
-        assert!(suspend_error_requires_wake_lock_clear(
-            "kernel suspend is blocked by active wake locks: udev.charger"
-        ));
-        assert!(!suspend_error_requires_wake_lock_clear(
-            "systemctl start --wait systemd-suspend.service failed: failed"
-        ));
-        assert!(!suspend_error_requires_wake_lock_clear(
-            "system suspend returned without advancing kernel suspend counter"
         ));
     }
 }

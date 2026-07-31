@@ -182,9 +182,15 @@ impl Daemon {
             .await
     }
 
-    async fn resume_wake_guard(&self) -> Result<(), String> {
-        self.send_power_control(|reply| power_device::Control::ResumeWakeGuard { reply })
+    async fn resume_wake_guard(&self) -> Result<power_device::WakeGesture, String> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.power_control
+            .send(power_device::Control::ResumeWakeGuard { reply: reply_tx })
+            .map_err(|error| format!("power input thread is unavailable: {error}"))?;
+        tokio::time::timeout(Duration::from_secs(8), reply_rx)
             .await
+            .map_err(|_| "power wake guard quiet acknowledgement timed out".to_string())?
+            .map_err(|_| "power input thread closed without acknowledgement".to_string())?
     }
 
     async fn cancel_wake_guard(&self) -> Result<(), String> {
