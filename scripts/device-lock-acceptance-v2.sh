@@ -3,7 +3,6 @@ set -eu
 
 CTL=${REMAGIC_CTL:-/home/root/apps/remagic/bin/remagicctl}
 HOME_KEY=245209900
-UNLOCK_X=477
 SUSPEND_SUCCESS=/sys/power/suspend_stats/success
 REAL_SUSPEND=${REMAGIC_REAL_SUSPEND:-0}
 
@@ -115,7 +114,14 @@ wait_domain manager
     || fail "Home is not the visible manager surface"
 height=$(display_number physical_height)
 [ -n "$height" ] && [ "$height" -gt 1200 ] || fail "invalid panel height: ${height:-missing}"
-sleep_y=$((height - 98))
+width=$(display_number physical_width)
+[ -n "$width" ] && [ "$width" -gt 800 ] || fail "invalid panel width: ${width:-missing}"
+button_w=142
+button_h=72
+gap=18
+settings_x=$((width - 48 - button_w))
+sleep_x=$((settings_x - gap - button_w + button_w / 2))
+sleep_y=$((38 + button_h / 2))
 baseline=$(last_submission_sequence)
 baseline_full=$(display_number full_refresh_count)
 baseline_failures=$(display_number panel_failure_count)
@@ -132,7 +138,7 @@ external_wake_locks=$(printf '%s\n' "$wake_locks" | tr ' ' '\n' \
     | sed '/^$/d;/^remagic-managed$/d')
 [ -n "$external_wake_locks" ] \
     || fail "plugged acceptance requires an external charger wake lock"
-"$CTL" tap "$UNLOCK_X" "$sleep_y" >/dev/null 2>&1 || true
+"$CTL" tap "$sleep_x" "$sleep_y" >/dev/null 2>&1 || true
 wait_domain sleeping
 wait_submission_reason "$baseline" lock_screen 300
 assert_full_refresh_delta "$baseline_full" 1 "lock presentation"
@@ -160,7 +166,7 @@ wait_external_wake_locks_clear
 baseline=$(last_submission_sequence)
 baseline_full=$(display_number full_refresh_count)
 baseline_suspend_success=$(read_suspend_success)
-"$CTL" tap "$UNLOCK_X" "$sleep_y" >/dev/null
+"$CTL" tap "$sleep_x" "$sleep_y" >/dev/null
 wait_domain sleeping
 wait_submission_reason "$baseline" lock_screen 300
 

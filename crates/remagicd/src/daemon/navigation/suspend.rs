@@ -141,7 +141,7 @@ impl Daemon {
             sleep_epoch,
             sleep_revision, "locked display is re-entering suspend"
         );
-        self.arm_wake_guard().await?;
+        self.arm_wake_guard_for_locked_resuspend().await?;
         // Wake requests are accepted on independent control tasks. Recheck
         // after the asynchronous power-thread handshake so a touch that
         // arrived during it can cancel this low-priority automatic action.
@@ -153,20 +153,33 @@ impl Daemon {
         self.power.suspended().await;
         let suspend_result = self.controller.suspend().await;
         let wakelock_result = self.controller.acquire_wakelock();
-        let guard_result = self.resume_wake_guard().await;
-        if let Err(suspend_error) = &suspend_result {
-            self.power.externally_blocked(suspend_error).await;
+        if let Err(suspend_error) = suspend_result {
+            self.power.externally_blocked(&suspend_error).await;
+            let guard_result = self.cancel_wake_guard().await;
             if wakelock_result.is_ok() && guard_result.is_ok() {
                 self.schedule_blocked_resuspend(
                     self.sleep_transaction.snapshot(),
                     interaction_epoch,
                 );
-                return Err(sleep::retained_lock_error(suspend_error));
+                return Err(sleep::retained_lock_error(&suspend_error));
             }
+            let mut failures = vec![format!("suspend: {suspend_error}")];
+            for (stage, result) in [
+                ("wake-lock recovery", wakelock_result),
+                ("wake-key recovery", guard_result),
+            ] {
+                if let Err(error) = result {
+                    failures.push(format!("{stage}: {error}"));
+                }
+            }
+            return Err(format!(
+                "locked resuspend transaction failed: {}",
+                failures.join("; ")
+            ));
         }
+        let guard_result = self.resume_wake_guard().await;
         let mut failures = Vec::new();
         for (stage, result) in [
-            ("suspend", suspend_result),
             ("wake-lock recovery", wakelock_result),
             ("wake-key recovery", guard_result),
         ] {
@@ -181,6 +194,18 @@ impl Daemon {
             ));
         }
         self.finish_physical_resume(sleep_epoch).await
+    }
+
+    async fn arm_wake_guard_for_locked_resuspend(&self) -> Result<(), String> {
+        match self.arm_wake_guard().await {
+            Ok(()) => Ok(()),
+            Err(error) if wake_guard_is_already_armed(&error) => {
+                warn!(%error, "clearing stale wake guard before locked resuspend");
+                self.cancel_wake_guard().await?;
+                self.arm_wake_guard().await
+            }
+            Err(error) => Err(error),
+        }
     }
 
     async fn finish_physical_resume(&self, sleep_epoch: u64) -> Result<(), String> {
@@ -414,14 +439,28 @@ fn wake_lock_text_is_clear(value: &str) -> bool {
         .all(|owner| owner == "remagic-managed")
 }
 
+fn wake_guard_is_already_armed(error: &str) -> bool {
+    error == "power wake guard is already armed"
+}
+
 #[cfg(test)]
 mod power_tests {
-    use super::wake_lock_text_is_clear;
+    use super::{wake_guard_is_already_armed, wake_lock_text_is_clear};
 
     #[test]
     fn blocked_retry_waits_for_the_charger_to_disappear() {
         assert!(!wake_lock_text_is_clear("remagic-managed udev.charger"));
         assert!(wake_lock_text_is_clear("remagic-managed"));
         assert!(wake_lock_text_is_clear(""));
+    }
+
+    #[test]
+    fn stale_guard_recovery_is_exact() {
+        assert!(wake_guard_is_already_armed(
+            "power wake guard is already armed"
+        ));
+        assert!(!wake_guard_is_already_armed(
+            "power wake guard is not armed"
+        ));
     }
 }

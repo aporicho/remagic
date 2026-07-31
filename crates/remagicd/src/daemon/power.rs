@@ -22,7 +22,8 @@ impl Daemon {
         {
             return Ok(());
         }
-        match self.state.read().await.domain.clone() {
+        let domain = self.state.read().await.domain.clone();
+        match domain {
             DomainState::Foreground(app) => self.park(app, false, true).await?,
             DomainState::Manager => self.ensure_manager_surface().await?,
             DomainState::System | DomainState::Sleeping => {

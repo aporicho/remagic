@@ -31,8 +31,11 @@ stage=$BUILD/runtime
 mkdir -p "$stage/bin"
 install -m 0755 "$BUILD/node-v$NODE_VERSION-linux-arm64/bin/node" "$stage/bin/node"
 install -m 0644 "$PI_MANIFEST" "$PI_LOCK" "$stage/"
-npm_config_cpu=arm64 npm_config_os=linux npm ci \
-    --prefix "$stage" --ignore-scripts --omit=dev --no-audit --no-fund
+(
+    cd "$stage"
+    npm_config_cpu=arm64 npm_config_os=linux npm ci \
+        --ignore-scripts --omit=dev --no-audit --no-fund
+)
 # Published source maps and TypeScript declaration files are useful to library
 # developers but never participate in Node execution. Removing only these
 # files saves roughly 60 MiB and about 10,000 installation checksum entries,
