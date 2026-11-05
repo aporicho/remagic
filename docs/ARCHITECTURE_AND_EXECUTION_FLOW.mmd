@@ -8,7 +8,7 @@ flowchart TB
       rm_supervisor@{ shape: rect, label: "systemd / cgroup<br/>进程监督 · 冻结 · 恢复<br/>Shutdown · TERM · KILL" }
       rm_agentd@{ shape: rect, label: "remagic-agentd<br/>私有 Pi Agent 服务<br/>认证 · Worker · 优先级 · 取消" }
       rm_runner@{ shape: rect, label: "remagic-runner<br/>manifest 预检<br/>应用环境 · 生命周期通道" }
-      rm_store@{ shape: rect, label: "ReMagic Store / package<br/>签名目录 · 校验 · 安装<br/>原子升级 · 回滚" }
+      rm_store@{ shape: rect, label: "内置应用商店 / package<br/>设置页进入 · 签名目录 · 校验 · 安装<br/>原子升级 · 回滚" }
     end
     subgraph rm_lifecycle [通用应用生命周期]
       direction LR
@@ -38,7 +38,7 @@ flowchart TB
     rm_user@{ shape: rect, label: "用户<br/>手指 · 电源键" }
     rm_original@{ shape: rect, label: "原版 xochitl / 镇纸系统域" }
     rm_trigger@{ shape: rect, label: "三按电源键<br/>系统域切换入口" }
-    rm_home@{ shape: rect, label: "ReMagic Home<br/>任务页 · 设置 · 锁屏 · 应用管理" }
+    rm_home@{ shape: rect, label: "ReMagic Home<br/>任务页 · 设置 · 锁屏<br/>用户应用平级显示" }
     rm_stopped@{ shape: rect, label: "未运行" }
     rm_priority@{ shape: rect, label: "全局优先级<br/>用户输入 ＞ 前台问答 ＞ OCR 预请求 ＞ 定时任务 ＞ 后台维护" }
     rm_daemon@{ shape: rect, label: "remagicd<br/>全局状态机 · 前台租约<br/>生命周期 · 故障恢复" }

@@ -1,4 +1,4 @@
-use remagic_core::{AppId, AppSession, BacklightSnapshot, DomainState, PowerSnapshot};
+use remagic_core::{AppId, AppKind, AppSession, BacklightSnapshot, DomainState, PowerSnapshot};
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::PathBuf;
@@ -187,6 +187,8 @@ pub struct AppView {
     pub id: AppId,
     pub name: String,
     pub description: String,
+    #[serde(default)]
+    pub kind: AppKind,
     pub installed: bool,
     pub foreground: bool,
     pub background_service: Option<String>,

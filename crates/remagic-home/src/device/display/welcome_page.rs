@@ -24,11 +24,11 @@ impl Display {
         let width = (self.width - 96).min(900);
         let x = (self.width - width) / 2;
         let height = 118;
-        let store_y = self.height / 2 - 42;
-        self.rect(x, store_y, width, height, BLACK);
-        self.centered_text(font, "打开应用商店", 38.0, store_y + 75, WHITE);
+        let settings_y = self.height / 2 - 42;
+        self.rect(x, settings_y, width, height, BLACK);
+        self.centered_text(font, "打开设置", 38.0, settings_y + 75, WHITE);
 
-        let system_y = store_y + height + 34;
+        let system_y = settings_y + height + 34;
         self.rect(x, system_y, width, height, GRAY);
         self.centered_text(font, "返回原版系统", 36.0, system_y + 74, BLACK);
 
@@ -43,10 +43,10 @@ impl Display {
         Ok(vec![
             Button {
                 x,
-                y: store_y,
+                y: settings_y,
                 width,
                 height,
-                action: Action::OpenStore,
+                action: Action::OpenSettings,
             },
             Button {
                 x,

@@ -108,7 +108,7 @@ impl Display {
                 y: 38,
                 width: 142,
                 height: 72,
-                action: Action::BackManager,
+                action: Action::BackSettings,
             },
             buttons,
         );
@@ -392,5 +392,22 @@ mod tests {
         assert!(!STORE_TITLE.contains("更新中心"));
         assert!(!STORE_SUBTITLE.contains("系统更新"));
         assert_eq!(SYSTEM_UPDATE_TITLE, "系统更新");
+    }
+
+    #[test]
+    fn catalog_entries_are_not_limited_to_the_builtin_fallback_apps() {
+        let entries = store_entries(
+            &[],
+            &[CatalogApp {
+                id: "notes".into(),
+                name: "Notes".into(),
+                summary: "更多平级应用".into(),
+                version: "1.0.0".into(),
+                status: CatalogStatus::NotInstalled,
+            }],
+        );
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "notes");
     }
 }

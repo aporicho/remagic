@@ -1,5 +1,6 @@
 use super::{Action, Button};
 use ab_glyph::{point, Font, FontArc, Glyph, PxScale, ScaleFont};
+use remagic_core::AppKind;
 use remagic_protocol::AppView;
 use std::fs;
 use std::io;
@@ -42,13 +43,6 @@ pub(super) struct Display {
     height: i32,
     stride: usize,
     client: crate::qtfb::Client,
-}
-
-struct TileSpec<'a> {
-    title: &'a str,
-    status: &'a str,
-    icon: &'a str,
-    action: Action,
 }
 
 impl Display {
@@ -136,25 +130,7 @@ impl Display {
         let grid_width = columns * tile + (columns - 1) * gap;
         let start_x = (self.width - grid_width) / 2;
         let mut index = 0;
-        self.render_action_tile(
-            font,
-            TileSpec {
-                title: "应用商店",
-                status: "安装和管理应用",
-                icon: "店",
-                action: Action::OpenStore,
-            },
-            buttons,
-            start_x,
-            y,
-            tile,
-        );
-        index += 1;
-        for app in apps
-            .iter()
-            .filter(|app| app.id.as_str() != "remagic-store")
-            .take(12)
-        {
+        for app in apps.iter().filter(|app| is_user_app(app)).take(12) {
             let column = index % columns;
             let row = index / columns;
             let x = start_x + column * (tile + gap);
@@ -208,47 +184,6 @@ impl Display {
             DARK_GRAY,
         );
         self.render_close_button(font, app, buttons, x, y);
-    }
-
-    fn render_action_tile(
-        &mut self,
-        font: &FontArc,
-        spec: TileSpec<'_>,
-        buttons: &mut Vec<Button>,
-        x: i32,
-        y: i32,
-        size: i32,
-    ) {
-        self.card(x, y, size, size);
-        let icon = 94;
-        let icon_x = x + (size - icon) / 2;
-        self.rect(icon_x, y + 24, icon, icon, BLACK);
-        self.centered_text_in_rect(font, spec.icon, 38.0, icon_x, icon, y + 84, WHITE);
-        self.centered_text_in_rect(
-            font,
-            &truncate_to_width(font, spec.title, 26.0, size - 28),
-            26.0,
-            x,
-            size,
-            y + 152,
-            BLACK,
-        );
-        self.centered_text_in_rect(
-            font,
-            &truncate_to_width(font, spec.status, 18.0, size - 24),
-            18.0,
-            x,
-            size,
-            y + 186,
-            DARK_GRAY,
-        );
-        buttons.push(Button {
-            x,
-            y,
-            width: size,
-            height: size,
-            action: spec.action,
-        });
     }
 
     fn render_close_button(
@@ -505,6 +440,10 @@ fn app_icon_text(app: &AppView) -> String {
     }
 }
 
+fn is_user_app(app: &AppView) -> bool {
+    app.kind == AppKind::User
+}
+
 fn app_status(app: &AppView) -> String {
     if app.id.as_str() == "magicpaper" && queued_magicpaper_result() {
         "有新的定时任务结果".into()
@@ -533,5 +472,32 @@ fn app_action(app: &AppView) -> Action {
         Action::Launch(app.id.clone())
     } else {
         Action::Unavailable
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use remagic_core::AppId;
+
+    fn app(id: &str, kind: AppKind) -> AppView {
+        AppView {
+            id: AppId::new(id).unwrap(),
+            name: id.into(),
+            description: String::new(),
+            kind,
+            installed: true,
+            foreground: false,
+            background_service: None,
+            background_active: false,
+            session: None,
+            package: Some(id.into()),
+        }
+    }
+
+    #[test]
+    fn task_grid_contains_only_user_applications() {
+        assert!(is_user_app(&app("magicpaper", AppKind::User)));
+        assert!(!is_user_app(&app("remagic-store", AppKind::System)));
     }
 }

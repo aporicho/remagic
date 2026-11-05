@@ -231,6 +231,7 @@ impl AppViewV2 {
             id: self.id.clone(),
             name: self.name.clone(),
             description: self.description.clone(),
+            kind: self.kind,
             installed: self.installed,
             foreground: self.instance.as_ref().is_some_and(|instance| {
                 instance.state == remagic_core::AppInstanceState::Foreground

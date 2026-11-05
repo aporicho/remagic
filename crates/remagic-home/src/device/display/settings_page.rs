@@ -15,8 +15,17 @@ impl Display {
         self.use_mono_ui()?;
         self.fill(WHITE);
         let mut buttons = Vec::new();
+        self.render_settings_header(font, &mut buttons);
+        self.render_settings_system_section(font, &mut buttons);
+        self.render_settings_power_section(font, settings, &mut buttons);
+        self.render_settings_lock_section(font, settings, wallpapers, &mut buttons);
+        self.client.update_all()?;
+        Ok(buttons)
+    }
+
+    fn render_settings_header(&mut self, font: &FontArc, buttons: &mut Vec<Button>) {
         self.text(font, "设置", 54.0, 48, 82, BLACK);
-        self.text(font, "系统、电源与锁屏外观", 25.0, 50, 128, DARK_GRAY);
+        self.text(font, "系统、应用、电源与锁屏外观", 25.0, 50, 128, DARK_GRAY);
         self.small_button(
             font,
             "返回",
@@ -27,9 +36,11 @@ impl Display {
                 height: 72,
                 action: Action::BackManager,
             },
-            &mut buttons,
+            buttons,
         );
+    }
 
+    fn render_settings_system_section(&mut self, font: &FontArc, buttons: &mut Vec<Button>) {
         self.text(font, "系统", 36.0, 50, 194, BLACK);
         self.setting_row(
             font,
@@ -37,52 +48,75 @@ impl Display {
             "检查并安装 ReMagic 系统更新",
             224,
             Action::OpenSystemUpdate,
-            &mut buttons,
+            buttons,
+        );
+        self.setting_row(
+            font,
+            "应用商店",
+            "安装、升级和卸载应用",
+            374,
+            Action::OpenStore,
+            buttons,
         );
         self.setting_row(
             font,
             "返回原版系统",
             "退出 ReMagic，回到 reMarkable 原版系统",
-            374,
+            524,
             Action::System,
-            &mut buttons,
+            buttons,
         );
+    }
 
-        self.text(font, "电源", 36.0, 50, 524, BLACK);
+    fn render_settings_power_section(
+        &mut self,
+        font: &FontArc,
+        settings: &HomeSettings,
+        buttons: &mut Vec<Button>,
+    ) {
+        self.text(font, "电源", 36.0, 50, 674, BLACK);
         self.setting_row(
             font,
             "背光",
             &backlight_label(settings.backlight.as_ref()),
-            554,
+            704,
             Action::OpenBacklight,
-            &mut buttons,
+            buttons,
         );
         self.setting_row(
             font,
             "自动休眠",
             idle_suspend_label(settings.idle_suspend_secs),
-            704,
+            854,
             Action::CycleAutoSleep,
-            &mut buttons,
+            buttons,
         );
+    }
 
-        self.text(font, "锁屏", 36.0, 50, 884, BLACK);
+    fn render_settings_lock_section(
+        &mut self,
+        font: &FontArc,
+        settings: &HomeSettings,
+        wallpapers: &[WallpaperOption],
+        buttons: &mut Vec<Button>,
+    ) {
+        self.text(font, "锁屏", 36.0, 50, 1034, BLACK);
         let wallpaper = settings.wallpaper(wallpapers);
         self.setting_row(
             font,
             "壁纸",
             &wallpaper.label,
-            914,
+            1064,
             Action::OpenWallpaperBrowser,
-            &mut buttons,
+            buttons,
         );
         self.setting_row(
             font,
             "壁纸布局",
             settings.lock.fit.label(),
-            1064,
+            1214,
             Action::ToggleWallpaperFit,
-            &mut buttons,
+            buttons,
         );
 
         let preview_y = self.height - 260;
@@ -102,8 +136,6 @@ impl Display {
             self.height - 92,
             DARK_GRAY,
         );
-        self.client.update_all()?;
-        Ok(buttons)
     }
 
     pub(crate) fn render_backlight_settings(

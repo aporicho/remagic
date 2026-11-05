@@ -4,6 +4,16 @@ ReMagic is a small system layer, not a single application. Source boundaries
 therefore follow ownership and lifecycle responsibilities rather than UI
 screens or arbitrary line-count slices.
 
+## Product model
+
+- `remagic` is the system and runtime platform.
+- `magicpaper`, `koreader`, `upload`, and future user applications are peers.
+- user applications are exposed by signed catalog entries plus
+  `kind = "user"` manifests; system code must not hard-code the current app
+  set as an allowlist.
+- `remagic-store` is a built-in system capability opened from Settings, with
+  `kind = "system"` and daemon-enforced uninstall protection.
+
 ## Mandatory boundaries
 
 - `remagicd` owns policy, state transitions, process supervision, and recovery.

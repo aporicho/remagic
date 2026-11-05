@@ -67,20 +67,16 @@ async fn handle_welcome(
         return Ok(false);
     }
     match action {
-        Action::OpenStore => {
+        Action::OpenSettings => {
             first_run::complete()?;
-            refresh_apps(context.apps).await;
-            if let Ok(catalog) = super::store::catalog().await {
-                *context.store_catalog = catalog;
-            }
-            *context.buttons = context.display.render_store(
+            *context.wallpapers = super::settings::wallpapers();
+            settings_ui::refresh_system_settings(context.settings).await;
+            *context.buttons = context.display.render_settings(
                 context.font,
-                context.apps,
-                context.store_catalog,
-                context.store_progress.as_ref(),
-                context.store_error.as_deref(),
+                context.settings,
+                context.wallpapers,
             )?;
-            *context.mode = UiMode::Store;
+            *context.mode = UiMode::Settings;
         }
         Action::System => {
             first_run::complete()?;
@@ -100,8 +96,8 @@ async fn handle_store(
     action: &Action,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     match (*context.mode, action) {
-        (UiMode::Manager, Action::OpenStore) => enter_store(context).await?,
-        (UiMode::Store, Action::BackManager) => leave_store(context).await?,
+        (UiMode::Settings, Action::OpenStore) => enter_store(context).await?,
+        (UiMode::Store, Action::BackSettings) => leave_store_settings(context).await?,
         (UiMode::Store, Action::StoreInstall(app_id)) => {
             install_from_store(context, app_id).await?
         }
@@ -137,10 +133,13 @@ async fn enter_store(context: &mut Context<'_>) -> Result<(), Box<dyn std::error
     Ok(())
 }
 
-async fn leave_store(context: &mut Context<'_>) -> Result<(), Box<dyn std::error::Error>> {
+async fn leave_store_settings(context: &mut Context<'_>) -> Result<(), Box<dyn std::error::Error>> {
     refresh_apps(context.apps).await;
-    *context.buttons = context.display.render(context.font, context.apps)?;
-    *context.mode = UiMode::Manager;
+    *context.buttons =
+        context
+            .display
+            .render_settings(context.font, context.settings, context.wallpapers)?;
+    *context.mode = UiMode::Settings;
     Ok(())
 }
 

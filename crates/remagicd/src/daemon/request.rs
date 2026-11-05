@@ -187,6 +187,7 @@ impl Daemon {
                 id: manifest.id.clone(),
                 name: manifest.name.clone(),
                 description: manifest.description.clone(),
+                kind: manifest.kind,
                 installed: manifest.exec.exists() && manifest.working_dir.exists(),
                 foreground: matches!(&state.domain, DomainState::Foreground(id) if id == &manifest.id),
                 background_service: background.map(|service| match service {

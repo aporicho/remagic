@@ -177,7 +177,7 @@ fn redraw_wallpapers(
     Ok(())
 }
 
-async fn refresh_system_settings(settings: &mut HomeSettings) {
+pub(super) async fn refresh_system_settings(settings: &mut HomeSettings) {
     refresh_power_settings(settings).await;
     refresh_backlight_settings(settings).await;
 }

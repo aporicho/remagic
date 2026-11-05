@@ -1,0 +1,94 @@
+schema = 2
+id = "magicpaper"
+name = "MagicPaper"
+kind = "user"
+description = "Disposable no-network acceptance instance"
+version = "0.7.0-test"
+package = "magicpaper"
+supported_devices = ["paper_pro", "paper_pro_move"]
+required_remagic_api = 2
+uninstall_policy = "keep_data"
+exec = "/__REMAGIC_MAGICPAPER_PAYLOAD_ROOT__/bin/magicpaper-launch"
+working_dir = "/__REMAGIC_MAGICPAPER_PAYLOAD_ROOT__"
+display = "qtfb"
+resident = true
+capabilities = [
+  "display:qtfb-v1",
+  "input:touch-v1",
+  "input:pen-v1",
+  "input:mode-v2",
+  "ink:direct-v1",
+  "lifecycle:v2",
+  "agent:pi-v1",
+]
+supports_open_path = false
+
+[readiness]
+mode = "first_frame"
+timeout_ms = 15000
+
+[shutdown]
+graceful_timeout_ms = 3500
+term_timeout_ms = 4500
+kill_timeout_ms = 5500
+
+[data_schema]
+migrator = "/__REMAGIC_MAGICPAPER_PAYLOAD_ROOT__/libexec/magicpaper-data-migrate"
+version = 2
+backup_paths = [
+  "/home/root/.local/state/remagic/acceptance/current/magicpaper/data",
+  "/home/root/.local/state/remagic/acceptance/current/magicpaper/config",
+  "/home/root/.local/state/remagic/acceptance/current/magicpaper/legacy-data",
+  "/home/root/.local/state/remagic/acceptance/current/magicpaper/legacy-config",
+]
+backup_timeout_ms = 30000
+migration_timeout_ms = 30000
+
+[runtime]
+profile = "qtfb_compat"
+background_execution = "freeze"
+required_libraries = []
+
+[runtime.directories]
+home = "/home/root"
+config_home = "/home/root/.local/state/remagic/acceptance/current/magicpaper/config"
+data_home = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data"
+state_home = "/home/root/.local/state/remagic/acceptance/current/magicpaper/state"
+cache_home = "/home/root/.local/state/remagic/acceptance/current/magicpaper/cache"
+runtime_dir = "/run/remagic/apps/magicpaper"
+
+[runtime.locale]
+lang = "C.UTF-8"
+
+[runtime.timezone]
+name = "Asia/Shanghai"
+
+[runtime.fonts]
+directories = ["/__REMAGIC_MAGICPAPER_PAYLOAD_ROOT__/share/fonts"]
+
+[runtime.certificates]
+required = false
+
+[runtime.network]
+mode = "deny"
+
+[environment]
+MAGICPAPER_SYSTEMD_MANAGED = "1"
+MAGICPAPER_TEST_MODE = "1"
+MAGICPAPER_TEST_EVENT_FILE = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/test-event"
+MAGICPAPER_CONFIG = "/home/root/.local/state/remagic/acceptance/current/magicpaper/config/oracle.env"
+MAGICPAPER_DATA_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data"
+MAGICPAPER_AGENT_QUEUE_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/agent"
+MAGICPAPER_PI_DATA_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/pi"
+MAGICPAPER_PI_HOME = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/pi-home"
+MAGICPAPER_MEMORY_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/memories"
+MAGICPAPER_TASKS_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/tasks"
+MAGICPAPER_TODOS_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/todos"
+MAGICPAPER_PREFERENCES_DIR = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data/preferences"
+MAGICPAPER_DATA_ROOT = "/home/root/.local/state/remagic/acceptance/current/magicpaper/data"
+MAGICPAPER_CONFIG_ROOT = "/home/root/.local/state/remagic/acceptance/current/magicpaper/config"
+MAGICPAPER_LEGACY_DATA_ROOTS = "/home/root/.local/state/remagic/acceptance/current/magicpaper/legacy-data"
+MAGICPAPER_LEGACY_CONFIG_ROOTS = "/home/root/.local/state/remagic/acceptance/current/magicpaper/legacy-config"
+MAGICPAPER_LEGACY_CONFIG_FILE = "/home/root/.local/state/remagic/acceptance/current/magicpaper/legacy-app/oracle.env"
+MAGICPAPER_REMARKABLE_LIBRARY = "/home/root/.local/state/remagic/acceptance/current/magicpaper/empty-library"
+MAGICPAPER_KOREADER_LIBRARY = "/home/root/.local/state/remagic/acceptance/current/magicpaper/empty-library"

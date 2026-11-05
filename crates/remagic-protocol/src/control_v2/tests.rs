@@ -275,7 +275,28 @@ fn snapshot_has_lossy_but_stable_v1_views() {
     };
     assert_eq!(apps.len(), 1);
     assert!(apps[0].foreground);
+    assert_eq!(apps[0].kind, remagic_core::AppKind::User);
     assert_eq!(ManagerState::from(&snapshot.state).sequence, 51);
+}
+
+#[test]
+fn legacy_app_view_defaults_missing_kind_to_user() {
+    let app: crate::AppView = serde_json::from_str(
+        r#"{
+            "id": "magicpaper",
+            "name": "MagicPaper",
+            "description": "Paper AI",
+            "installed": true,
+            "foreground": false,
+            "background_service": null,
+            "background_active": false,
+            "session": null,
+            "package": "magicpaper"
+        }"#,
+    )
+    .unwrap();
+
+    assert_eq!(app.kind, remagic_core::AppKind::User);
 }
 
 #[test]

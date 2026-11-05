@@ -199,9 +199,8 @@ pub(super) async fn install_system_update() -> Result<(), Box<dyn std::error::Er
 }
 
 pub(super) async fn uninstall(app_id: &str) -> Result<(), Box<dyn std::error::Error>> {
-    if !matches!(app_id, "magicpaper" | "koreader" | "upload") {
-        return Err(format!("应用商店没有这个应用：{app_id}").into());
-    }
+    ensure_store_binary()?;
+    ensure_catalog_app(app_id).await?;
     let child = Command::new(STORE_BINARY)
         .args(["uninstall", app_id])
         .env_clear()
@@ -252,12 +251,8 @@ fn manifest_value(text: &str, key: &str) -> Option<String> {
 }
 
 pub(super) async fn install(app_id: &str) -> Result<(), Box<dyn std::error::Error>> {
-    if !matches!(app_id, "magicpaper" | "koreader" | "upload") {
-        return Err(format!("应用商店没有这个应用：{app_id}").into());
-    }
-    if !Path::new(STORE_BINARY).is_file() {
-        return Err("应用商店组件未安装，请先更新 ReMagic".into());
-    }
+    ensure_store_binary()?;
+    ensure_catalog_app(app_id).await?;
     let device = DeviceProfile::detect()?;
     let product = match device.product {
         DeviceProduct::PaperPro => "paper_pro",
@@ -267,12 +262,8 @@ pub(super) async fn install(app_id: &str) -> Result<(), Box<dyn std::error::Erro
 }
 
 pub(super) async fn upgrade(app_id: &str) -> Result<(), Box<dyn std::error::Error>> {
-    if !matches!(app_id, "magicpaper" | "koreader" | "upload") {
-        return Err(format!("应用商店没有这个应用：{app_id}").into());
-    }
-    if !Path::new(STORE_BINARY).is_file() {
-        return Err("应用商店组件未安装，请先更新 ReMagic".into());
-    }
+    ensure_store_binary()?;
+    ensure_catalog_app(app_id).await?;
     let device = DeviceProfile::detect()?;
     let product = match device.product {
         DeviceProduct::PaperPro => "paper_pro",
@@ -315,6 +306,29 @@ async fn run_package_command(
     }
 }
 
+fn ensure_store_binary() -> Result<(), Box<dyn std::error::Error>> {
+    Path::new(STORE_BINARY)
+        .is_file()
+        .then_some(())
+        .ok_or_else(|| "应用商店组件未安装，请先更新 ReMagic".into())
+}
+
+async fn ensure_catalog_app(app_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let entries = catalog().await?;
+    ensure_catalog_app_present(&entries, app_id)
+}
+
+fn ensure_catalog_app_present(
+    entries: &[CatalogApp],
+    app_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    entries
+        .iter()
+        .any(|entry| entry.id == app_id)
+        .then_some(())
+        .ok_or_else(|| format!("应用商店没有这个应用：{app_id}").into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,8 +341,27 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn unknown_catalog_identity_fails_before_process_launch() {
-        assert!(install("koreader-for-remagic").await.is_err());
+    #[test]
+    fn catalog_membership_is_the_store_operation_authority() {
+        let entries = vec![
+            CatalogApp {
+                id: "magicpaper".into(),
+                name: "MagicPaper".into(),
+                summary: "手写 AI".into(),
+                version: "1.0.0".into(),
+                status: CatalogStatus::Installed,
+            },
+            CatalogApp {
+                id: "future-app".into(),
+                name: "Future App".into(),
+                summary: "扩展应用".into(),
+                version: "1.0.0".into(),
+                status: CatalogStatus::NotInstalled,
+            },
+        ];
+
+        assert!(ensure_catalog_app_present(&entries, "magicpaper").is_ok());
+        assert!(ensure_catalog_app_present(&entries, "future-app").is_ok());
+        assert!(ensure_catalog_app_present(&entries, "koreader-for-remagic").is_err());
     }
 }
